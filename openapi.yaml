@@ -1,0 +1,78 @@
+
+openapi: 3.1.0
+info:
+  title: Finance Parser API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /v1/parse:
+    post:
+      summary: Parse audio/text to structured expense/income JSON
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                audio:
+                  type: string
+                  format: binary
+                hint_text:
+                  type: string
+                tz:
+                  type: string
+                  default: Asia/Kolkata
+      responses:
+        "200":
+          description: Parsed entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+        "422":
+          description: Could not parse
+  /v1/entries:
+    post:
+      summary: Create a transaction entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+      responses:
+        "201":
+          description: Entry created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+        "400":
+          description: Invalid payload
+        "500":
+          description: Database error
+    get:
+      summary: List all transaction entries
+      parameters:
+        - in: query
+          name: tag
+          description: Return only entries that include this tag.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+        "500":
+          description: Database error
+components:
+  schemas:
+    ExpenseOrIncomeEntry:
+      $ref: ./schemas/expense_entry.schema.json

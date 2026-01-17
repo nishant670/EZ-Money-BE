@@ -1,0 +1,45 @@
+@baseUrl = http://localhost:8080
+
+### 1. Health Check
+GET {{baseUrl}}/health
+
+### 2. Create Guest User
+# Creates a new shadow account. Save the token from the response.
+POST {{baseUrl}}/v1/auth/guest
+
+### 3. Identify User (Check if exists)
+POST {{baseUrl}}/v1/auth/identify
+Content-Type: application/json
+
+{
+    "identifier": "+919876543210"
+}
+
+### 4. Verify OTP (Mock: 1234)
+# Returns a claim_token needed for registration
+POST {{baseUrl}}/v1/auth/otp/verify
+Content-Type: application/json
+
+{
+    "identifier": "+919876543210",
+    "otp": "1234"
+}
+
+### 5. Register User
+# Replace claim_token with the one received from step 4
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{
+    "claim_token": "claim_+919876543210",
+    "pin": "1234"
+}
+
+### 6. Login
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+    "identifier": "+919876543210",
+    "pin": "1234"
+}

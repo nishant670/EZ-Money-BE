@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ParsedDraftEntry",
+  "type": "object",
+  "required": [
+    "source_text"
+  ],
+  "properties": {
+    "stage": {
+      "type": "string",
+      "enum": [
+        "draft"
+      ],
+      "default": "draft"
+    },
+    "type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "expense",
+        "income",
+        null
+      ]
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "amount": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": "INR"
+    },
+    "mode": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "Cash",
+        "UPI",
+        "Credit Card",
+        "Wallets",
+        null
+      ]
+    },
+    "card_network": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "Visa",
+        "Mastercard",
+        "Amex",
+        "Rupay",
+        null
+      ]
+    },
+    "account_hint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "category": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "Food",
+        "Travel",
+        "Shopping",
+        "Bills",
+        "Family/Gifts",
+        "Misc",
+        null
+      ]
+    },
+    "merchant": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tag": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "purpose_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "normal_spend",
+        "investment",
+        "lending",
+        "refund",
+        "reimbursable",
+        "donation",
+        null
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "date": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "time": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$"
+    },
+    "source_text": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "mode": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "category": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "date": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "merchant": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "tag": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "type": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "needs_confirmation": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "boolean"
+        },
+        "category": {
+          "type": "boolean"
+        },
+        "date": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "boolean"
+        },
+        "merchant": {
+          "type": "boolean"
+        },
+        "tag": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "clarifications": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Concise questions to ask the user if key fields are ambiguous"
+    }
+  },
+  "additionalProperties": false
+}

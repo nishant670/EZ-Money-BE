@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FinalEntry",
+  "type": "object",
+  "required": ["type", "amount", "currency", "mode", "category", "date", "source_text"],
+  "properties": {
+    "type": { "type": "string", "enum": ["expense", "income"] },
+    "amount": { "type": "number", "minimum": 0 },
+    "currency": { "type": "string" },
+    "mode": { "type": "string", "enum": ["Cash", "UPI", "Credit Card", "Wallets"] },
+    "card_network": { "type": ["string", "null"], "enum": ["Visa", "Mastercard", "Amex", "Rupay", null] },
+    "account_hint": { "type": ["string", "null"] },
+    "category": { "type": "string", "enum": ["Food", "Travel", "Shopping", "Bills", "Family/Gifts", "Misc"] },
+    "merchant": { "type": ["string", "null"] },
+    "tag": { "type": ["string", "null"] },
+    "notes": { "type": ["string", "null"] },
+    "date": { "type": "string", "format": "date" },
+    "time": { "type": ["string", "null"], "pattern": "^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$" },
+    "source_text": { "type": "string" }
+  },
+  "additionalProperties": false
+}
