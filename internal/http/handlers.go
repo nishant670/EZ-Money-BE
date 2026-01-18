@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	timepkg "time"
@@ -75,6 +76,9 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/parse", s.handleParse)
 		authorized.POST("/entries", s.saveEntry)
 		authorized.GET("/entries", s.listEntries)
+		authorized.GET("/entries/:id", s.getEntry)
+		authorized.PUT("/entries/:id", s.updateEntry)
+		authorized.DELETE("/entries/:id", s.deleteEntry)
 		authorized.PUT("/user", s.updateProfile)
 		authorized.POST("/upload", s.handleUpload)
 	}
@@ -194,12 +198,51 @@ func (s *Server) listEntries(c *gin.Context) {
 
 	var entries []models.Entry
 
-	query := database.DB.Where("user_id = ?", userID).Order("created_at desc")
+	query := database.DB.Where("user_id = ?", userID).Order("date desc, created_at desc")
+
+	if t := strings.TrimSpace(c.Query("type")); t != "" && t != "All" {
+		query = query.Where("LOWER(type) = LOWER(?)", t)
+	}
+
+	if cat := strings.TrimSpace(c.Query("category")); cat != "" {
+		query = query.Where("LOWER(category) = LOWER(?)", cat)
+	}
+
+	if mode := strings.TrimSpace(c.Query("mode")); mode != "" {
+		query = query.Where("LOWER(mode) = LOWER(?)", mode)
+	}
+
+	if minStr := c.Query("min_amount"); minStr != "" {
+		if min, err := strconv.ParseFloat(minStr, 64); err == nil {
+			query = query.Where("amount >= ?", min)
+		}
+	}
+
+	if maxStr := c.Query("max_amount"); maxStr != "" {
+		if max, err := strconv.ParseFloat(maxStr, 64); err == nil {
+			query = query.Where("amount <= ?", max)
+		}
+	}
+
+	if start := c.Query("start_date"); start != "" {
+		query = query.Where("date >= ?", start)
+	}
+
+	if end := c.Query("end_date"); end != "" {
+		query = query.Where("date <= ?", end)
+	}
+
 	if tag := strings.TrimSpace(c.Query("tag")); tag != "" {
 		if tagFilter, err := json.Marshal([]string{tag}); err == nil {
 			query = query.Where("tags @> ?", string(tagFilter))
 		}
 	}
+
+	log.Printf("[DEBUG] listEntries Filters | Type: %s | Cat: %s | Mode: %s | Min: %s | Max: %s | Start: %s | End: %s | Tag: %s",
+		c.Query("type"), c.Query("category"), c.Query("mode"),
+		c.Query("min_amount"), c.Query("max_amount"),
+		c.Query("start_date"), c.Query("end_date"), c.Query("tag"),
+	)
 
 	if err := query.Find(&entries).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -207,6 +250,103 @@ func (s *Server) listEntries(c *gin.Context) {
 	}
 
 	c.JSON(200, entries)
+	log.Printf("[DEBUG] listEntries: Found %d entries", len(entries))
+}
+
+func (s *Server) getEntry(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+
+	var entry models.Entry
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&entry).Error; err != nil {
+		c.JSON(404, gin.H{"error": "entry not found"})
+		return
+	}
+
+	c.JSON(200, entry)
+}
+
+func (s *Server) updateEntry(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+
+	var entry models.Entry
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&entry).Error; err != nil {
+		c.JSON(404, gin.H{"error": "entry not found"})
+		return
+	}
+
+	var input map[string]interface{}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Update fields if present in input
+	if v, ok := input["title"].(string); ok {
+		entry.Title = v
+	}
+	if v, ok := input["amount"].(float64); ok {
+		entry.Amount = v
+	}
+	if v, ok := input["type"].(string); ok {
+		entry.Type = strings.ToLower(v)
+	}
+	if v, ok := input["mode"].(string); ok {
+		entry.Mode = v
+	}
+	if v, ok := input["category"].(string); ok {
+		entry.Category = v
+	}
+	if v, ok := input["notes"].(string); ok {
+		entry.Notes = v
+	}
+	if v, ok := input["merchant"].(string); ok {
+		entry.Merchant = v
+	}
+	if v, ok := input["date"].(string); ok {
+		entry.Date = v
+	}
+	if v, ok := input["time"].(string); ok {
+		entry.Time = v
+	}
+	if v, ok := input["tag"].(string); ok {
+		entry.Tag = v
+	}
+	if v, ok := input["attachment"].(string); ok {
+		entry.Attachment = v
+	}
+
+	if err := database.DB.Save(&entry).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, entry)
+}
+
+func (s *Server) deleteEntry(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Entry{}).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"message": "entry deleted"})
 }
 
 func (s *Server) updateProfile(c *gin.Context) {
