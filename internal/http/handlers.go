@@ -41,11 +41,15 @@ func NewServer(cfg *config.Config) *gin.Engine {
 				strings.HasPrefix(c.Request.URL.Path, "/v1/entries") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/quick-prompts") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/user") ||
+				strings.HasPrefix(c.Request.URL.Path, "/v1/insights") ||
+				strings.HasPrefix(c.Request.URL.Path, "/v1/accounts") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/parse") {
+				log.Printf("[DEBUG] Auth Skip: %s", c.Request.URL.Path)
 				c.Next()
 				return
 			}
 			if c.GetHeader("Authorization") != "Bearer "+cfg.AuthBearer {
+				log.Printf("[ERROR] Auth Fail: %s (Header: %s)", c.Request.URL.Path, c.GetHeader("Authorization"))
 				c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
 				return
 			}
@@ -86,6 +90,15 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/quick-prompts/:id", s.deleteQuickPrompt)
 		authorized.PUT("/user", s.updateProfile)
 		authorized.POST("/upload", s.handleUpload)
+
+		// Accounts
+		authorized.POST("/accounts", s.saveAccount)
+		authorized.GET("/accounts", s.listAccounts)
+		authorized.PUT("/accounts/:id", s.updateAccount)
+		authorized.DELETE("/accounts/:id", s.deleteAccount)
+
+		// Insights
+		authorized.GET("/insights", s.getInsights)
 	}
 
 	r.Static("/uploads", "./uploads")
@@ -615,4 +628,67 @@ func (s *Server) handleUpload(c *gin.Context) {
 	fullURL := fmt.Sprintf("%s://%s/%s", scheme, c.Request.Host, path)
 
 	c.JSON(200, gin.H{"url": fullURL})
+}
+func (s *Server) saveAccount(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	var account models.Account
+	if err := c.BindJSON(&account); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	account.UserID = userID
+	if err := database.DB.Create(&account).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, account)
+}
+
+func (s *Server) listAccounts(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	var accounts []models.Account
+	if err := database.DB.Where("user_id = ?", userID).Find(&accounts).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, accounts)
+}
+
+func (s *Server) updateAccount(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+	var account models.Account
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&account).Error; err != nil {
+		c.JSON(404, gin.H{"error": "account not found"})
+		return
+	}
+	if err := c.BindJSON(&account); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	account.ID = uint(id)
+	account.UserID = userID
+	if err := database.DB.Save(&account).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, account)
+}
+
+func (s *Server) deleteAccount(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Account{}).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"message": "account deleted"})
 }
