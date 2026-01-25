@@ -39,6 +39,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 			if c.Request.URL.Path == "/health" ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/auth/") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/entries") ||
+				strings.HasPrefix(c.Request.URL.Path, "/v1/quick-prompts") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/user") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/parse") {
 				c.Next()
@@ -79,6 +80,10 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)
 		authorized.DELETE("/entries/:id", s.deleteEntry)
+		authorized.GET("/quick-prompts", s.listQuickPrompts)
+		authorized.POST("/quick-prompts", s.saveQuickPrompt)
+		authorized.PUT("/quick-prompts/:id", s.updateQuickPrompt)
+		authorized.DELETE("/quick-prompts/:id", s.deleteQuickPrompt)
 		authorized.PUT("/user", s.updateProfile)
 		authorized.POST("/upload", s.handleUpload)
 	}
@@ -347,6 +352,95 @@ func (s *Server) deleteEntry(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"message": "entry deleted"})
+}
+
+func (s *Server) listQuickPrompts(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+
+	var prompts []models.QuickPrompt
+	if err := database.DB.Where("user_id = ?", userID).Find(&prompts).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Seed default prompts if none exist
+	if len(prompts) == 0 {
+		defaults := []models.QuickPrompt{
+			{UserID: userID, Title: "Morning Coffee", Amount: 150, Mode: "Cash", Category: "Food & Drinks", Icon: "coffee-outline"},
+			{UserID: userID, Title: "Metro Recharge", Amount: 500, Mode: "UPI", Category: "Travel", Icon: "train"},
+			{UserID: userID, Title: "Car Fuel", Amount: 3000, Mode: "Credit Card", Category: "Transport", Icon: "gas-station-outline"},
+		}
+		for _, p := range defaults {
+			database.DB.Create(&p)
+		}
+		// Fetch again to get IDs and updated list
+		database.DB.Where("user_id = ?", userID).Find(&prompts)
+	}
+
+	c.JSON(200, prompts)
+}
+
+func (s *Server) saveQuickPrompt(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+
+	var prompt models.QuickPrompt
+	if err := c.BindJSON(&prompt); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	prompt.UserID = userID
+	if err := database.DB.Create(&prompt).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(201, prompt)
+}
+
+func (s *Server) updateQuickPrompt(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+
+	var prompt models.QuickPrompt
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&prompt).Error; err != nil {
+		c.JSON(404, gin.H{"error": "prompt not found"})
+		return
+	}
+
+	if err := c.BindJSON(&prompt); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	prompt.ID = uint(id)
+	prompt.UserID = userID
+	if err := database.DB.Save(&prompt).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, prompt)
+}
+
+func (s *Server) deleteQuickPrompt(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.QuickPrompt{}).Error; err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"message": "prompt deleted"})
 }
 
 func (s *Server) updateProfile(c *gin.Context) {

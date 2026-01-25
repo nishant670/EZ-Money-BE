@@ -27,7 +27,7 @@ POLICY: Confirm-first. When uncertain about any field, DO NOT guess. Leave it nu
 
 GUARDRAILS:
 - Always include required keys: type, title, amount, currency, mode, category, date, source_text.
-- Generate a short, descriptive "title" (e.g., "Lunch at Shell", "Uber to Airport").
+- Generate a short, descriptive "title" (e.g., "Lunch at Shell", "Uber to Airport"). STRICTLY MAX 15 CHARACTERS. Trim or summarize if needed.
 - Use field name "mode" — never invent alternatives like payment_mode.
 - source_text must echo the exact provided transcript.
 - Use INR by default when currency missing.
