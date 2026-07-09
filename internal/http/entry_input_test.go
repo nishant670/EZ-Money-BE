@@ -19,6 +19,13 @@ func testAccountID(value uint) *uint {
 	return &value
 }
 
+func validEntryInput() entryInput {
+	return entryInput{
+		Title: "Lunch", Amount: testMoney("250"), Type: "expense",
+		Mode: "UPI", Category: "Food", Date: "2026-07-09",
+	}
+}
+
 func TestUpdateEntryInputDistinguishesMissingAndNullAccount(t *testing.T) {
 	var missing updateEntryInput
 	if err := json.Unmarshal([]byte(`{}`), &missing); err != nil {
@@ -38,18 +45,37 @@ func TestUpdateEntryInputDistinguishesMissingAndNullAccount(t *testing.T) {
 }
 
 func TestEntryInputValidation(t *testing.T) {
+	withAccount := validEntryInput()
+	withAccount.AccountID = testAccountID(4)
+	withoutAccount := validEntryInput()
+	invalidAmount := validEntryInput()
+	invalidAmount.Amount = 0
+	invalidType := validEntryInput()
+	invalidType.Type = "transfer"
+	invalidDate := validEntryInput()
+	invalidDate.Date = "09-07-2026"
+	invalidCurrency := validEntryInput()
+	invalidCurrency.Currency = "USD"
+	invalidSource := validEntryInput()
+	invalidSource.Source = "import"
+	invalidMode := validEntryInput()
+	invalidMode.Mode = "Cheque"
+	missingCategory := validEntryInput()
+	missingCategory.Category = ""
 	tests := []struct {
 		name  string
 		input entryInput
 		valid bool
 	}{
-		{"valid with account", entryInput{Amount: testMoney("250"), Type: "expense", Date: "2026-07-09", AccountID: testAccountID(4)}, true},
-		{"valid without account", entryInput{Amount: testMoney("250"), Type: "expense", Date: "2026-07-09"}, true},
-		{"invalid amount", entryInput{Amount: 0, Type: "expense", Date: "2026-07-09", AccountID: testAccountID(4)}, false},
-		{"invalid type", entryInput{Amount: testMoney("250"), Type: "transfer", Date: "2026-07-09", AccountID: testAccountID(4)}, false},
-		{"invalid date", entryInput{Amount: testMoney("250"), Type: "expense", Date: "09-07-2026", AccountID: testAccountID(4)}, false},
-		{"invalid currency", entryInput{Amount: testMoney("250"), Type: "expense", Currency: "USD", Date: "2026-07-09", AccountID: testAccountID(4)}, false},
-		{"invalid source", entryInput{Amount: testMoney("250"), Type: "expense", Source: "import", Date: "2026-07-09", AccountID: testAccountID(4)}, false},
+		{"valid with account", withAccount, true},
+		{"valid without account", withoutAccount, true},
+		{"invalid amount", invalidAmount, false},
+		{"invalid type", invalidType, false},
+		{"invalid date", invalidDate, false},
+		{"invalid currency", invalidCurrency, false},
+		{"invalid source", invalidSource, false},
+		{"invalid mode", invalidMode, false},
+		{"missing category", missingCategory, false},
 	}
 
 	for _, test := range tests {
@@ -66,7 +92,10 @@ func TestEntryInputValidation(t *testing.T) {
 }
 
 func TestEntryInputDefaultsCurrencyAndLinksAccount(t *testing.T) {
-	entry := (entryInput{Amount: testMoney("250"), Type: "Expense", Date: "2026-07-09", AccountID: testAccountID(7)}).toModel(3)
+	input := validEntryInput()
+	input.Type = "Expense"
+	input.AccountID = testAccountID(7)
+	entry := input.toModel(3)
 	if entry.Currency != "INR" {
 		t.Fatalf("expected INR default, got %q", entry.Currency)
 	}

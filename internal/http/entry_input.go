@@ -71,7 +71,7 @@ func (field *optionalAccountID) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func validateEntryValues(amount models.Money, entryType, currency, source, date string) map[string]string {
+func validateEntryValues(amount models.Money, title, entryType, currency, source, mode, category, date string) map[string]string {
 	fields := map[string]string{}
 	if !amount.IsPositive() {
 		fields["amount"] = "must be greater than zero"
@@ -92,11 +92,25 @@ func validateEntryValues(amount models.Money, entryType, currency, source, date 
 	default:
 		fields["source"] = "must be manual, text, or voice"
 	}
+	if strings.TrimSpace(title) == "" {
+		fields["title"] = "is required"
+	}
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "cash", "upi", "credit card", "wallets":
+	default:
+		fields["mode"] = "must be Cash, UPI, Credit Card, or Wallets"
+	}
+	if strings.TrimSpace(category) == "" {
+		fields["category"] = "is required"
+	}
 	return fields
 }
 
 func (input entryInput) validate() map[string]string {
-	return validateEntryValues(input.Amount, input.Type, input.Currency, input.Source, input.Date)
+	return validateEntryValues(
+		input.Amount, input.Title, input.Type, input.Currency,
+		input.Source, input.Mode, input.Category, input.Date,
+	)
 }
 
 func (input entryInput) toModel(userID uint) models.Entry {

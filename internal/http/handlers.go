@@ -217,8 +217,40 @@ func (s *Server) saveEntry(c *gin.Context) {
 		}
 	}
 
+	idempotencyKey, idempotencyFields := parseIdempotencyKey(c.GetHeader("Idempotency-Key"))
+	if len(idempotencyFields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": idempotencyFields})
+		return
+	}
+	if idempotencyKey != "" {
+		var existing models.Entry
+		if err := database.DB.Preload("Account").
+			Where("user_id = ? AND idempotency_key = ?", userID, idempotencyKey).
+			First(&existing).Error; err == nil {
+			c.Header("Idempotency-Replayed", "true")
+			c.JSON(200, existing)
+			return
+		} else if err != gorm.ErrRecordNotFound {
+			c.JSON(500, gin.H{"error": "idempotency_lookup_failed"})
+			return
+		}
+	}
+
 	entry := input.toModel(userID)
+	if idempotencyKey != "" {
+		entry.IdempotencyKey = &idempotencyKey
+	}
 	if err := database.DB.Create(&entry).Error; err != nil {
+		if idempotencyKey != "" {
+			var existing models.Entry
+			if lookupErr := database.DB.Preload("Account").
+				Where("user_id = ? AND idempotency_key = ?", userID, idempotencyKey).
+				First(&existing).Error; lookupErr == nil {
+				c.Header("Idempotency-Replayed", "true")
+				c.JSON(200, existing)
+				return
+			}
+		}
 		c.JSON(500, gin.H{"error": "failed_create_entry"})
 		return
 	}
@@ -235,11 +267,20 @@ func (s *Server) listEntries(c *gin.Context) {
 	}
 	userID := val.(uint)
 
+	page, pageSize, fields := parseEntryPagination(c.Query("page"), c.Query("page_size"))
+	if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_filters", "fields": fields})
+		return
+	}
+
 	var entries []models.Entry
+	query := database.DB.Model(&models.Entry{}).Where("user_id = ?", userID)
 
-	query := database.DB.Preload("Account").Where("user_id = ?", userID).Order("date desc, created_at desc")
-
-	if t := strings.TrimSpace(c.Query("type")); t != "" && t != "All" {
+	if t := strings.TrimSpace(c.Query("type")); t != "" && !strings.EqualFold(t, "all") {
+		if !strings.EqualFold(t, "expense") && !strings.EqualFold(t, "income") {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"type": "must be expense or income"}})
+			return
+		}
 		query = query.Where("LOWER(type) = LOWER(?)", t)
 	}
 
@@ -248,30 +289,68 @@ func (s *Server) listEntries(c *gin.Context) {
 	}
 
 	if mode := strings.TrimSpace(c.Query("mode")); mode != "" {
+		switch strings.ToLower(mode) {
+		case "cash", "upi", "credit card", "wallets":
+		default:
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"mode": "is invalid"}})
+			return
+		}
 		query = query.Where("LOWER(mode) = LOWER(?)", mode)
 	}
 	if accountID := strings.TrimSpace(c.Query("account_id")); accountID != "" {
-		query = query.Where("account_id = ?", accountID)
+		parsed, err := strconv.ParseUint(accountID, 10, 32)
+		if err != nil || parsed == 0 {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"account_id": "must be a positive integer"}})
+			return
+		}
+		query = query.Where("account_id = ?", parsed)
 	}
 
+	var minAmount, maxAmount *models.Money
 	if minStr := c.Query("min_amount"); minStr != "" {
-		if min, err := strconv.ParseFloat(minStr, 64); err == nil {
-			query = query.Where("amount >= ?", min)
+		min, err := models.ParseMoney(minStr)
+		if err != nil {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"min_amount": err.Error()}})
+			return
 		}
+		minAmount = &min
+		query = query.Where("amount >= ?", min)
 	}
 
 	if maxStr := c.Query("max_amount"); maxStr != "" {
-		if max, err := strconv.ParseFloat(maxStr, 64); err == nil {
-			query = query.Where("amount <= ?", max)
+		max, err := models.ParseMoney(maxStr)
+		if err != nil {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"max_amount": err.Error()}})
+			return
 		}
+		maxAmount = &max
+		query = query.Where("amount <= ?", max)
+	}
+	if minAmount != nil && maxAmount != nil && *minAmount > *maxAmount {
+		c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"max_amount": "must be greater than or equal to min_amount"}})
+		return
 	}
 
-	if start := c.Query("start_date"); start != "" {
-		query = query.Where("date >= ?", start)
+	startDate := c.Query("start_date")
+	if startDate != "" {
+		if _, err := timepkg.Parse("2006-01-02", startDate); err != nil {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"start_date": "must use YYYY-MM-DD"}})
+			return
+		}
+		query = query.Where("date >= ?", startDate)
 	}
 
-	if end := c.Query("end_date"); end != "" {
-		query = query.Where("date <= ?", end)
+	endDate := c.Query("end_date")
+	if endDate != "" {
+		if _, err := timepkg.Parse("2006-01-02", endDate); err != nil {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"end_date": "must use YYYY-MM-DD"}})
+			return
+		}
+		query = query.Where("date <= ?", endDate)
+	}
+	if startDate != "" && endDate != "" && startDate > endDate {
+		c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"end_date": "must be on or after start_date"}})
+		return
 	}
 
 	if tag := strings.TrimSpace(c.Query("tag")); tag != "" {
@@ -279,20 +358,39 @@ func (s *Server) listEntries(c *gin.Context) {
 			query = query.Where("tags @> ?", string(tagFilter))
 		}
 	}
+	if search := strings.TrimSpace(c.Query("q")); search != "" {
+		if len(search) > 200 {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"q": "must not exceed 200 characters"}})
+			return
+		}
+		pattern := "%" + search + "%"
+		query = query.Where(
+			"title ILIKE ? OR merchant ILIKE ? OR notes ILIKE ?",
+			pattern, pattern, pattern,
+		)
+	}
 
-	log.Printf("[DEBUG] listEntries Filters | Type: %s | Cat: %s | Mode: %s | Min: %s | Max: %s | Start: %s | End: %s | Tag: %s",
-		c.Query("type"), c.Query("category"), c.Query("mode"),
-		c.Query("min_amount"), c.Query("max_amount"),
-		c.Query("start_date"), c.Query("end_date"), c.Query("tag"),
-	)
-
-	if err := query.Find(&entries).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	listQuery := query.Session(&gorm.Session{})
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_count_entries"})
 		return
 	}
 
-	c.JSON(200, entries)
-	log.Printf("[DEBUG] listEntries: Found %d entries", len(entries))
+	if err := listQuery.Preload("Account").
+		Order("date desc, created_at desc").
+		Limit(pageSize).
+		Offset((page - 1) * pageSize).
+		Find(&entries).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_list_entries"})
+		return
+	}
+
+	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+	c.JSON(200, gin.H{
+		"entries": entries, "page": page, "page_size": pageSize,
+		"total": total, "total_pages": totalPages,
+	})
 }
 
 func (s *Server) getEntry(c *gin.Context) {
@@ -304,7 +402,7 @@ func (s *Server) getEntry(c *gin.Context) {
 	}
 
 	var entry models.Entry
-	if err := database.DB.Preload("Account").Where("id = ? AND user_id = ?", id, userID).First(&entry).Error; err != nil {
+	if err := ownedEntries(database.DB, userID).Preload("Account").Where("id = ?", id).First(&entry).Error; err != nil {
 		c.JSON(404, gin.H{"error": "entry not found"})
 		return
 	}
@@ -321,7 +419,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}
 
 	var entry models.Entry
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&entry).Error; err != nil {
+	if err := ownedEntries(database.DB, userID).Where("id = ?", id).First(&entry).Error; err != nil {
 		c.JSON(404, gin.H{"error": "entry not found"})
 		return
 	}
@@ -332,12 +430,16 @@ func (s *Server) updateEntry(c *gin.Context) {
 		return
 	}
 
-	amount, entryType, currency, source, date := entry.Amount, entry.Type, entry.Currency, entry.Source, entry.Date
+	amount, title, entryType := entry.Amount, entry.Title, entry.Type
+	currency, source, mode, category, date := entry.Currency, entry.Source, entry.Mode, entry.Category, entry.Date
 	if input.Amount != nil {
 		amount = *input.Amount
 	}
 	if input.Type != nil {
 		entryType = *input.Type
+	}
+	if input.Title != nil {
+		title = *input.Title
 	}
 	if input.Currency != nil {
 		currency = *input.Currency
@@ -345,10 +447,16 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.Source != nil {
 		source = *input.Source
 	}
+	if input.Mode != nil {
+		mode = *input.Mode
+	}
+	if input.Category != nil {
+		category = *input.Category
+	}
 	if input.Date != nil {
 		date = *input.Date
 	}
-	if fields := validateEntryValues(amount, entryType, currency, source, date); len(fields) > 0 {
+	if fields := validateEntryValues(amount, title, entryType, currency, source, mode, category, date); len(fields) > 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
@@ -433,6 +541,10 @@ func userOwnsAccount(userID, accountID uint) (bool, error) {
 	return count == 1, err
 }
 
+func ownedEntries(db *gorm.DB, userID uint) *gorm.DB {
+	return db.Where("user_id = ?", userID)
+}
+
 func (s *Server) deleteEntry(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
@@ -441,8 +553,13 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		return
 	}
 
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Entry{}).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	result := ownedEntries(database.DB, userID).Where("id = ?", id).Delete(&models.Entry{})
+	if result.Error != nil {
+		c.JSON(500, gin.H{"error": result.Error.Error()})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(404, gin.H{"error": "entry not found"})
 		return
 	}
 
@@ -613,7 +730,7 @@ func (s *Server) updateProfile(c *gin.Context) {
 func cors(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", cfg.AllowOrigins)
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(204)

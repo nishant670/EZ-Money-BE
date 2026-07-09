@@ -36,6 +36,13 @@ paths:
   /v1/entries:
     post:
       summary: Create a transaction entry
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          description: Reuse the same key when retrying one logical create request.
+          schema:
+            type: string
+            maxLength: 128
       requestBody:
         required: true
         content:
@@ -63,6 +70,25 @@ paths:
       summary: List all transaction entries
       parameters:
         - in: query
+          name: type
+          schema:
+            type: string
+            enum: [expense, income]
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: mode
+          schema:
+            type: string
+            enum: [Cash, UPI, Credit Card, Wallets]
+        - in: query
+          name: q
+          description: Case-insensitive search across title, merchant, and notes.
+          schema:
+            type: string
+        - in: query
           name: tag
           description: Return only entries that include this tag.
           schema:
@@ -72,15 +98,46 @@ paths:
           description: Return only entries linked to this owned account.
           schema:
             type: integer
+        - in: query
+          name: min_amount
+          schema:
+            type: string
+        - in: query
+          name: max_amount
+          schema:
+            type: string
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: page_size
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
       responses:
         "200":
           description: Entries
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/SavedEntry"
+                $ref: "#/components/schemas/EntryPage"
+        "422":
+          description: Invalid filters
         "500":
           description: Database error
   /v1/accounts:
@@ -170,7 +227,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/FinalEntry"
+              $ref: "#/components/schemas/UpdateEntry"
       responses:
         "200":
           description: Updated transaction
@@ -187,8 +244,10 @@ paths:
     delete:
       summary: Delete an owned transaction
       responses:
-        "204":
+        "200":
           description: Deleted
+        "404":
+          description: Not found
 components:
   securitySchemes:
     bearerAuth:
@@ -199,6 +258,47 @@ components:
       $ref: ./schemas/expense_entry.schema.json
     FinalEntry:
       $ref: ./schemas/final_entry.schema.json
+    UpdateEntry:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+        type:
+          type: string
+          enum: [expense, income]
+        amount:
+          oneOf:
+            - type: number
+              exclusiveMinimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        currency:
+          type: string
+          const: INR
+        source:
+          type: string
+          enum: [manual, text, voice]
+        account_id:
+          type: [integer, "null"]
+          minimum: 1
+        mode:
+          type: string
+          enum: [Cash, UPI, Credit Card, Wallets]
+        category:
+          type: string
+        merchant:
+          type: string
+        notes:
+          type: string
+        date:
+          type: string
+          format: date
+        time:
+          type: string
+        tag:
+          type: string
     SavedEntry:
       allOf:
         - $ref: "#/components/schemas/FinalEntry"
@@ -213,6 +313,22 @@ components:
               enum: [manual, text, voice]
             source_text:
               type: string
+    EntryPage:
+      type: object
+      required: [entries, page, page_size, total, total_pages]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/SavedEntry"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
     AccountInput:
       type: object
       required: [name, type]
