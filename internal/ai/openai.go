@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -84,8 +85,9 @@ func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]
 	nowStr := time.Now().In(loc).Format("2006-01-02")
 
 	body := map[string]any{
-		"model":           c.cfg.OpenAILlmModel,
-		"response_format": map[string]string{"type": "json_object"},
+		"model":                 c.cfg.OpenAILlmModel,
+		"response_format":       map[string]string{"type": "json_object"},
+		"max_completion_tokens": c.cfg.OpenAIMaxTokens,
 		"messages": []map[string]string{
 			{"role": "system", "content": promptText},
 			{"role": "user", "content": fmt.Sprintf("Context: Timezone is %s. Today is %s.\nText: %s", tz, nowStr, transcript)},
@@ -112,10 +114,22 @@ func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
+	log.Printf(
+		"openai parse usage: model=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		c.cfg.OpenAILlmModel,
+		out.Usage.PromptTokens,
+		out.Usage.CompletionTokens,
+		out.Usage.TotalTokens,
+	)
 	if len(out.Choices) == 0 {
 		return nil, fmt.Errorf("no choices")
 	}

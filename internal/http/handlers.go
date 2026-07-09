@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	timepkg "time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xeipuuv/gojsonschema"
@@ -133,6 +134,8 @@ func (s *Server) handleParse(c *gin.Context) {
 			transcript = t
 		} else {
 			log.Printf("stt error: %v", err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "transcription_failed"})
+			return
 		}
 	}
 
@@ -141,6 +144,13 @@ func (s *Server) handleParse(c *gin.Context) {
 	}
 	if strings.TrimSpace(transcript) == "" {
 		c.JSON(400, gin.H{"error": "no audio or hint_text provided"})
+		return
+	}
+	if s.cfg.MaxTranscriptChars > 0 && utf8.RuneCountInString(transcript) > s.cfg.MaxTranscriptChars {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+			"error":          "transcript_too_long",
+			"max_characters": s.cfg.MaxTranscriptChars,
+		})
 		return
 	}
 

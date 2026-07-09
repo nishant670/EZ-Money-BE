@@ -9,11 +9,36 @@ Accepts **audio** (or `hint_text`), transcribes with Whisper, parses with an LLM
 go version
 go mod tidy
 cp .env.example .env
-# edit .env and add: OPENAI_API_KEY=sk-...
+# edit .env and add: OPENAI_API_KEY=<your project key>
 go run ./cmd/server
 ```
 
 If `cp .env.example .env` doesn't work, create it manually (contents below).
+
+## Rotate the OpenAI key
+
+The key is read only by the backend from `EZ-Money-BE/.env`.
+
+1. Open `.env` and replace only the value after `OPENAI_API_KEY=`.
+2. Do not add quotes or spaces, and never put the key in the mobile or web app.
+3. If `OPENAI_API_KEY` was previously exported in your shell, run
+   `unset OPENAI_API_KEY`; exported variables take precedence over `.env`.
+4. Restart the backend; environment variables are loaded only at startup.
+5. Confirm that the key's OpenAI project has billing/credits and access to
+   `gpt-4o-mini` and `gpt-4o-mini-transcribe`.
+
+`.env` is ignored by Git. Commit `.env.example`, which contains configuration
+names but no secrets.
+
+## Development cost controls
+
+- Speech-to-text defaults to `gpt-4o-mini-transcribe`.
+- Transaction parsing uses `gpt-4o-mini`; it is a small, low-cost model suited
+  to focused JSON extraction.
+- AI output is capped at 600 tokens with `OPENAI_MAX_OUTPUT_TOKENS`.
+- Input is capped at 1,000 characters with `MAX_TRANSCRIPT_CHARS`.
+- Each parse logs token counts, not prompt content or the API key.
+- The API does not retry failed OpenAI calls, preventing duplicate charges.
 
 ## Test
 ```bash
@@ -22,6 +47,7 @@ curl -X POST http://localhost:8080/v1/parse   -H "Authorization: Bearer test"   
 
 ## FAQ
 - **What does `cp .env.example .env` do?** Copies the template env file so you can edit secrets.
-- **Which LLM model is used?** Defaults to `gpt-4o-mini`; override via `OPENAI_LLM_MODEL` in `.env` if you have access to a different model.
-- **How to put the OpenAI key?** Open `.env` and set `OPENAI_API_KEY=sk-...` (no quotes).
-- **See current key in shell?** `echo $OPENAI_API_KEY` (only works if previously exported in your shell).
+- **Which models are used?** `gpt-4o-mini` parses transactions and
+  `gpt-4o-mini-transcribe` transcribes voice. Both are configurable in `.env`.
+- **How do I replace the OpenAI key?** Replace the `OPENAI_API_KEY` value in
+  `.env`, then restart the backend.
