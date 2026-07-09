@@ -1,6 +1,18 @@
 package http
 
-import "testing"
+import (
+	"testing"
+
+	"finance-parser-go/internal/models"
+)
+
+func testMoney(value string) models.Money {
+	amount, err := models.ParseMoney(value)
+	if err != nil {
+		panic(err)
+	}
+	return amount
+}
 
 func TestEntryInputValidation(t *testing.T) {
 	tests := []struct {
@@ -8,11 +20,13 @@ func TestEntryInputValidation(t *testing.T) {
 		input entryInput
 		valid bool
 	}{
-		{"valid", entryInput{Amount: 250, Type: "expense", Date: "2026-07-09", AccountID: 4}, true},
-		{"missing account", entryInput{Amount: 250, Type: "expense", Date: "2026-07-09"}, false},
+		{"valid", entryInput{Amount: testMoney("250"), Type: "expense", Date: "2026-07-09", AccountID: 4}, true},
+		{"missing account", entryInput{Amount: testMoney("250"), Type: "expense", Date: "2026-07-09"}, false},
 		{"invalid amount", entryInput{Amount: 0, Type: "expense", Date: "2026-07-09", AccountID: 4}, false},
-		{"invalid type", entryInput{Amount: 250, Type: "transfer", Date: "2026-07-09", AccountID: 4}, false},
-		{"invalid date", entryInput{Amount: 250, Type: "expense", Date: "09-07-2026", AccountID: 4}, false},
+		{"invalid type", entryInput{Amount: testMoney("250"), Type: "transfer", Date: "2026-07-09", AccountID: 4}, false},
+		{"invalid date", entryInput{Amount: testMoney("250"), Type: "expense", Date: "09-07-2026", AccountID: 4}, false},
+		{"invalid currency", entryInput{Amount: testMoney("250"), Type: "expense", Currency: "USD", Date: "2026-07-09", AccountID: 4}, false},
+		{"invalid source", entryInput{Amount: testMoney("250"), Type: "expense", Source: "import", Date: "2026-07-09", AccountID: 4}, false},
 	}
 
 	for _, test := range tests {
@@ -29,11 +43,11 @@ func TestEntryInputValidation(t *testing.T) {
 }
 
 func TestEntryInputDefaultsCurrencyAndLinksAccount(t *testing.T) {
-	entry := (entryInput{Amount: 250, Type: "Expense", Date: "2026-07-09", AccountID: 7}).toModel(3)
+	entry := (entryInput{Amount: testMoney("250"), Type: "Expense", Date: "2026-07-09", AccountID: 7}).toModel(3)
 	if entry.Currency != "INR" {
 		t.Fatalf("expected INR default, got %q", entry.Currency)
 	}
-	if entry.AccountID == nil || *entry.AccountID != 7 {
+	if entry.AccountID != 7 {
 		t.Fatalf("expected account 7, got %v", entry.AccountID)
 	}
 	if entry.UserID != 3 {

@@ -23,6 +23,11 @@ type OpenAIClient struct {
 	http *http.Client
 }
 
+type Parser interface {
+	Transcribe(ctx context.Context, filename string, audio []byte) (string, error)
+	ParseText(ctx context.Context, transcript, tz string) ([]byte, error)
+}
+
 func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
 	return &OpenAIClient{cfg: cfg, http: &http.Client{}}
 }

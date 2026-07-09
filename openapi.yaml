@@ -1,8 +1,8 @@
 
 openapi: 3.1.0
 info:
-  title: Finance Parser API
-  version: 1.0.0
+  title: FINNRI MVP API
+  version: 1.1.0
 servers:
   - url: http://localhost:8080
 paths:
@@ -51,6 +51,12 @@ paths:
                 $ref: "#/components/schemas/SavedEntry"
         "400":
           description: Invalid payload
+        "422":
+          description: Field validation or account ownership failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
         "500":
           description: Database error
     get:
@@ -96,7 +102,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/Account"
+              $ref: "#/components/schemas/AccountInput"
       responses:
         "201":
           description: Account created
@@ -104,7 +110,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Account"
+  /v1/entries/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    get:
+      summary: Get an owned transaction
+      responses:
+        "200":
+          description: Transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedEntry"
+        "404":
+          description: Not found
+    put:
+      summary: Update an owned transaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinalEntry"
+      responses:
+        "200":
+          description: Updated transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedEntry"
+        "422":
+          description: Field validation or account ownership failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+    delete:
+      summary: Delete an owned transaction
+      responses:
+        "204":
+          description: Deleted
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
   schemas:
     ExpenseOrIncomeEntry:
       $ref: ./schemas/expense_entry.schema.json
@@ -119,6 +173,25 @@ components:
               type: integer
             account:
               $ref: "#/components/schemas/Account"
+            source:
+              type: string
+              enum: [manual, text, voice]
+            source_text:
+              type: string
+    AccountInput:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        provider:
+          type: string
+        identifier:
+          type: string
+        is_default:
+          type: boolean
     Account:
       type: object
       required: [id, name, type]
@@ -135,3 +208,15 @@ components:
           type: string
         is_default:
           type: boolean
+    ValidationError:
+      type: object
+      required: [error, fields]
+      properties:
+        error:
+          const: invalid_entry
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+security:
+  - bearerAuth: []

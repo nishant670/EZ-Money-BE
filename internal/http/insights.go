@@ -120,30 +120,31 @@ func (s *Server) getInsights(c *gin.Context) {
 	dailySpend := make(map[string]float64)
 
 	for _, e := range entries {
+		amount := e.Amount.Float64()
 		if e.Date >= thisMonthStart {
 			if strings.ToLower(e.Type) == "income" {
-				thisMonthIncome += e.Amount
+				thisMonthIncome += amount
 			} else if strings.ToLower(e.Type) == "expense" {
-				thisMonthSpent += e.Amount
-				categorySpendThis[e.Category] += e.Amount
+				thisMonthSpent += amount
+				categorySpendThis[e.Category] += amount
 				if e.Merchant != "" {
 					if _, ok := merchantSpend[e.Merchant]; !ok {
 						merchantSpend[e.Merchant] = &MerchantInfo{Merchant: e.Merchant}
 					}
-					merchantSpend[e.Merchant].Amount += e.Amount
+					merchantSpend[e.Merchant].Amount += amount
 					merchantSpend[e.Merchant].TransactionCount++
 				}
 				accountLabel := e.Mode
 				if e.Account != nil {
 					accountLabel = e.Account.Name
 				}
-				accountSpend[accountLabel] += e.Amount
-				dailySpend[e.Date] += e.Amount
+				accountSpend[accountLabel] += amount
+				dailySpend[e.Date] += amount
 			}
 		} else if e.Date >= lastMonthStartStr && e.Date <= lastMonthEndStr {
 			if strings.ToLower(e.Type) == "expense" {
-				lastMonthSpent += e.Amount
-				categorySpendLast[e.Category] += e.Amount
+				lastMonthSpent += amount
+				categorySpendLast[e.Category] += amount
 			}
 		}
 	}
@@ -241,8 +242,8 @@ func (s *Server) getInsights(c *gin.Context) {
 		if strings.EqualFold(acc.Type, "credit") && acc.CreditLimit > 0 {
 			used := 0.0 // Needs careful logic to track specific card spend. For now using mode match.
 			for _, e := range entries {
-				if e.Date >= thisMonthStart && e.AccountID != nil && *e.AccountID == acc.ID {
-					used += e.Amount
+				if e.Date >= thisMonthStart && e.AccountID == acc.ID {
+					used += e.Amount.Float64()
 				}
 			}
 			utilization := (used / acc.CreditLimit) * 100
@@ -264,10 +265,10 @@ func (s *Server) getInsights(c *gin.Context) {
 	for _, e := range entries {
 		if e.Date >= thisMonthStart {
 			if strings.Contains(strings.ToLower(e.Tag), "emi") {
-				emiTotal += e.Amount
+				emiTotal += e.Amount.Float64()
 			}
 			if strings.Contains(strings.ToLower(e.Tag), "lent") {
-				lentTotal += e.Amount
+				lentTotal += e.Amount.Float64()
 				lentCount++
 			}
 		}
@@ -310,17 +311,5 @@ func (s *Server) getInsights(c *gin.Context) {
 			Title: "Uncategorized Transactions",
 		})
 	}
-	missingAccount := 0
-	for _, e := range entries {
-		if e.Date >= thisMonthStart && e.AccountID == nil {
-			missingAccount++
-		}
-	}
-	if missingAccount > 0 {
-		res.ReviewItems = append(res.ReviewItems, ReviewItem{
-			Type: "missing_account", Count: missingAccount, Title: "Transactions Missing an Account",
-		})
-	}
-
 	c.JSON(http.StatusOK, res)
 }

@@ -11,8 +11,9 @@ type Entry struct {
 	ID          uint        `gorm:"primaryKey" json:"id"`
 	Title       string      `json:"title"`
 	Type        string      `json:"type"`
-	Amount      float64     `json:"amount"`
-	Currency    string      `json:"currency"`
+	Amount      Money       `gorm:"type:numeric(19,2);not null" json:"amount"`
+	Currency    string      `gorm:"type:char(3);not null;default:INR" json:"currency"`
+	Source      string      `gorm:"type:varchar(16);not null;default:manual" json:"source"`
 	Mode        string      `json:"mode"`
 	CardNetwork string      `json:"card_network"`
 	Category    string      `json:"category"`
@@ -25,7 +26,7 @@ type Entry struct {
 	Time        string      `json:"time"`
 	SourceText  string      `json:"source_text"`
 	Attachment  string      `json:"attachment"`
-	AccountID   *uint       `gorm:"index" json:"account_id"`
+	AccountID   uint        `gorm:"not null;index" json:"account_id"`
 	Account     *Account    `json:"account,omitempty" gorm:"foreignKey:AccountID"`
 
 	UserID uint `json:"user_id"`

@@ -10,8 +10,9 @@ import (
 type entryInput struct {
 	Title       string             `json:"title"`
 	Type        string             `json:"type"`
-	Amount      float64            `json:"amount"`
+	Amount      models.Money       `json:"amount"`
 	Currency    string             `json:"currency"`
+	Source      string             `json:"source"`
 	Mode        string             `json:"mode"`
 	CardNetwork string             `json:"card_network"`
 	Category    string             `json:"category"`
@@ -30,8 +31,9 @@ type entryInput struct {
 type updateEntryInput struct {
 	Title       *string             `json:"title"`
 	Type        *string             `json:"type"`
-	Amount      *float64            `json:"amount"`
+	Amount      *models.Money       `json:"amount"`
 	Currency    *string             `json:"currency"`
+	Source      *string             `json:"source"`
 	Mode        *string             `json:"mode"`
 	CardNetwork *string             `json:"card_network"`
 	Category    *string             `json:"category"`
@@ -47,9 +49,9 @@ type updateEntryInput struct {
 	AccountID   *uint               `json:"account_id"`
 }
 
-func validateEntryValues(amount float64, entryType, date string, accountID uint) map[string]string {
+func validateEntryValues(amount models.Money, entryType, currency, source, date string, accountID uint) map[string]string {
 	fields := map[string]string{}
-	if amount <= 0 {
+	if !amount.IsPositive() {
 		fields["amount"] = "must be greater than zero"
 	}
 	switch strings.ToLower(entryType) {
@@ -63,11 +65,19 @@ func validateEntryValues(amount float64, entryType, date string, accountID uint)
 	if accountID == 0 {
 		fields["account_id"] = "is required"
 	}
+	if normalized := strings.ToUpper(strings.TrimSpace(currency)); normalized != "" && normalized != "INR" {
+		fields["currency"] = "must be INR"
+	}
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "", "manual", "text", "voice":
+	default:
+		fields["source"] = "must be manual, text, or voice"
+	}
 	return fields
 }
 
 func (input entryInput) validate() map[string]string {
-	return validateEntryValues(input.Amount, input.Type, input.Date, input.AccountID)
+	return validateEntryValues(input.Amount, input.Type, input.Currency, input.Source, input.Date, input.AccountID)
 }
 
 func (input entryInput) toModel(userID uint) models.Entry {
@@ -75,13 +85,16 @@ func (input entryInput) toModel(userID uint) models.Entry {
 	if currency == "" {
 		currency = "INR"
 	}
-	accountID := input.AccountID
+	source := strings.ToLower(strings.TrimSpace(input.Source))
+	if source == "" {
+		source = "manual"
+	}
 	return models.Entry{
 		Title: input.Title, Type: strings.ToLower(input.Type), Amount: input.Amount,
-		Currency: currency, Mode: input.Mode, CardNetwork: input.CardNetwork,
+		Currency: currency, Source: source, Mode: input.Mode, CardNetwork: input.CardNetwork,
 		Category: input.Category, Merchant: input.Merchant, PurposeType: input.PurposeType,
 		Tag: input.Tag, Tags: input.Tags, Notes: input.Notes, Date: input.Date,
 		Time: input.Time, SourceText: input.SourceText, Attachment: input.Attachment,
-		AccountID: &accountID, UserID: userID,
+		AccountID: input.AccountID, UserID: userID,
 	}
 }

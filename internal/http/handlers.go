@@ -25,7 +25,7 @@ import (
 type Server struct {
 	cfg       *config.Config
 	validator *gojsonschema.Schema
-	openai    *ai.OpenAIClient
+	parser    ai.Parser
 }
 
 func NewServer(cfg *config.Config) *gin.Engine {
@@ -65,7 +65,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 	openai := ai.NewOpenAIClient(cfg)
 
-	s := &Server{cfg: cfg, validator: schema, openai: openai}
+	s := &Server{cfg: cfg, validator: schema, parser: openai}
 	// Auth
 	r.POST("/v1/auth/guest", s.authGuest)
 	r.POST("/v1/auth/identify", s.authIdentify)
@@ -129,7 +129,7 @@ func (s *Server) handleParse(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "failed to read file"})
 			return
 		}
-		if t, err := s.openai.Transcribe(ctx, header.Filename, buf.Bytes()); err == nil {
+		if t, err := s.parser.Transcribe(ctx, header.Filename, buf.Bytes()); err == nil {
 			transcript = t
 		} else {
 			log.Printf("stt error: %v", err)
@@ -144,7 +144,7 @@ func (s *Server) handleParse(c *gin.Context) {
 		return
 	}
 
-	parsed, err := s.openai.ParseText(ctx, transcript, tz)
+	parsed, err := s.parser.ParseText(ctx, transcript, tz)
 	if err != nil {
 		c.JSON(422, gin.H{"error": "could_not_parse", "transcript": transcript})
 		return
@@ -156,12 +156,11 @@ func (s *Server) handleParse(c *gin.Context) {
 		return
 	}
 
-	if s.ensureDate(parsedObj, transcript, tz) {
-		parsed, err = json.Marshal(parsedObj)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "serialization_failed"})
-			return
-		}
+	normalizeParsedDraft(parsedObj, transcript)
+	parsed, err = json.Marshal(parsedObj)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "serialization_failed"})
+		return
 	}
 
 	res, err := s.validator.Validate(gojsonschema.NewBytesLoader(parsed))
@@ -177,7 +176,6 @@ func (s *Server) handleParse(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "schema_invalid", "details": d, "transcript": transcript})
 		return
 	}
-	fmt.Print("parsedData", parsed)
 	c.Data(200, "application/json", parsed)
 }
 
@@ -321,16 +319,19 @@ func (s *Server) updateEntry(c *gin.Context) {
 		return
 	}
 
-	amount, entryType, date := entry.Amount, entry.Type, entry.Date
-	accountID := uint(0)
-	if entry.AccountID != nil {
-		accountID = *entry.AccountID
-	}
+	amount, entryType, currency, source, date := entry.Amount, entry.Type, entry.Currency, entry.Source, entry.Date
+	accountID := entry.AccountID
 	if input.Amount != nil {
 		amount = *input.Amount
 	}
 	if input.Type != nil {
 		entryType = *input.Type
+	}
+	if input.Currency != nil {
+		currency = *input.Currency
+	}
+	if input.Source != nil {
+		source = *input.Source
 	}
 	if input.Date != nil {
 		date = *input.Date
@@ -338,7 +339,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.AccountID != nil {
 		accountID = *input.AccountID
 	}
-	if fields := validateEntryValues(amount, entryType, date, accountID); len(fields) > 0 {
+	if fields := validateEntryValues(amount, entryType, currency, source, date, accountID); len(fields) > 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
@@ -362,6 +363,9 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}
 	if input.Currency != nil {
 		entry.Currency = strings.ToUpper(strings.TrimSpace(*input.Currency))
+	}
+	if input.Source != nil {
+		entry.Source = strings.ToLower(strings.TrimSpace(*input.Source))
 	}
 	if input.Mode != nil {
 		entry.Mode = *input.Mode
@@ -400,7 +404,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 		entry.Attachment = *input.Attachment
 	}
 	if input.AccountID != nil {
-		entry.AccountID = input.AccountID
+		entry.AccountID = *input.AccountID
 	}
 
 	if err := database.DB.Save(&entry).Error; err != nil {
@@ -616,43 +620,6 @@ func logging() gin.HandlerFunc {
 		c.Next()
 		log.Printf("%s %s %d %s", c.Request.Method, c.Request.URL.Path, c.Writer.Status(), timepkg.Since(start))
 	}
-}
-
-func (s *Server) ensureDate(entry map[string]any, transcript, tz string) bool {
-	loc := loadLocationOrIndia(tz, s.cfg.TZDefault)
-	now := timepkg.Now().In(loc)
-
-	var desired string
-
-	dateStr, _ := entry["date"].(string)
-	dateStr = strings.TrimSpace(dateStr)
-	_, parsedErr := timepkg.Parse("2006-01-02", dateStr)
-	needsDateConfirmation := needsDateConfirmation(entry)
-
-	switch {
-	case needsDateConfirmation:
-		desired = now.Format("2006-01-02")
-	case dateStr == "" || parsedErr != nil:
-		desired = now.Format("2006-01-02")
-	}
-
-	if desired == "" {
-		return false
-	}
-
-	entry["date"] = desired
-	return true
-}
-
-func needsDateConfirmation(entry map[string]any) bool {
-	raw, ok := entry["needs_confirmation"].(map[string]any)
-	if !ok {
-		return false
-	}
-	if val, ok := raw["date"].(bool); ok {
-		return val
-	}
-	return false
 }
 
 func loadLocationOrIndia(requested, fallback string) *timepkg.Location {
