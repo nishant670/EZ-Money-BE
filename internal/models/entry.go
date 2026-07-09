@@ -25,6 +25,8 @@ type Entry struct {
 	Time        string      `json:"time"`
 	SourceText  string      `json:"source_text"`
 	Attachment  string      `json:"attachment"`
+	AccountID   *uint       `gorm:"index" json:"account_id"`
+	Account     *Account    `json:"account,omitempty" gorm:"foreignKey:AccountID"`
 
 	UserID uint `json:"user_id"`
 	User   User `json:"-" gorm:"foreignKey:UserID"`

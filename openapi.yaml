@@ -41,14 +41,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+              $ref: "#/components/schemas/FinalEntry"
       responses:
         "201":
           description: Entry created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+                $ref: "#/components/schemas/SavedEntry"
         "400":
           description: Invalid payload
         "500":
@@ -61,6 +61,11 @@ paths:
           description: Return only entries that include this tag.
           schema:
             type: string
+        - in: query
+          name: account_id
+          description: Return only entries linked to this owned account.
+          schema:
+            type: integer
       responses:
         "200":
           description: Entries
@@ -69,10 +74,64 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+                  $ref: "#/components/schemas/SavedEntry"
         "500":
           description: Database error
+  /v1/accounts:
+    get:
+      summary: List accounts owned by the authenticated user
+      responses:
+        "200":
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+    post:
+      summary: Create an account/payment source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Account"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
 components:
   schemas:
     ExpenseOrIncomeEntry:
       $ref: ./schemas/expense_entry.schema.json
+    FinalEntry:
+      $ref: ./schemas/final_entry.schema.json
+    SavedEntry:
+      allOf:
+        - $ref: "#/components/schemas/FinalEntry"
+        - type: object
+          properties:
+            id:
+              type: integer
+            account:
+              $ref: "#/components/schemas/Account"
+    Account:
+      type: object
+      required: [id, name, type]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+        provider:
+          type: string
+        identifier:
+          type: string
+        is_default:
+          type: boolean

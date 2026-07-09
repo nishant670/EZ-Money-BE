@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FinalEntry",
   "type": "object",
-  "required": ["type", "amount", "currency", "mode", "category", "date", "source_text"],
+  "required": ["type", "amount", "currency", "mode", "category", "date", "account_id"],
   "properties": {
     "type": { "type": "string", "enum": ["expense", "income"] },
     "amount": { "type": "number", "minimum": 0 },
     "currency": { "type": "string" },
+    "account_id": { "type": "integer", "minimum": 1 },
     "mode": { "type": "string", "enum": ["Cash", "UPI", "Credit Card", "Wallets"] },
     "card_network": { "type": ["string", "null"], "enum": ["Visa", "Mastercard", "Amex", "Rupay", null] },
     "account_hint": { "type": ["string", "null"] },

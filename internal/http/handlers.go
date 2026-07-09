@@ -189,19 +189,29 @@ func (s *Server) saveEntry(c *gin.Context) {
 	}
 	userID := val.(uint)
 
-	var entry models.Entry
-
-	if err := c.BindJSON(&entry); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	var input entryInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid_json"})
+		return
+	}
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
+		return
+	}
+	if ok, err := userOwnsAccount(userID, input.AccountID); err != nil {
+		c.JSON(500, gin.H{"error": "account_lookup_failed"})
+		return
+	} else if !ok {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
 		return
 	}
 
-	entry.UserID = userID
-
+	entry := input.toModel(userID)
 	if err := database.DB.Create(&entry).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": "failed_create_entry"})
 		return
 	}
+	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 
 	c.JSON(201, entry)
 }
@@ -216,7 +226,7 @@ func (s *Server) listEntries(c *gin.Context) {
 
 	var entries []models.Entry
 
-	query := database.DB.Where("user_id = ?", userID).Order("date desc, created_at desc")
+	query := database.DB.Preload("Account").Where("user_id = ?", userID).Order("date desc, created_at desc")
 
 	if t := strings.TrimSpace(c.Query("type")); t != "" && t != "All" {
 		query = query.Where("LOWER(type) = LOWER(?)", t)
@@ -228,6 +238,9 @@ func (s *Server) listEntries(c *gin.Context) {
 
 	if mode := strings.TrimSpace(c.Query("mode")); mode != "" {
 		query = query.Where("LOWER(mode) = LOWER(?)", mode)
+	}
+	if accountID := strings.TrimSpace(c.Query("account_id")); accountID != "" {
+		query = query.Where("account_id = ?", accountID)
 	}
 
 	if minStr := c.Query("min_amount"); minStr != "" {
@@ -280,7 +293,7 @@ func (s *Server) getEntry(c *gin.Context) {
 	}
 
 	var entry models.Entry
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&entry).Error; err != nil {
+	if err := database.DB.Preload("Account").Where("id = ? AND user_id = ?", id, userID).First(&entry).Error; err != nil {
 		c.JSON(404, gin.H{"error": "entry not found"})
 		return
 	}
@@ -302,53 +315,109 @@ func (s *Server) updateEntry(c *gin.Context) {
 		return
 	}
 
-	var input map[string]interface{}
+	var input updateEntryInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(400, gin.H{"error": "invalid_json"})
 		return
 	}
 
-	// Update fields if present in input
-	if v, ok := input["title"].(string); ok {
-		entry.Title = v
+	amount, entryType, date := entry.Amount, entry.Type, entry.Date
+	accountID := uint(0)
+	if entry.AccountID != nil {
+		accountID = *entry.AccountID
 	}
-	if v, ok := input["amount"].(float64); ok {
-		entry.Amount = v
+	if input.Amount != nil {
+		amount = *input.Amount
 	}
-	if v, ok := input["type"].(string); ok {
-		entry.Type = strings.ToLower(v)
+	if input.Type != nil {
+		entryType = *input.Type
 	}
-	if v, ok := input["mode"].(string); ok {
-		entry.Mode = v
+	if input.Date != nil {
+		date = *input.Date
 	}
-	if v, ok := input["category"].(string); ok {
-		entry.Category = v
+	if input.AccountID != nil {
+		accountID = *input.AccountID
 	}
-	if v, ok := input["notes"].(string); ok {
-		entry.Notes = v
+	if fields := validateEntryValues(amount, entryType, date, accountID); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
+		return
 	}
-	if v, ok := input["merchant"].(string); ok {
-		entry.Merchant = v
+	if input.AccountID != nil {
+		if ok, err := userOwnsAccount(userID, accountID); err != nil {
+			c.JSON(500, gin.H{"error": "account_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+			return
+		}
 	}
-	if v, ok := input["date"].(string); ok {
-		entry.Date = v
+	if input.Title != nil {
+		entry.Title = *input.Title
 	}
-	if v, ok := input["time"].(string); ok {
-		entry.Time = v
+	if input.Amount != nil {
+		entry.Amount = *input.Amount
 	}
-	if v, ok := input["tag"].(string); ok {
-		entry.Tag = v
+	if input.Type != nil {
+		entry.Type = strings.ToLower(*input.Type)
 	}
-	if v, ok := input["attachment"].(string); ok {
-		entry.Attachment = v
+	if input.Currency != nil {
+		entry.Currency = strings.ToUpper(strings.TrimSpace(*input.Currency))
+	}
+	if input.Mode != nil {
+		entry.Mode = *input.Mode
+	}
+	if input.CardNetwork != nil {
+		entry.CardNetwork = *input.CardNetwork
+	}
+	if input.Category != nil {
+		entry.Category = *input.Category
+	}
+	if input.Notes != nil {
+		entry.Notes = *input.Notes
+	}
+	if input.Merchant != nil {
+		entry.Merchant = *input.Merchant
+	}
+	if input.PurposeType != nil {
+		entry.PurposeType = *input.PurposeType
+	}
+	if input.Date != nil {
+		entry.Date = *input.Date
+	}
+	if input.Time != nil {
+		entry.Time = *input.Time
+	}
+	if input.Tag != nil {
+		entry.Tag = *input.Tag
+	}
+	if input.Tags != nil {
+		entry.Tags = *input.Tags
+	}
+	if input.SourceText != nil {
+		entry.SourceText = *input.SourceText
+	}
+	if input.Attachment != nil {
+		entry.Attachment = *input.Attachment
+	}
+	if input.AccountID != nil {
+		entry.AccountID = input.AccountID
 	}
 
 	if err := database.DB.Save(&entry).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": "failed_update_entry"})
 		return
 	}
+	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 
 	c.JSON(200, entry)
+}
+
+func userOwnsAccount(userID, accountID uint) (bool, error) {
+	var count int64
+	err := database.DB.Model(&models.Account{}).
+		Where("id = ? AND user_id = ?", accountID, userID).
+		Count(&count).Error
+	return count == 1, err
 }
 
 func (s *Server) deleteEntry(c *gin.Context) {
@@ -637,6 +706,20 @@ func (s *Server) saveAccount(c *gin.Context) {
 		return
 	}
 	account.UserID = userID
+	var accountCount int64
+	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&accountCount).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_count_accounts"})
+		return
+	}
+	if accountCount == 0 {
+		account.IsDefault = true
+	}
+	if account.IsDefault {
+		if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Update("is_default", false).Error; err != nil {
+			c.JSON(500, gin.H{"error": "failed_update_default_account"})
+			return
+		}
+	}
 	if err := database.DB.Create(&account).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -672,6 +755,14 @@ func (s *Server) updateAccount(c *gin.Context) {
 	}
 	account.ID = uint(id)
 	account.UserID = userID
+	if account.IsDefault {
+		if err := database.DB.Model(&models.Account{}).
+			Where("user_id = ? AND id <> ?", userID, id).
+			Update("is_default", false).Error; err != nil {
+			c.JSON(500, gin.H{"error": "failed_update_default_account"})
+			return
+		}
+	}
 	if err := database.DB.Save(&account).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -686,9 +777,29 @@ func (s *Server) deleteAccount(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Account{}).Error; err != nil {
+	var account models.Account
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&account).Error; err != nil {
+		c.JSON(404, gin.H{"error": "account not found"})
+		return
+	}
+	var entryCount int64
+	if err := database.DB.Model(&models.Entry{}).Where("account_id = ? AND user_id = ?", id, userID).Count(&entryCount).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_check_account_usage"})
+		return
+	}
+	if entryCount > 0 {
+		c.JSON(409, gin.H{"error": "account_in_use", "message": "Move or delete linked transactions before deleting this account."})
+		return
+	}
+	if err := database.DB.Delete(&account).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
+	}
+	if account.IsDefault {
+		var replacement models.Account
+		if err := database.DB.Where("user_id = ?", userID).Order("created_at asc").First(&replacement).Error; err == nil {
+			_ = database.DB.Model(&replacement).Update("is_default", true).Error
+		}
 	}
 	c.JSON(200, gin.H{"message": "account deleted"})
 }

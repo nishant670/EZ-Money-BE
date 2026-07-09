@@ -18,7 +18,7 @@ func main() {
 	fmt.Println("DB_NAME:", os.Getenv("DB_NAME"))
 	fmt.Println("DB_USER:", os.Getenv("DB_USER"))
 	database.Connect()
-	database.DB.AutoMigrate(&models.Entry{}, &models.User{}, &models.QuickPrompt{}, &models.Account{})
+	database.DB.AutoMigrate(&models.User{}, &models.Account{}, &models.Entry{}, &models.QuickPrompt{})
 
 	cfg := config.Load()
 	r := httpserver.NewServer(cfg)

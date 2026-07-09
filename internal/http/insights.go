@@ -96,7 +96,7 @@ func (s *Server) getInsights(c *gin.Context) {
 	lastMonthEndStr := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).AddDate(0, 0, -1).Format("2006-01-02")
 
 	var entries []models.Entry
-	database.DB.Where("user_id = ? AND date >= ?", userId, lastMonthStartStr).Find(&entries)
+	database.DB.Preload("Account").Where("user_id = ? AND date >= ?", userId, lastMonthStartStr).Find(&entries)
 
 	var accounts []models.Account
 	database.DB.Where("user_id = ?", userId).Find(&accounts)
@@ -133,7 +133,11 @@ func (s *Server) getInsights(c *gin.Context) {
 					merchantSpend[e.Merchant].Amount += e.Amount
 					merchantSpend[e.Merchant].TransactionCount++
 				}
-				accountSpend[e.Mode] += e.Amount
+				accountLabel := e.Mode
+				if e.Account != nil {
+					accountLabel = e.Account.Name
+				}
+				accountSpend[accountLabel] += e.Amount
 				dailySpend[e.Date] += e.Amount
 			}
 		} else if e.Date >= lastMonthStartStr && e.Date <= lastMonthEndStr {
@@ -237,7 +241,7 @@ func (s *Server) getInsights(c *gin.Context) {
 		if strings.EqualFold(acc.Type, "credit") && acc.CreditLimit > 0 {
 			used := 0.0 // Needs careful logic to track specific card spend. For now using mode match.
 			for _, e := range entries {
-				if e.Date >= thisMonthStart && strings.EqualFold(e.Mode, acc.Name) {
+				if e.Date >= thisMonthStart && e.AccountID != nil && *e.AccountID == acc.ID {
 					used += e.Amount
 				}
 			}
@@ -304,6 +308,17 @@ func (s *Server) getInsights(c *gin.Context) {
 			Type:  "uncategorized",
 			Count: uncategorized,
 			Title: "Uncategorized Transactions",
+		})
+	}
+	missingAccount := 0
+	for _, e := range entries {
+		if e.Date >= thisMonthStart && e.AccountID == nil {
+			missingAccount++
+		}
+	}
+	if missingAccount > 0 {
+		res.ReviewItems = append(res.ReviewItems, ReviewItem{
+			Type: "missing_account", Count: missingAccount, Title: "Transactions Missing an Account",
 		})
 	}
 
