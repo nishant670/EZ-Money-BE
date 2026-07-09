@@ -242,7 +242,7 @@ func (s *Server) getInsights(c *gin.Context) {
 		if strings.EqualFold(acc.Type, "credit") && acc.CreditLimit > 0 {
 			used := 0.0 // Needs careful logic to track specific card spend. For now using mode match.
 			for _, e := range entries {
-				if e.Date >= thisMonthStart && e.AccountID == acc.ID {
+				if e.Date >= thisMonthStart && e.AccountID != nil && *e.AccountID == acc.ID {
 					used += e.Amount.Float64()
 				}
 			}

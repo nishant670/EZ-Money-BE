@@ -1,6 +1,8 @@
 package http
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -25,7 +27,7 @@ type entryInput struct {
 	Time        string             `json:"time"`
 	SourceText  string             `json:"source_text"`
 	Attachment  string             `json:"attachment"`
-	AccountID   uint               `json:"account_id"`
+	AccountID   *uint              `json:"account_id"`
 }
 
 type updateEntryInput struct {
@@ -46,10 +48,30 @@ type updateEntryInput struct {
 	Time        *string             `json:"time"`
 	SourceText  *string             `json:"source_text"`
 	Attachment  *string             `json:"attachment"`
-	AccountID   *uint               `json:"account_id"`
+	AccountID   optionalAccountID   `json:"account_id"`
 }
 
-func validateEntryValues(amount models.Money, entryType, currency, source, date string, accountID uint) map[string]string {
+type optionalAccountID struct {
+	Set   bool
+	Value *uint
+}
+
+func (field *optionalAccountID) UnmarshalJSON(data []byte) error {
+	field.Set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		field.Value = nil
+		return nil
+	}
+
+	var value uint
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	field.Value = &value
+	return nil
+}
+
+func validateEntryValues(amount models.Money, entryType, currency, source, date string) map[string]string {
 	fields := map[string]string{}
 	if !amount.IsPositive() {
 		fields["amount"] = "must be greater than zero"
@@ -61,9 +83,6 @@ func validateEntryValues(amount models.Money, entryType, currency, source, date 
 	}
 	if _, err := time.Parse("2006-01-02", date); err != nil {
 		fields["date"] = "must use YYYY-MM-DD"
-	}
-	if accountID == 0 {
-		fields["account_id"] = "is required"
 	}
 	if normalized := strings.ToUpper(strings.TrimSpace(currency)); normalized != "" && normalized != "INR" {
 		fields["currency"] = "must be INR"
@@ -77,7 +96,7 @@ func validateEntryValues(amount models.Money, entryType, currency, source, date 
 }
 
 func (input entryInput) validate() map[string]string {
-	return validateEntryValues(input.Amount, input.Type, input.Currency, input.Source, input.Date, input.AccountID)
+	return validateEntryValues(input.Amount, input.Type, input.Currency, input.Source, input.Date)
 }
 
 func (input entryInput) toModel(userID uint) models.Entry {

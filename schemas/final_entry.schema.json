@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FinalEntry",
   "type": "object",
-  "required": ["type", "amount", "currency", "mode", "category", "date", "account_id"],
+  "required": ["type", "amount", "currency", "mode", "category", "date"],
   "properties": {
     "type": { "type": "string", "enum": ["expense", "income"] },
     "amount": {
@@ -13,7 +13,7 @@
     },
     "currency": { "type": "string", "const": "INR" },
     "source": { "type": "string", "enum": ["manual", "text", "voice"], "default": "manual" },
-    "account_id": { "type": "integer", "minimum": 1 },
+    "account_id": { "type": ["integer", "null"], "minimum": 1 },
     "mode": { "type": "string", "enum": ["Cash", "UPI", "Credit Card", "Wallets"] },
     "card_network": { "type": ["string", "null"], "enum": ["Visa", "Mastercard", "Amex", "Rupay", null] },
     "account_hint": { "type": ["string", "null"] },

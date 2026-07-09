@@ -206,12 +206,14 @@ func (s *Server) saveEntry(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
-	if ok, err := userOwnsAccount(userID, input.AccountID); err != nil {
-		c.JSON(500, gin.H{"error": "account_lookup_failed"})
-		return
-	} else if !ok {
-		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
-		return
+	if input.AccountID != nil {
+		if ok, err := userOwnsAccount(userID, *input.AccountID); err != nil {
+			c.JSON(500, gin.H{"error": "account_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+			return
+		}
 	}
 
 	entry := input.toModel(userID)
@@ -330,7 +332,6 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}
 
 	amount, entryType, currency, source, date := entry.Amount, entry.Type, entry.Currency, entry.Source, entry.Date
-	accountID := entry.AccountID
 	if input.Amount != nil {
 		amount = *input.Amount
 	}
@@ -346,15 +347,12 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.Date != nil {
 		date = *input.Date
 	}
-	if input.AccountID != nil {
-		accountID = *input.AccountID
-	}
-	if fields := validateEntryValues(amount, entryType, currency, source, date, accountID); len(fields) > 0 {
+	if fields := validateEntryValues(amount, entryType, currency, source, date); len(fields) > 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
-	if input.AccountID != nil {
-		if ok, err := userOwnsAccount(userID, accountID); err != nil {
+	if input.AccountID.Set && input.AccountID.Value != nil {
+		if ok, err := userOwnsAccount(userID, *input.AccountID.Value); err != nil {
 			c.JSON(500, gin.H{"error": "account_lookup_failed"})
 			return
 		} else if !ok {
@@ -413,8 +411,8 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.Attachment != nil {
 		entry.Attachment = *input.Attachment
 	}
-	if input.AccountID != nil {
-		entry.AccountID = *input.AccountID
+	if input.AccountID.Set {
+		entry.AccountID = input.AccountID.Value
 	}
 
 	if err := database.DB.Save(&entry).Error; err != nil {
