@@ -110,6 +110,41 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Account"
+  /v1/accounts/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    put:
+      summary: Update an owned account or make it the default
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountInput"
+      responses:
+        "200":
+          description: Updated account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "422":
+          description: Invalid account fields
+        "404":
+          description: Account not found
+    delete:
+      summary: Delete an unused owned account
+      responses:
+        "200":
+          description: Deleted
+        "409":
+          description: Account is used by transactions or is the user's only account
+        "404":
+          description: Account not found
   /v1/entries/{id}:
     parameters:
       - in: path

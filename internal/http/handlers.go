@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/xeipuuv/gojsonschema"
+	"gorm.io/gorm"
 
 	"finance-parser-go/internal/ai"
 	"finance-parser-go/internal/config"
@@ -675,12 +676,17 @@ func (s *Server) handleUpload(c *gin.Context) {
 }
 func (s *Server) saveAccount(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
-	var account models.Account
-	if err := c.BindJSON(&account); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	var input accountInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid_json"})
 		return
 	}
-	account.UserID = userID
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_account", "fields": fields})
+		return
+	}
+	account := models.Account{UserID: userID}
+	input.apply(&account)
 	var accountCount int64
 	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&accountCount).Error; err != nil {
 		c.JSON(500, gin.H{"error": "failed_count_accounts"})
@@ -689,13 +695,14 @@ func (s *Server) saveAccount(c *gin.Context) {
 	if accountCount == 0 {
 		account.IsDefault = true
 	}
-	if account.IsDefault {
-		if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Update("is_default", false).Error; err != nil {
-			c.JSON(500, gin.H{"error": "failed_update_default_account"})
-			return
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if account.IsDefault {
+			if err := tx.Model(&models.Account{}).Where("user_id = ?", userID).Update("is_default", false).Error; err != nil {
+				return err
+			}
 		}
-	}
-	if err := database.DB.Create(&account).Error; err != nil {
+		return tx.Create(&account).Error
+	}); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
@@ -724,21 +731,30 @@ func (s *Server) updateAccount(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "account not found"})
 		return
 	}
-	if err := c.BindJSON(&account); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	wasDefault := account.IsDefault
+	var input accountInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid_json"})
 		return
 	}
-	account.ID = uint(id)
-	account.UserID = userID
-	if account.IsDefault {
-		if err := database.DB.Model(&models.Account{}).
-			Where("user_id = ? AND id <> ?", userID, id).
-			Update("is_default", false).Error; err != nil {
-			c.JSON(500, gin.H{"error": "failed_update_default_account"})
-			return
-		}
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_account", "fields": fields})
+		return
 	}
-	if err := database.DB.Save(&account).Error; err != nil {
+	input.apply(&account)
+	if wasDefault {
+		account.IsDefault = true
+	}
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if account.IsDefault {
+			if err := tx.Model(&models.Account{}).
+				Where("user_id = ? AND id <> ?", userID, id).
+				Update("is_default", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Save(&account).Error
+	}); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
@@ -766,15 +782,30 @@ func (s *Server) deleteAccount(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "account_in_use", "message": "Move or delete linked transactions before deleting this account."})
 		return
 	}
-	if err := database.DB.Delete(&account).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	var accountCount int64
+	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&accountCount).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_count_accounts"})
 		return
 	}
-	if account.IsDefault {
-		var replacement models.Account
-		if err := database.DB.Where("user_id = ?", userID).Order("created_at asc").First(&replacement).Error; err == nil {
-			_ = database.DB.Model(&replacement).Update("is_default", true).Error
+	if accountCount <= 1 {
+		c.JSON(409, gin.H{"error": "last_account", "message": "Create another account before deleting your only account."})
+		return
+	}
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(&account).Error; err != nil {
+			return err
 		}
+		if account.IsDefault {
+			var replacement models.Account
+			if err := tx.Where("user_id = ?", userID).Order("created_at asc").First(&replacement).Error; err != nil {
+				return err
+			}
+			return tx.Model(&replacement).Update("is_default", true).Error
+		}
+		return nil
+	}); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
 	}
 	c.JSON(200, gin.H{"message": "account deleted"})
 }
