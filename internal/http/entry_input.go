@@ -107,10 +107,16 @@ func validateEntryValues(amount models.Money, title, entryType, currency, source
 }
 
 func (input entryInput) validate() map[string]string {
-	return validateEntryValues(
+	fields := validateEntryValues(
 		input.Amount, input.Title, input.Type, input.Currency,
 		input.Source, input.Mode, input.Category, input.Date,
 	)
+	if input.AccountID == nil {
+		fields["account_id"] = "is required"
+	} else if *input.AccountID == 0 {
+		fields["account_id"] = "must be a positive integer"
+	}
+	return fields
 }
 
 func (input entryInput) toModel(userID uint) models.Entry {

@@ -23,6 +23,7 @@ func validEntryInput() entryInput {
 	return entryInput{
 		Title: "Lunch", Amount: testMoney("250"), Type: "expense",
 		Mode: "UPI", Category: "Food", Date: "2026-07-09",
+		AccountID: testAccountID(4),
 	}
 }
 
@@ -35,19 +36,21 @@ func TestUpdateEntryInputDistinguishesMissingAndNullAccount(t *testing.T) {
 		t.Fatal("expected omitted account_id to remain unset")
 	}
 
-	var cleared updateEntryInput
-	if err := json.Unmarshal([]byte(`{"account_id":null}`), &cleared); err != nil {
+	var nullAccount updateEntryInput
+	if err := json.Unmarshal([]byte(`{"account_id":null}`), &nullAccount); err != nil {
 		t.Fatal(err)
 	}
-	if !cleared.AccountID.Set || cleared.AccountID.Value != nil {
-		t.Fatal("expected null account_id to request clearing the account")
+	if !nullAccount.AccountID.Set || nullAccount.AccountID.Value != nil {
+		t.Fatal("expected null account_id to be distinguishable for validation")
 	}
 }
 
 func TestEntryInputValidation(t *testing.T) {
 	withAccount := validEntryInput()
-	withAccount.AccountID = testAccountID(4)
 	withoutAccount := validEntryInput()
+	withoutAccount.AccountID = nil
+	zeroAccount := validEntryInput()
+	zeroAccount.AccountID = testAccountID(0)
 	invalidAmount := validEntryInput()
 	invalidAmount.Amount = 0
 	invalidType := validEntryInput()
@@ -68,7 +71,8 @@ func TestEntryInputValidation(t *testing.T) {
 		valid bool
 	}{
 		{"valid with account", withAccount, true},
-		{"valid without account", withoutAccount, true},
+		{"invalid without account", withoutAccount, false},
+		{"invalid zero account", zeroAccount, false},
 		{"invalid amount", invalidAmount, false},
 		{"invalid type", invalidType, false},
 		{"invalid date", invalidDate, false},

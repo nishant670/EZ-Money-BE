@@ -43,13 +43,17 @@ names but no secrets.
 ## Database migration
 
 Apply checked-in migrations in filename order before deploying the updated
-server. Migration `0002_lock_transaction_contract.sql` creates a default Cash
-account where needed, backfills legacy transactions, makes `account_id`
-mandatory, and converts amounts to `numeric(19,2)`.
+server. Migrations `0002_lock_transaction_contract.sql` and
+`0005_require_entry_account_id.sql` create a default Cash account where needed,
+backfill legacy transactions, and make `account_id` mandatory. Migration `0002`
+also converts amounts to `numeric(19,2)`.
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0001_add_entry_account_id.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0002_lock_transaction_contract.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0003_make_entry_account_optional.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0004_add_entry_idempotency.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0005_require_entry_account_id.sql
 ```
 
 ## Test

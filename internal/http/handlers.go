@@ -462,14 +462,24 @@ func (s *Server) updateEntry(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
-	if input.AccountID.Set && input.AccountID.Value != nil {
-		if ok, err := userOwnsAccount(userID, *input.AccountID.Value); err != nil {
-			c.JSON(500, gin.H{"error": "account_lookup_failed"})
-			return
-		} else if !ok {
-			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
-			return
-		}
+	if !input.AccountID.Set {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "is required"}})
+		return
+	}
+	if input.AccountID.Value == nil {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "is required"}})
+		return
+	}
+	if *input.AccountID.Value == 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must be a positive integer"}})
+		return
+	}
+	if ok, err := userOwnsAccount(userID, *input.AccountID.Value); err != nil {
+		c.JSON(500, gin.H{"error": "account_lookup_failed"})
+		return
+	} else if !ok {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+		return
 	}
 	if input.Title != nil {
 		entry.Title = *input.Title
