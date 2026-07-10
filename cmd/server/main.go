@@ -17,6 +17,9 @@ func main() {
 	if err := database.DB.AutoMigrate(&models.User{}, &models.AuthSession{}, &models.AuthVerification{}, &models.Account{}, &models.Entry{}, &models.QuickPrompt{}); err != nil {
 		log.Fatalf("database schema migration failed: %v", err)
 	}
+	if err := database.EnsureRuntimeSchema(); err != nil {
+		log.Fatalf("database runtime schema check failed: %v", err)
+	}
 
 	cfg := config.Load()
 	r := httpserver.NewServer(cfg)

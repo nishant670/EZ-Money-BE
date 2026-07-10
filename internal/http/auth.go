@@ -28,6 +28,8 @@ type AuthResponse struct {
 
 const sessionTTL = 30 * 24 * time.Hour
 const maxOTPAttempts = 5
+const maxPINAttempts = 5
+const loginLockDuration = 15 * time.Minute
 const claimTokenPrefix = "fnrct_"
 
 type verifiedClaim struct {
@@ -152,6 +154,66 @@ func authResponse(user *models.User) (AuthResponse, error) {
 	return AuthResponse{Token: token, ExpiresAt: expiresAt, User: user}, nil
 }
 
+func findUserByVerifiedIdentifier(identifierType, identifier string) (models.User, error) {
+	var user models.User
+	query := "email = ?"
+	if identifierType != "email" {
+		query = "phone = ?"
+	}
+	err := database.DB.Where(query, identifier).First(&user).Error
+	return user, err
+}
+
+func findUserByLoginIdentifier(identifier string) (models.User, error) {
+	identifierType, normalized, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return models.User{}, err
+	}
+	return findUserByVerifiedIdentifier(identifierType, normalized)
+}
+
+func resetLoginLock(user *models.User) error {
+	user.FailedLoginAttempts = 0
+	user.LoginLockedUntil = nil
+	return database.DB.Model(user).Updates(map[string]interface{}{
+		"failed_login_attempts": 0,
+		"login_locked_until":    nil,
+	}).Error
+}
+
+func clearExpiredLoginLock(user *models.User, now time.Time) error {
+	if user.LoginLockedUntil == nil || user.LoginLockedUntil.After(now) {
+		return nil
+	}
+	return resetLoginLock(user)
+}
+
+func recordFailedLoginAttempt(user *models.User, now time.Time) (int, *time.Time, error) {
+	attempts := user.FailedLoginAttempts + 1
+	updates := map[string]interface{}{
+		"failed_login_attempts": attempts,
+	}
+
+	var lockedUntil *time.Time
+	if attempts >= maxPINAttempts {
+		lockUntil := now.Add(loginLockDuration)
+		lockedUntil = &lockUntil
+		updates["login_locked_until"] = lockedUntil
+	}
+
+	if err := database.DB.Model(user).Updates(updates).Error; err != nil {
+		return 0, nil, err
+	}
+
+	user.FailedLoginAttempts = attempts
+	user.LoginLockedUntil = lockedUntil
+	remaining := maxPINAttempts - attempts
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining, lockedUntil, nil
+}
+
 // POST /v1/auth/guest
 func (s *Server) authGuest(c *gin.Context) {
 	var input struct {
@@ -166,10 +228,17 @@ func (s *Server) authGuest(c *gin.Context) {
 		return
 	}
 
+	deviceID := strings.TrimSpace(input.DeviceID)
 	var user models.User
-	if input.DeviceID != "" {
-		err := database.DB.Where("device_id = ? AND is_guest = ?", input.DeviceID, true).First(&user).Error
-		if err == nil {
+	if deviceID != "" {
+		if err := database.DB.
+			Where("device_id = ? AND is_guest = ?", deviceID, true).
+			Limit(1).
+			Find(&user).Error; err != nil {
+			c.JSON(500, gin.H{"error": "failed_lookup_guest"})
+			return
+		}
+		if user.ID != 0 {
 			// Found existing guest session
 			if err := ensureDefaultCashAccount(user.ID); err != nil {
 				c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
@@ -187,8 +256,8 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 
 	var deviceIDPtr *string
-	if input.DeviceID != "" {
-		deviceIDPtr = &input.DeviceID
+	if deviceID != "" {
+		deviceIDPtr = &deviceID
 	}
 
 	// Generate unique username
@@ -203,6 +272,27 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 
 	if err := database.DB.Create(&user).Error; err != nil {
+		if deviceID != "" {
+			var existingGuest models.User
+			lookupErr := database.DB.
+				Where("device_id = ? AND is_guest = ?", deviceID, true).
+				Limit(1).
+				Find(&existingGuest).Error
+			if lookupErr == nil && existingGuest.ID != 0 {
+				if err := ensureDefaultCashAccount(existingGuest.ID); err != nil {
+					c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
+					return
+				}
+				existingGuest.HasPin = existingGuest.PinHash != ""
+				response, err := authResponse(&existingGuest)
+				if err != nil {
+					c.JSON(500, gin.H{"error": "failed_create_session"})
+					return
+				}
+				c.JSON(200, response)
+				return
+			}
+		}
 		c.JSON(500, gin.H{"error": "failed_create_guest"})
 		return
 	}
@@ -486,6 +576,72 @@ func (s *Server) authRegister(c *gin.Context) {
 	c.JSON(201, response)
 }
 
+// POST /v1/auth/pin/reset
+func (s *Server) authPinReset(c *gin.Context) {
+	var input struct {
+		ClaimToken        string `json:"claim_token" binding:"required"`
+		PIN               string `json:"pin" binding:"required,len=4"`
+		DeviceID          string `json:"device_id"`
+		BiometricsEnabled *bool  `json:"biometrics_enabled"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	claim, err := consumeClaimToken(input.ClaimToken)
+	if err != nil {
+		c.JSON(401, gin.H{"error": "invalid_claim_token"})
+		return
+	}
+
+	user, err := findUserByVerifiedIdentifier(claim.IdentifierType, claim.Identifier)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "user_not_found"})
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.PIN), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "encryption_failed"})
+		return
+	}
+
+	updates := map[string]interface{}{
+		"pin_hash":              string(hash),
+		"failed_login_attempts": 0,
+		"login_locked_until":    nil,
+	}
+	deviceID := strings.TrimSpace(input.DeviceID)
+	if deviceID != "" {
+		updates["device_id"] = deviceID
+	}
+	if input.BiometricsEnabled != nil {
+		updates["biometrics_enabled"] = *input.BiometricsEnabled
+	}
+
+	if err := database.DB.Model(&user).Updates(updates).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_reset_pin"})
+		return
+	}
+	if err := database.DB.First(&user, user.ID).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_user"})
+		return
+	}
+
+	user.HasPin = user.PinHash != ""
+	response, err := authResponse(&user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_session"})
+		return
+	}
+	c.JSON(200, response)
+}
+
 // POST /v1/auth/login
 func (s *Server) authLogin(c *gin.Context) {
 	var input struct {
@@ -502,15 +658,42 @@ func (s *Server) authLogin(c *gin.Context) {
 		return
 	}
 
-	var user models.User
-	// Search in both Email and Phone
-	if err := database.DB.Where("email = ? OR phone = ?", input.Identifier, input.Identifier).First(&user).Error; err != nil {
+	user, err := findUserByLoginIdentifier(input.Identifier)
+	if err != nil {
 		c.JSON(401, gin.H{"error": "invalid_credentials"})
 		return
 	}
 
+	now := time.Now().UTC()
+	if err := clearExpiredLoginLock(&user, now); err != nil {
+		c.JSON(500, gin.H{"error": "failed_update_login_lock"})
+		return
+	}
+	if user.LoginLockedUntil != nil && user.LoginLockedUntil.After(now) {
+		c.JSON(429, gin.H{
+			"error":        "login_locked",
+			"locked_until": user.LoginLockedUntil,
+		})
+		return
+	}
+
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PinHash), []byte(input.PIN)); err != nil {
-		c.JSON(401, gin.H{"error": "invalid_credentials"})
+		attemptsRemaining, lockedUntil, updateErr := recordFailedLoginAttempt(&user, now)
+		if updateErr != nil {
+			c.JSON(500, gin.H{"error": "failed_update_login_attempts"})
+			return
+		}
+		if lockedUntil != nil {
+			c.JSON(429, gin.H{
+				"error":        "login_locked",
+				"locked_until": lockedUntil,
+			})
+			return
+		}
+		c.JSON(401, gin.H{
+			"error":              "invalid_credentials",
+			"attempts_remaining": attemptsRemaining,
+		})
 		return
 	}
 
@@ -525,6 +708,12 @@ func (s *Server) authLogin(c *gin.Context) {
 
 	if shouldSave {
 		database.DB.Save(&user)
+	}
+	if user.FailedLoginAttempts != 0 || user.LoginLockedUntil != nil {
+		if err := resetLoginLock(&user); err != nil {
+			c.JSON(500, gin.H{"error": "failed_update_login_lock"})
+			return
+		}
 	}
 
 	user.HasPin = user.PinHash != ""

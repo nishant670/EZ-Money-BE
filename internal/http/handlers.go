@@ -79,6 +79,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authLimited.POST("/otp/verify", s.authOtpVerify)
 		authLimited.POST("/register", s.authRegister)
 		authLimited.POST("/login", s.authLogin)
+		authLimited.POST("/pin/reset", s.authPinReset)
 	}
 
 	// Protected Routes (User Token)
