@@ -77,8 +77,8 @@ Legend:
 - [x] Store sessions server-side or make them revocable.
 - [x] Replace static/mock OTP verification and plaintext `claim_*` tokens.
 - [x] Stop logging database credentials and DSNs in `database.Connect()` and `cmd/server/main.go`.
-- [ ] Add restrictive production CORS configuration instead of defaulting to `*`.
-- [ ] Apply rate limiting to auth and AI endpoints; config exists but middleware is not wired.
+- [x] Add restrictive production CORS configuration instead of defaulting to `*`.
+- [x] Apply rate limiting to auth and AI endpoints.
 - [ ] Add request size/time limits consistently to upload/auth/parse paths.
 - [ ] Add `.env.example` with redacted required variables.
 - [ ] Document source-text/transcript retention and deletion policy.

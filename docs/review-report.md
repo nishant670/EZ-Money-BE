@@ -68,8 +68,8 @@ Incomplete or unsafe:
 - OTP verification now uses random expiring OTP challenges and opaque one-time claim tokens.
 - The upload endpoint still exists server-side and should stay inaccessible from MVP clients until hardened or removed.
 - Database connection logging no longer emits DB env values or DSNs.
-- Rate-limit configuration exists but no rate limiter is applied.
-- CORS defaults to `*`.
+- Rate limiting is applied to auth endpoints and the AI parse endpoint.
+- CORS now uses an explicit exact-origin allow list and does not default to `*`.
 - The local `.env` contains secrets but is ignored by Git; this review found no tracked `.env`. Secrets should still be rotated if they were ever shared and a redacted `.env.example` is needed.
 
 ### Web: `finnri-web`
@@ -132,10 +132,8 @@ select them again as open backlog work.
 
 ### Trust and security conflicts
 
-1. Rate limiting is configured but not wired to auth/AI endpoints.
-2. Production CORS defaults are too permissive.
-3. The server-side upload endpoint still exists and must remain deferred, removed, or hardened before public exposure.
-4. Raw source text is stored on transactions without a documented retention/deletion policy.
+1. The server-side upload endpoint still exists and must remain deferred, removed, or hardened before public exposure.
+2. Raw source text is stored on transactions without a documented retention/deletion policy.
 
 ### Explicitly deferred scope found in the repository
 
@@ -228,7 +226,7 @@ Status: implemented in the working tree; manual mobile QA remains.
 
 - Replace static OTP and plaintext OTP-claim tokens with expiring, revocable verification claims. Status: implemented in the working tree.
 - Stop credential/financial-data logging. Status: database credential and DSN startup logging is removed.
-- Add rate limiting and restrictive production CORS.
+- Add rate limiting and restrictive production CORS. Status: implemented in the working tree.
 - Keep uploads deferred, or validate content and use private object storage/signed access before re-enabling.
 - Add secret template, rotation procedure, retention policy, and data deletion path.
 

@@ -70,18 +70,22 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 	s := &Server{cfg: cfg, validator: schema, parser: openai}
 	// Auth
-	r.POST("/v1/auth/guest", s.authGuest)
-	r.POST("/v1/auth/identify", s.authIdentify)
-	r.POST("/v1/auth/otp/send", s.authOtpSend)
-	r.POST("/v1/auth/otp/verify", s.authOtpVerify)
-	r.POST("/v1/auth/register", s.authRegister)
-	r.POST("/v1/auth/login", s.authLogin)
+	authLimited := r.Group("/v1/auth")
+	authLimited.Use(rateLimit(cfg, "auth"))
+	{
+		authLimited.POST("/guest", s.authGuest)
+		authLimited.POST("/identify", s.authIdentify)
+		authLimited.POST("/otp/send", s.authOtpSend)
+		authLimited.POST("/otp/verify", s.authOtpVerify)
+		authLimited.POST("/register", s.authRegister)
+		authLimited.POST("/login", s.authLogin)
+	}
 
 	// Protected Routes (User Token)
 	authorized := r.Group("/v1")
 	authorized.Use(AuthMiddleware())
 	{
-		authorized.POST("/parse", s.handleParse)
+		authorized.POST("/parse", rateLimit(cfg, "ai"), s.handleParse)
 		authorized.POST("/entries", s.saveEntry)
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/:id", s.getEntry)
@@ -752,16 +756,38 @@ func (s *Server) updateProfile(c *gin.Context) {
 }
 
 func cors(cfg *config.Config) gin.HandlerFunc {
+	allowedOrigins := parseAllowedOrigins(cfg.AllowOrigins)
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", cfg.AllowOrigins)
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		origin := strings.TrimSpace(c.GetHeader("Origin"))
+		if origin != "" {
+			if _, ok := allowedOrigins[origin]; ok {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				c.Writer.Header().Set("Vary", "Origin")
+				c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
+				c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			} else if c.Request.Method == http.MethodOptions {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cors_origin_not_allowed"})
+				return
+			}
+		}
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(204)
 			return
 		}
 		c.Next()
 	}
+}
+
+func parseAllowedOrigins(raw string) map[string]struct{} {
+	allowed := make(map[string]struct{})
+	for _, origin := range strings.Split(raw, ",") {
+		origin = strings.TrimSpace(origin)
+		if origin == "" || origin == "*" {
+			continue
+		}
+		allowed[origin] = struct{}{}
+	}
+	return allowed
 }
 
 func logging() gin.HandlerFunc {

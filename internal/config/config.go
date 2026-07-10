@@ -66,7 +66,7 @@ func atob(key string, def bool) bool {
 func Load() *Config {
 	return &Config{
 		Port:               getenv("PORT", "8080"),
-		AllowOrigins:       getenv("ALLOW_ORIGINS", "*"),
+		AllowOrigins:       getenv("ALLOW_ORIGINS", ""),
 		AuthBearer:         getenv("AUTH_BEARER", ""),
 		TZDefault:          getenv("TZ_DEFAULT", "Asia/Kolkata"),
 		OpenAIKey:          getenv("OPENAI_API_KEY", ""),
