@@ -25,6 +25,11 @@ at 366 days. `/v1/insights` remains a temporary compatibility alias.
 ## Important Rule
 `POST /v1/parse` returns a draft only. It must not save a transaction.
 
+## Auth Response
+Auth endpoints that create a session return an opaque bearer `token`,
+`expires_at`, and the user object. The token is stored server-side only as a
+hash and must be treated as revocable.
+
 ## Canonical Contract
 Phase 1.2 keeps the implemented versioned routes as the authoritative MVP API:
 transaction persistence is exposed as `/v1/entries`, and parsing is exposed as

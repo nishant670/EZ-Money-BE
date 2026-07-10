@@ -245,7 +245,7 @@ Transaction listing supports pagination plus search/filter by merchant, category
 
 ## 9. Security and privacy
 
-- Replace unsigned mock bearer tokens and plaintext OTP claim tokens before any external beta.
+- Keep guest bearer auth on opaque, expiring, server-side sessions; replace plaintext OTP claim tokens before any external beta.
 - Guest access is anonymous, not unauthenticated: issue an opaque, revocable, expiring session bound to a server-side guest identity.
 - Keep provider and database secrets outside source control; maintain a redacted `.env.example`.
 - Never print DSNs, tokens, provider responses, transcripts, or transaction bodies in logs.

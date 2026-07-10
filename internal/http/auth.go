@@ -2,9 +2,11 @@ package http
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -16,9 +18,12 @@ import (
 
 // Auth Response Wrapper
 type AuthResponse struct {
-	Token string       `json:"token"`
-	User  *models.User `json:"user"`
+	Token     string       `json:"token"`
+	ExpiresAt time.Time    `json:"expires_at"`
+	User      *models.User `json:"user"`
 }
+
+const sessionTTL = 30 * 24 * time.Hour
 
 // Generate a random UUID-like string
 func generateUUID() string {
@@ -27,10 +32,37 @@ func generateUUID() string {
 	return hex.EncodeToString(b)
 }
 
-// Generate a temporary JWT-like token (Mock for now, should use real JWT later)
-func generateToken(user *models.User) string {
-	// In production, use jwt-go to sign a token with user.ID and Expiry
-	return "mock_token_" + user.UUID + "_" + generateUUID()
+func generateSessionToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("secure random token generation failed: " + err.Error())
+	}
+	return "fnr_" + hex.EncodeToString(b)
+}
+
+func hashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func issueSession(userID uint) (string, time.Time, error) {
+	token := generateSessionToken()
+	expiresAt := time.Now().UTC().Add(sessionTTL)
+	session := models.AuthSession{
+		UserID: userID, TokenHash: hashSessionToken(token), ExpiresAt: expiresAt,
+	}
+	if err := database.DB.Create(&session).Error; err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expiresAt, nil
+}
+
+func authResponse(user *models.User) (AuthResponse, error) {
+	token, expiresAt, err := issueSession(user.ID)
+	if err != nil {
+		return AuthResponse{}, err
+	}
+	return AuthResponse{Token: token, ExpiresAt: expiresAt, User: user}, nil
 }
 
 // POST /v1/auth/guest
@@ -53,10 +85,12 @@ func (s *Server) authGuest(c *gin.Context) {
 				return
 			}
 			user.HasPin = user.PinHash != ""
-			c.JSON(200, AuthResponse{
-				Token: generateToken(&user),
-				User:  &user,
-			})
+			response, err := authResponse(&user)
+			if err != nil {
+				c.JSON(500, gin.H{"error": "failed_create_session"})
+				return
+			}
+			c.JSON(200, response)
 			return
 		}
 	}
@@ -87,10 +121,12 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	c.JSON(200, AuthResponse{
-		Token: generateToken(&user),
-		User:  &user,
-	})
+	response, err := authResponse(&user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_session"})
+		return
+	}
+	c.JSON(200, response)
 }
 
 func ensureDefaultCashAccount(userID uint) error {
@@ -280,10 +316,12 @@ func (s *Server) authRegister(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	c.JSON(201, AuthResponse{
-		Token: generateToken(&user),
-		User:  &user,
-	})
+	response, err := authResponse(&user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_session"})
+		return
+	}
+	c.JSON(201, response)
 }
 
 // POST /v1/auth/login
@@ -324,8 +362,10 @@ func (s *Server) authLogin(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	c.JSON(200, AuthResponse{
-		Token: generateToken(&user),
-		User:  &user,
-	})
+	response, err := authResponse(&user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_session"})
+		return
+	}
+	c.JSON(200, response)
 }

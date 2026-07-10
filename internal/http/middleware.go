@@ -2,6 +2,7 @@ package http
 
 import (
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -23,28 +24,24 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		token := parts[1]
-
-		// Parse Mock Token: mock_token_{UUID}_{Random}
-		if !strings.HasPrefix(token, "mock_token_") {
-			c.AbortWithStatusJSON(401, gin.H{"error": "invalid_token_format"})
+		token := strings.TrimSpace(parts[1])
+		if token == "" {
+			c.AbortWithStatusJSON(401, gin.H{"error": "invalid_token"})
 			return
 		}
 
-		tokenParts := strings.Split(token, "_")
-		if len(tokenParts) < 4 {
-			c.AbortWithStatusJSON(401, gin.H{"error": "invalid_token_structure"})
+		var session models.AuthSession
+		if err := database.DB.Preload("User").
+			Where("token_hash = ? AND revoked_at IS NULL AND expires_at > ?", hashSessionToken(token), time.Now().UTC()).
+			First(&session).Error; err != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "invalid_or_expired_session"})
 			return
 		}
-
-		uuid := tokenParts[2] // mock, token, UUID, Random...
-
-		var user models.User
-		if err := database.DB.Where("uuid = ?", uuid).First(&user).Error; err != nil {
-			c.AbortWithStatusJSON(401, gin.H{"error": "invalid_token_user_not_found"})
+		user := session.User
+		if user.ID == 0 {
+			c.AbortWithStatusJSON(401, gin.H{"error": "invalid_session_user"})
 			return
 		}
-
 		// Store user in context
 		c.Set("user", &user)
 		c.Set("userID", user.ID)

@@ -73,8 +73,8 @@ Legend:
 
 ## P0 - External Beta Security
 
-- [ ] Replace forgeable `mock_token_*` bearer tokens with signed or opaque expiring sessions.
-- [ ] Store sessions server-side or make them revocable.
+- [x] Replace forgeable `mock_token_*` bearer tokens with signed or opaque expiring sessions.
+- [x] Store sessions server-side or make them revocable.
 - [ ] Replace static/mock OTP verification and plaintext `claim_*` tokens.
 - [ ] Stop logging database credentials and DSNs in `database.Connect()` and `cmd/server/main.go`.
 - [ ] Add restrictive production CORS configuration instead of defaulting to `*`.

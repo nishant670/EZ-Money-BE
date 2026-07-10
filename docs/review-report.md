@@ -17,9 +17,8 @@ The MVP is not yet external-beta ready. Account-linked transactions, visible
 parser uncertainty, server-side transaction validation, INR consistency,
 server-backed account management, pagination/search/filtering, and the real
 dashboard are now implemented in the working tree. The highest-impact remaining
-issues are the forgeable guest/session boundary, static OTP/claim flow, logging
-and CORS/rate-limit hardening, data-retention policy, QA coverage, and mobile
-lint failures.
+issues are the static OTP/claim flow, logging and CORS/rate-limit hardening,
+data-retention policy, QA coverage, and mobile lint failures.
 
 The correct Phase 1 response is to finish and harden the core mobile flow. The Next.js dashboard, EMI-derived metrics, receipt uploads, advanced analytics, full subscriptions, bill splitting, imports, and open-ended advice must not displace that work.
 
@@ -65,7 +64,7 @@ Incomplete or unsafe:
 - Runtime `AutoMigrate` still exists in server startup; checked-in migrations are present, but production migration execution remains an operational gate.
 - Parse attempts, normalized confidence history, categories, and reusable insight records/templates are not modeled.
 - Insights load raw rows and aggregate in memory. This is acceptable for tiny prototypes but should move to bounded SQL queries before scale.
-- Authentication uses forgeable unsigned `mock_token_*` values.
+- Guest bearer auth now uses opaque, expiring, server-side sessions.
 - OTP verification accepts static codes and returns forgeable, non-expiring plaintext claim tokens.
 - The upload endpoint still exists server-side and should stay inaccessible from MVP clients until hardened or removed.
 - Database connection code prints the full DSN, including credentials, to logs.
@@ -133,7 +132,7 @@ select them again as open backlog work.
 
 ### Trust and security conflicts
 
-1. Forgeable sessions and OTP claims make user ownership controls ineffective against an attacker.
+1. Static OTP and forgeable plaintext OTP claims still make identity verification ineffective against an attacker.
 2. Full database credentials can be emitted to logs.
 3. Rate limiting is configured but not wired to auth/AI endpoints.
 4. Production CORS defaults are too permissive.
@@ -229,7 +228,7 @@ Status: implemented in the working tree; manual mobile QA remains.
 
 ### PR 6 — External-beta security baseline
 
-- Replace mock bearer and OTP-claim tokens with expiring, revocable sessions/claims.
+- Replace static OTP and plaintext OTP-claim tokens with expiring, revocable verification claims.
 - Stop credential/financial-data logging.
 - Add rate limiting and restrictive production CORS.
 - Keep uploads deferred, or validate content and use private object storage/signed access before re-enabling.
@@ -265,8 +264,7 @@ Lightweight recurring or split candidate metadata may remain in MVP only when it
 
 ### Security/privacy risks
 
-- Current mock authentication permits impersonation.
-- Static OTP and unsigned claims permit identity-verification bypass.
+- Static OTP and unsigned claims still permit identity-verification bypass.
 - The dormant public upload endpoint creates malware/XSS/privacy exposure if re-exposed without hardening.
 - DSN logging leaks credentials into logs.
 - Source-text retention may contain sensitive personal details without user awareness.
