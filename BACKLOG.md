@@ -102,7 +102,7 @@ Legend:
 - [x] Restore or expose typed natural-language input on the home capture card, because text capture is part of MVP scope.
 - [x] Improve empty/error/retry states across home, transactions, accounts, and dashboard.
 - [x] Make server field-level validation errors user-friendly in mobile forms.
-- [ ] Ensure dashboard and transaction lists refresh after edits/deletes, not only creates.
+- [x] Ensure dashboard and transaction lists refresh after edits/deletes, not only creates.
 - [ ] Confirm date/time behavior with Asia/Kolkata defaults and client timezone handling.
 
 ## P1 - Data Model And Backend Hardening
