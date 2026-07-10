@@ -1,7 +1,10 @@
 package http
 
 import (
+	"context"
+	"errors"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,4 +124,37 @@ func rateLimit(cfg *config.Config, scope string) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func requestLimits(maxBytes int64, timeoutSec int) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if maxBytes > 0 && c.Request.ContentLength > maxBytes {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+			return
+		}
+		if maxBytes > 0 && c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+
+		if timeoutSec > 0 {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeoutSec)*time.Second)
+			defer cancel()
+			c.Request = c.Request.WithContext(ctx)
+		}
+
+		c.Next()
+	}
+}
+
+func jsonRequestLimits(cfg *config.Config) gin.HandlerFunc {
+	return requestLimits(cfg.MaxJSONKB*1024, cfg.ReqTimeoutSec)
+}
+
+func uploadRequestLimits(cfg *config.Config) gin.HandlerFunc {
+	return requestLimits(cfg.MaxUploadMB*1024*1024, cfg.ReqTimeoutSec)
+}
+
+func requestBodyTooLarge(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
 }

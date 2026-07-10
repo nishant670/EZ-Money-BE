@@ -69,6 +69,7 @@ Incomplete or unsafe:
 - The upload endpoint still exists server-side and should stay inaccessible from MVP clients until hardened or removed.
 - Database connection logging no longer emits DB env values or DSNs.
 - Rate limiting is applied to auth endpoints and the AI parse endpoint.
+- Request body limits and request context timeouts are applied to auth, parse, and upload paths.
 - CORS now uses an explicit exact-origin allow list and does not default to `*`.
 - The local `.env` contains secrets but is ignored by Git; this review found no tracked `.env`. Secrets should still be rotated if they were ever shared and a redacted `.env.example` is needed.
 
@@ -227,6 +228,7 @@ Status: implemented in the working tree; manual mobile QA remains.
 - Replace static OTP and plaintext OTP-claim tokens with expiring, revocable verification claims. Status: implemented in the working tree.
 - Stop credential/financial-data logging. Status: database credential and DSN startup logging is removed.
 - Add rate limiting and restrictive production CORS. Status: implemented in the working tree.
+- Add request size and timeout limits to auth, parse, and upload paths. Status: implemented in the working tree.
 - Keep uploads deferred, or validate content and use private object storage/signed access before re-enabling.
 - Add secret template, rotation procedure, retention policy, and data deletion path.
 

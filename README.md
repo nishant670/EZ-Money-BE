@@ -37,6 +37,8 @@ names but no secrets.
   to focused JSON extraction.
 - AI output is capped at 600 tokens with `OPENAI_MAX_OUTPUT_TOKENS`.
 - Input is capped at 1,000 characters with `MAX_TRANSCRIPT_CHARS`.
+- Auth JSON bodies are capped with `MAX_JSON_KB`; parse/upload request bodies
+  are capped with `MAX_UPLOAD_MB`.
 - Each parse logs token counts, not prompt content or the API key.
 - The API does not retry failed OpenAI calls, preventing duplicate charges.
 

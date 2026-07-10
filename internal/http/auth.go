@@ -158,6 +158,10 @@ func (s *Server) authGuest(c *gin.Context) {
 		DeviceID string `json:"device_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil && err != io.EOF {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": "invalid_request"})
 		return
 	}
@@ -235,6 +239,10 @@ func (s *Server) authIdentify(c *gin.Context) {
 		Identifier string `json:"identifier" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
@@ -259,6 +267,10 @@ func (s *Server) authOtpSend(c *gin.Context) {
 		Identifier string `json:"identifier" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
@@ -306,6 +318,10 @@ func (s *Server) authOtpVerify(c *gin.Context) {
 		OTP        string `json:"otp" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
@@ -362,6 +378,10 @@ func (s *Server) authRegister(c *gin.Context) {
 		BiometricsEnabled bool   `json:"biometrics_enabled"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
@@ -474,6 +494,10 @@ func (s *Server) authLogin(c *gin.Context) {
 		DeviceID   string `json:"device_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}

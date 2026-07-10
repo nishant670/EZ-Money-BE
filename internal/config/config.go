@@ -19,6 +19,7 @@ type Config struct {
 	ReqTimeoutSec      int
 	RateLimitRPS       float64
 	RateLimitBurst     int
+	MaxJSONKB          int64
 	MaxUploadMB        int64
 	MaxTranscriptChars int
 	OTPDebugResponse   bool
@@ -77,6 +78,7 @@ func Load() *Config {
 		ReqTimeoutSec:      atoi("REQUEST_TIMEOUT_SECONDS", 30),
 		RateLimitRPS:       atof("RATE_LIMIT_RPS", 5),
 		RateLimitBurst:     atoi("RATE_LIMIT_BURST", 10),
+		MaxJSONKB:          int64(atoi("MAX_JSON_KB", 64)),
 		MaxUploadMB:        int64(atoi("MAX_UPLOAD_MB", 15)),
 		MaxTranscriptChars: atoi("MAX_TRANSCRIPT_CHARS", 1000),
 		OTPDebugResponse:   atob("OTP_DEBUG_RESPONSE", false),

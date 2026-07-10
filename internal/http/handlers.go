@@ -71,7 +71,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	s := &Server{cfg: cfg, validator: schema, parser: openai}
 	// Auth
 	authLimited := r.Group("/v1/auth")
-	authLimited.Use(rateLimit(cfg, "auth"))
+	authLimited.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))
 	{
 		authLimited.POST("/guest", s.authGuest)
 		authLimited.POST("/identify", s.authIdentify)
@@ -85,7 +85,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	authorized := r.Group("/v1")
 	authorized.Use(AuthMiddleware())
 	{
-		authorized.POST("/parse", rateLimit(cfg, "ai"), s.handleParse)
+		authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParse)
 		authorized.POST("/entries", s.saveEntry)
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/:id", s.getEntry)
@@ -96,7 +96,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.PUT("/quick-prompts/:id", s.updateQuickPrompt)
 		authorized.DELETE("/quick-prompts/:id", s.deleteQuickPrompt)
 		authorized.PUT("/user", s.updateProfile)
-		authorized.POST("/upload", s.handleUpload)
+		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
 
 		// Accounts
 		authorized.POST("/accounts", s.saveAccount)
@@ -119,6 +119,11 @@ func (s *Server) handleParse(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timepkg.Duration(s.cfg.ReqTimeoutSec)*timepkg.Second)
 	defer cancel()
 
+	if err := c.Request.ParseMultipartForm(s.cfg.MaxUploadMB * 1024 * 1024); err != nil && requestBodyTooLarge(err) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+		return
+	}
+
 	tz := c.PostForm("tz")
 	if tz == "" {
 		tz = s.cfg.TZDefault
@@ -129,11 +134,15 @@ func (s *Server) handleParse(c *gin.Context) {
 	if err == nil {
 		defer file.Close()
 		if header.Size > s.cfg.MaxUploadMB*1024*1024 {
-			c.JSON(413, gin.H{"error": "file too large"})
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file_too_large"})
 			return
 		}
 		buf := &bytes.Buffer{}
 		if _, err := io.Copy(buf, file); err != nil {
+			if requestBodyTooLarge(err) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+				return
+			}
 			c.JSON(400, gin.H{"error": "failed to read file"})
 			return
 		}
@@ -819,7 +828,15 @@ func loadLocationOrIndia(requested, fallback string) *timepkg.Location {
 func (s *Server) handleUpload(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": "no file provided"})
+		return
+	}
+	if file.Size > s.cfg.MaxUploadMB*1024*1024 {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file_too_large"})
 		return
 	}
 

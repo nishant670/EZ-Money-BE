@@ -12,4 +12,7 @@ func TestLoadDoesNotDefaultCORSWildcard(t *testing.T) {
 	if cfg.AllowOrigins != "" {
 		t.Fatalf("expected empty default ALLOW_ORIGINS, got %q", cfg.AllowOrigins)
 	}
+	if cfg.MaxJSONKB != 64 {
+		t.Fatalf("expected default MAX_JSON_KB 64, got %d", cfg.MaxJSONKB)
+	}
 }
