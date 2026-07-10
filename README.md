@@ -40,6 +40,18 @@ names but no secrets.
 - Each parse logs token counts, not prompt content or the API key.
 - The API does not retry failed OpenAI calls, preventing duplicate charges.
 
+## Database migration
+
+Apply checked-in migrations in filename order before deploying the updated
+server. Migration `0002_lock_transaction_contract.sql` creates a default Cash
+account where needed, backfills legacy transactions, makes `account_id`
+mandatory, and converts amounts to `numeric(19,2)`.
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0001_add_entry_account_id.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0002_lock_transaction_contract.sql
+```
+
 ## Test
 ```bash
 curl -X POST http://localhost:8080/v1/parse   -H "Authorization: Bearer test"   -F "hint_text=I spent 500 rupees today with my Amex card for my wife's birthday gift"
