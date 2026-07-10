@@ -6,6 +6,45 @@ info:
 servers:
   - url: http://localhost:8080
 paths:
+  /v1/dashboard:
+    get:
+      summary: Return the deterministic spending dashboard for a date range
+      parameters:
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: tz
+          schema:
+            type: string
+            default: Asia/Kolkata
+      responses:
+        "200":
+          description: Dashboard calculated from owned transactions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+        "422":
+          description: Invalid or oversized date range
+  /v1/insights:
+    get:
+      deprecated: true
+      summary: Compatibility alias for GET /v1/dashboard
+      responses:
+        "200":
+          description: Dashboard calculated from owned transactions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
   /v1/parse:
     post:
       summary: Parse audio/text to structured expense/income JSON
@@ -254,6 +293,100 @@ components:
       type: http
       scheme: bearer
   schemas:
+    Dashboard:
+      type: object
+      required: [period, summary, top_categories, top_merchants, account_spending, recent_transactions, insights]
+      properties:
+        period:
+          type: object
+          required: [start, end]
+          properties:
+            start:
+              type: string
+              format: date
+            end:
+              type: string
+              format: date
+        summary:
+          type: object
+          required: [total_spent, total_income, daily_average, transaction_count]
+          properties:
+            total_spent:
+              type: number
+            total_income:
+              type: number
+            daily_average:
+              type: number
+            transaction_count:
+              type: integer
+        top_categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardCategory"
+        top_merchants:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardMerchant"
+        account_spending:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardAccount"
+        recent_transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SavedEntry"
+        insights:
+          type: array
+          items:
+            $ref: "#/components/schemas/InsightCard"
+    DashboardCategory:
+      type: object
+      required: [category, amount, percentage, change]
+      properties:
+        category:
+          type: string
+        amount:
+          type: number
+        percentage:
+          type: number
+        change:
+          type: number
+    DashboardMerchant:
+      type: object
+      required: [merchant, amount, transaction_count]
+      properties:
+        merchant:
+          type: string
+        amount:
+          type: number
+        transaction_count:
+          type: integer
+    DashboardAccount:
+      type: object
+      required: [account_name, amount, percentage]
+      properties:
+        account_id:
+          type: [integer, "null"]
+        account_name:
+          type: string
+        amount:
+          type: number
+        percentage:
+          type: number
+    InsightCard:
+      type: object
+      required: [kind, severity, title, body]
+      properties:
+        kind:
+          type: string
+          enum: [period_comparison, category_increase, top_merchant, account_usage, unusual_spending]
+        severity:
+          type: string
+          enum: [info, warning, success]
+        title:
+          type: string
+        body:
+          type: string
     ExpenseOrIncomeEntry:
       $ref: ./schemas/expense_entry.schema.json
     FinalEntry:

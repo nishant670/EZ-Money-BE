@@ -44,6 +44,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 				strings.HasPrefix(c.Request.URL.Path, "/v1/quick-prompts") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/user") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/insights") ||
+				strings.HasPrefix(c.Request.URL.Path, "/v1/dashboard") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/accounts") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/parse") {
 				log.Printf("[DEBUG] Auth Skip: %s", c.Request.URL.Path)
@@ -100,6 +101,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Insights
+		authorized.GET("/dashboard", s.getDashboard)
 		authorized.GET("/insights", s.getInsights)
 	}
 
