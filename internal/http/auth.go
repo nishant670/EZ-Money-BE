@@ -2,9 +2,14 @@ package http
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
+	"math/big"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -16,8 +21,18 @@ import (
 
 // Auth Response Wrapper
 type AuthResponse struct {
-	Token string       `json:"token"`
-	User  *models.User `json:"user"`
+	Token     string       `json:"token"`
+	ExpiresAt time.Time    `json:"expires_at"`
+	User      *models.User `json:"user"`
+}
+
+const sessionTTL = 30 * 24 * time.Hour
+const maxOTPAttempts = 5
+const claimTokenPrefix = "fnrct_"
+
+type verifiedClaim struct {
+	IdentifierType string
+	Identifier     string
 }
 
 // Generate a random UUID-like string
@@ -27,10 +42,114 @@ func generateUUID() string {
 	return hex.EncodeToString(b)
 }
 
-// Generate a temporary JWT-like token (Mock for now, should use real JWT later)
-func generateToken(user *models.User) string {
-	// In production, use jwt-go to sign a token with user.ID and Expiry
-	return "mock_token_" + user.UUID + "_" + generateUUID()
+func generateSessionToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("secure random token generation failed: " + err.Error())
+	}
+	return "fnr_" + hex.EncodeToString(b)
+}
+
+func hashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func generateOTPCode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", n.Int64()), nil
+}
+
+func hashOTP(otp string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func verifyOTPHash(hash, otp string) bool {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(otp)) == nil
+}
+
+func generateClaimToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("secure random claim token generation failed: " + err.Error())
+	}
+	return claimTokenPrefix + hex.EncodeToString(b)
+}
+
+func validClaimTokenFormat(token string) bool {
+	if !strings.HasPrefix(token, claimTokenPrefix) {
+		return false
+	}
+	raw := strings.TrimPrefix(token, claimTokenPrefix)
+	if len(raw) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(raw)
+	return err == nil
+}
+
+func hashClaimToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func normalizeIdentifier(identifier string) (string, string, error) {
+	normalized := strings.TrimSpace(identifier)
+	if normalized == "" {
+		return "", "", errors.New("identifier_required")
+	}
+	if strings.Contains(normalized, "@") {
+		return "email", strings.ToLower(normalized), nil
+	}
+	return "phone", normalized, nil
+}
+
+func consumeClaimToken(rawToken string) (verifiedClaim, error) {
+	if !validClaimTokenFormat(rawToken) {
+		return verifiedClaim{}, errors.New("invalid_claim_token")
+	}
+
+	var verification models.AuthVerification
+	now := time.Now().UTC()
+	if err := database.DB.
+		Where("claim_token_hash = ? AND claim_used_at IS NULL AND claim_expires_at > ?", hashClaimToken(rawToken), now).
+		First(&verification).Error; err != nil {
+		return verifiedClaim{}, errors.New("invalid_or_expired_claim_token")
+	}
+
+	verification.ClaimUsedAt = &now
+	if err := database.DB.Save(&verification).Error; err != nil {
+		return verifiedClaim{}, err
+	}
+
+	return verifiedClaim{IdentifierType: verification.IdentifierType, Identifier: verification.Identifier}, nil
+}
+
+func issueSession(userID uint) (string, time.Time, error) {
+	token := generateSessionToken()
+	expiresAt := time.Now().UTC().Add(sessionTTL)
+	session := models.AuthSession{
+		UserID: userID, TokenHash: hashSessionToken(token), ExpiresAt: expiresAt,
+	}
+	if err := database.DB.Create(&session).Error; err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expiresAt, nil
+}
+
+func authResponse(user *models.User) (AuthResponse, error) {
+	token, expiresAt, err := issueSession(user.ID)
+	if err != nil {
+		return AuthResponse{}, err
+	}
+	return AuthResponse{Token: token, ExpiresAt: expiresAt, User: user}, nil
 }
 
 // POST /v1/auth/guest
@@ -39,6 +158,10 @@ func (s *Server) authGuest(c *gin.Context) {
 		DeviceID string `json:"device_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil && err != io.EOF {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": "invalid_request"})
 		return
 	}
@@ -53,10 +176,12 @@ func (s *Server) authGuest(c *gin.Context) {
 				return
 			}
 			user.HasPin = user.PinHash != ""
-			c.JSON(200, AuthResponse{
-				Token: generateToken(&user),
-				User:  &user,
-			})
+			response, err := authResponse(&user)
+			if err != nil {
+				c.JSON(500, gin.H{"error": "failed_create_session"})
+				return
+			}
+			c.JSON(200, response)
 			return
 		}
 	}
@@ -87,10 +212,12 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	c.JSON(200, AuthResponse{
-		Token: generateToken(&user),
-		User:  &user,
-	})
+	response, err := authResponse(&user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_session"})
+		return
+	}
+	c.JSON(200, response)
 }
 
 func ensureDefaultCashAccount(userID uint) error {
@@ -112,6 +239,10 @@ func (s *Server) authIdentify(c *gin.Context) {
 		Identifier string `json:"identifier" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
@@ -132,8 +263,52 @@ func (s *Server) authIdentify(c *gin.Context) {
 
 // POST /v1/auth/otp/send
 func (s *Server) authOtpSend(c *gin.Context) {
-	// Mock OTP send
-	c.JSON(200, gin.H{"message": "otp_sent", "mock_otp": "1234"})
+	var input struct {
+		Identifier string `json:"identifier" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	identifierType, identifier, err := normalizeIdentifier(input.Identifier)
+	if err != nil {
+		c.JSON(422, gin.H{"error": err.Error()})
+		return
+	}
+
+	otp, err := generateOTPCode()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "otp_generation_failed"})
+		return
+	}
+	otpHash, err := hashOTP(otp)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "otp_hash_failed"})
+		return
+	}
+
+	expiresAt := time.Now().UTC().Add(time.Duration(s.cfg.OTPExpiresMinutes) * time.Minute)
+	verification := models.AuthVerification{
+		IdentifierType: identifierType,
+		Identifier:     identifier,
+		OTPHash:        otpHash,
+		OTPExpiresAt:   expiresAt,
+	}
+	if err := database.DB.Create(&verification).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_otp"})
+		return
+	}
+
+	response := gin.H{"message": "otp_sent", "expires_at": expiresAt}
+	if s.cfg.OTPDebugResponse {
+		response["dev_otp"] = otp
+	}
+	c.JSON(200, response)
 }
 
 // POST /v1/auth/otp/verify
@@ -143,25 +318,54 @@ func (s *Server) authOtpVerify(c *gin.Context) {
 		OTP        string `json:"otp" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Mock Verify
-	if input.OTP != "123456" && input.OTP != "1234" {
+	identifierType, identifier, err := normalizeIdentifier(input.Identifier)
+	if err != nil {
+		c.JSON(422, gin.H{"error": err.Error()})
+		return
+	}
+
+	var verification models.AuthVerification
+	now := time.Now().UTC()
+	err = database.DB.
+		Where("identifier_type = ? AND identifier = ? AND verified_at IS NULL AND otp_expires_at > ?", identifierType, identifier, now).
+		Order("created_at DESC").
+		First(&verification).Error
+	if err != nil {
+		c.JSON(401, gin.H{"error": "invalid_or_expired_otp"})
+		return
+	}
+
+	if verification.Attempts >= maxOTPAttempts {
+		c.JSON(429, gin.H{"error": "too_many_otp_attempts"})
+		return
+	}
+
+	if !verifyOTPHash(verification.OTPHash, input.OTP) {
+		database.DB.Model(&verification).Update("attempts", verification.Attempts+1)
 		c.JSON(401, gin.H{"error": "invalid_otp"})
 		return
 	}
 
-	// Return a claim token signed with the identifier type
-	// Determine if email or phone (simple check)
-	prefix := "phone:"
-	if strings.Contains(input.Identifier, "@") {
-		prefix = "email:"
+	claimToken := generateClaimToken()
+	claimTokenHash := hashClaimToken(claimToken)
+	claimExpiresAt := now.Add(time.Duration(s.cfg.ClaimTokenMinutes) * time.Minute)
+	verification.VerifiedAt = &now
+	verification.ClaimTokenHash = &claimTokenHash
+	verification.ClaimExpiresAt = &claimExpiresAt
+	if err := database.DB.Save(&verification).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_claim"})
+		return
 	}
 
-	claimToken := "claim_" + prefix + input.Identifier
-	c.JSON(200, gin.H{"claim_token": claimToken})
+	c.JSON(200, gin.H{"claim_token": claimToken, "expires_at": claimExpiresAt})
 }
 
 // POST /v1/auth/register
@@ -174,33 +378,27 @@ func (s *Server) authRegister(c *gin.Context) {
 		BiometricsEnabled bool   `json:"biometrics_enabled"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Parse claim token (Mock)
-	if !strings.HasPrefix(input.ClaimToken, "claim_") {
+	claim, err := consumeClaimToken(input.ClaimToken)
+	if err != nil {
 		c.JSON(401, gin.H{"error": "invalid_claim_token"})
 		return
 	}
 
-	tokenPayload := strings.TrimPrefix(input.ClaimToken, "claim_")
-	parts := strings.SplitN(tokenPayload, ":", 2)
-	if len(parts) != 2 {
-		c.JSON(401, gin.H{"error": "invalid_claim_token_format"})
-		return
-	}
-
-	identifierType := parts[0]
-	identifier := parts[1]
-
 	var email *string
 	var phone *string
 
-	if identifierType == "email" {
-		email = &identifier
+	if claim.IdentifierType == "email" {
+		email = &claim.Identifier
 	} else {
-		phone = &identifier
+		phone = &claim.Identifier
 	}
 
 	// Let's Hash PIN
@@ -213,11 +411,11 @@ func (s *Server) authRegister(c *gin.Context) {
 	// Check if identifier already taken
 	var existing models.User
 	query := "email = ?"
-	if identifierType != "email" {
+	if claim.IdentifierType != "email" {
 		query = "phone = ?"
 	}
 
-	if err := database.DB.Where(query, identifier).First(&existing).Error; err == nil {
+	if err := database.DB.Where(query, claim.Identifier).First(&existing).Error; err == nil {
 		c.JSON(409, gin.H{"error": "user_already_exists"})
 		return
 	}
@@ -280,10 +478,12 @@ func (s *Server) authRegister(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	c.JSON(201, AuthResponse{
-		Token: generateToken(&user),
-		User:  &user,
-	})
+	response, err := authResponse(&user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_session"})
+		return
+	}
+	c.JSON(201, response)
 }
 
 // POST /v1/auth/login
@@ -294,6 +494,10 @@ func (s *Server) authLogin(c *gin.Context) {
 		DeviceID   string `json:"device_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
@@ -324,8 +528,10 @@ func (s *Server) authLogin(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	c.JSON(200, AuthResponse{
-		Token: generateToken(&user),
-		User:  &user,
-	})
+	response, err := authResponse(&user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_session"})
+		return
+	}
+	c.JSON(200, response)
 }

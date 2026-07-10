@@ -70,18 +70,22 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 	s := &Server{cfg: cfg, validator: schema, parser: openai}
 	// Auth
-	r.POST("/v1/auth/guest", s.authGuest)
-	r.POST("/v1/auth/identify", s.authIdentify)
-	r.POST("/v1/auth/otp/send", s.authOtpSend)
-	r.POST("/v1/auth/otp/verify", s.authOtpVerify)
-	r.POST("/v1/auth/register", s.authRegister)
-	r.POST("/v1/auth/login", s.authLogin)
+	authLimited := r.Group("/v1/auth")
+	authLimited.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))
+	{
+		authLimited.POST("/guest", s.authGuest)
+		authLimited.POST("/identify", s.authIdentify)
+		authLimited.POST("/otp/send", s.authOtpSend)
+		authLimited.POST("/otp/verify", s.authOtpVerify)
+		authLimited.POST("/register", s.authRegister)
+		authLimited.POST("/login", s.authLogin)
+	}
 
 	// Protected Routes (User Token)
 	authorized := r.Group("/v1")
 	authorized.Use(AuthMiddleware())
 	{
-		authorized.POST("/parse", s.handleParse)
+		authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParse)
 		authorized.POST("/entries", s.saveEntry)
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/:id", s.getEntry)
@@ -92,7 +96,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.PUT("/quick-prompts/:id", s.updateQuickPrompt)
 		authorized.DELETE("/quick-prompts/:id", s.deleteQuickPrompt)
 		authorized.PUT("/user", s.updateProfile)
-		authorized.POST("/upload", s.handleUpload)
+		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
 
 		// Accounts
 		authorized.POST("/accounts", s.saveAccount)
@@ -115,6 +119,11 @@ func (s *Server) handleParse(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timepkg.Duration(s.cfg.ReqTimeoutSec)*timepkg.Second)
 	defer cancel()
 
+	if err := c.Request.ParseMultipartForm(s.cfg.MaxUploadMB * 1024 * 1024); err != nil && requestBodyTooLarge(err) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+		return
+	}
+
 	tz := c.PostForm("tz")
 	if tz == "" {
 		tz = s.cfg.TZDefault
@@ -125,11 +134,15 @@ func (s *Server) handleParse(c *gin.Context) {
 	if err == nil {
 		defer file.Close()
 		if header.Size > s.cfg.MaxUploadMB*1024*1024 {
-			c.JSON(413, gin.H{"error": "file too large"})
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file_too_large"})
 			return
 		}
 		buf := &bytes.Buffer{}
 		if _, err := io.Copy(buf, file); err != nil {
+			if requestBodyTooLarge(err) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+				return
+			}
 			c.JSON(400, gin.H{"error": "failed to read file"})
 			return
 		}
@@ -462,14 +475,24 @@ func (s *Server) updateEntry(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
-	if input.AccountID.Set && input.AccountID.Value != nil {
-		if ok, err := userOwnsAccount(userID, *input.AccountID.Value); err != nil {
-			c.JSON(500, gin.H{"error": "account_lookup_failed"})
-			return
-		} else if !ok {
-			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
-			return
-		}
+	if !input.AccountID.Set {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "is required"}})
+		return
+	}
+	if input.AccountID.Value == nil {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "is required"}})
+		return
+	}
+	if *input.AccountID.Value == 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must be a positive integer"}})
+		return
+	}
+	if ok, err := userOwnsAccount(userID, *input.AccountID.Value); err != nil {
+		c.JSON(500, gin.H{"error": "account_lookup_failed"})
+		return
+	} else if !ok {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+		return
 	}
 	if input.Title != nil {
 		entry.Title = *input.Title
@@ -695,27 +718,39 @@ func (s *Server) updateProfile(c *gin.Context) {
 		return
 	}
 
-	// 2. Handle Contact Updates with Security (Claim Token)
-	if payload.Email != "" && (user.Email == nil || *user.Email != payload.Email) {
-		// Verify Claim Token for Email
-		if !strings.HasPrefix(payload.ClaimToken, "claim_email:"+payload.Email) {
-			c.JSON(403, gin.H{"error": "Email verification required. Please verify OTP."})
+	emailChanged := payload.Email != "" && (user.Email == nil || *user.Email != payload.Email)
+	phoneChanged := payload.Phone != "" && (user.Phone == nil || *user.Phone != payload.Phone)
+	if emailChanged && phoneChanged {
+		c.JSON(403, gin.H{"error": "Only one verified contact field can be updated at a time."})
+		return
+	}
+
+	if emailChanged || phoneChanged {
+		claim, err := consumeClaimToken(payload.ClaimToken)
+		if err != nil {
+			c.JSON(403, gin.H{"error": "Contact verification required. Please verify OTP."})
 			return
 		}
-		user.Email = &payload.Email
+		if emailChanged {
+			_, normalizedEmail, err := normalizeIdentifier(payload.Email)
+			if err != nil || claim.IdentifierType != "email" || claim.Identifier != normalizedEmail {
+				c.JSON(403, gin.H{"error": "Email verification required. Please verify OTP."})
+				return
+			}
+			user.Email = &normalizedEmail
+		}
+		if phoneChanged {
+			_, normalizedPhone, err := normalizeIdentifier(payload.Phone)
+			if err != nil || claim.IdentifierType != "phone" || claim.Identifier != normalizedPhone {
+				c.JSON(403, gin.H{"error": "Phone verification required. Please verify OTP."})
+				return
+			}
+			user.Phone = &normalizedPhone
+		}
 	} else if payload.Email == "" {
 		// Optional: Allow clearing email? Or just ignore if empty?
 		// For now assuming empty string in payload means 'no change' or 'clear' managed by FE logic.
 		// If explicit clear is needed, logic might differ. Assuming update sends current value if unchanged.
-	}
-
-	if payload.Phone != "" && (user.Phone == nil || *user.Phone != payload.Phone) {
-		// Verify Claim Token for Phone
-		if !strings.HasPrefix(payload.ClaimToken, "claim_phone:"+payload.Phone) {
-			c.JSON(403, gin.H{"error": "Phone verification required. Please verify OTP."})
-			return
-		}
-		user.Phone = &payload.Phone
 	}
 
 	user.Username = payload.Username
@@ -730,16 +765,38 @@ func (s *Server) updateProfile(c *gin.Context) {
 }
 
 func cors(cfg *config.Config) gin.HandlerFunc {
+	allowedOrigins := parseAllowedOrigins(cfg.AllowOrigins)
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", cfg.AllowOrigins)
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		origin := strings.TrimSpace(c.GetHeader("Origin"))
+		if origin != "" {
+			if _, ok := allowedOrigins[origin]; ok {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				c.Writer.Header().Set("Vary", "Origin")
+				c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
+				c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			} else if c.Request.Method == http.MethodOptions {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cors_origin_not_allowed"})
+				return
+			}
+		}
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(204)
 			return
 		}
 		c.Next()
 	}
+}
+
+func parseAllowedOrigins(raw string) map[string]struct{} {
+	allowed := make(map[string]struct{})
+	for _, origin := range strings.Split(raw, ",") {
+		origin = strings.TrimSpace(origin)
+		if origin == "" || origin == "*" {
+			continue
+		}
+		allowed[origin] = struct{}{}
+	}
+	return allowed
 }
 
 func logging() gin.HandlerFunc {
@@ -771,7 +828,15 @@ func loadLocationOrIndia(requested, fallback string) *timepkg.Location {
 func (s *Server) handleUpload(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": "no file provided"})
+		return
+	}
+	if file.Size > s.cfg.MaxUploadMB*1024*1024 {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file_too_large"})
 		return
 	}
 
