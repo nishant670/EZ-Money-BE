@@ -99,7 +99,7 @@ Legend:
 ## P1 - Product Flow Polish
 
 - [x] Shorten onboarding path so "Continue as guest" is reachable faster.
-- [ ] Restore or expose typed natural-language input on the home capture card, because text capture is part of MVP scope.
+- [x] Restore or expose typed natural-language input on the home capture card, because text capture is part of MVP scope.
 - [ ] Improve empty/error/retry states across home, transactions, accounts, and dashboard.
 - [ ] Make server field-level validation errors user-friendly in mobile forms.
 - [ ] Ensure dashboard and transaction lists refresh after edits/deletes, not only creates.
