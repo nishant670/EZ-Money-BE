@@ -103,7 +103,7 @@ Legend:
 - [x] Improve empty/error/retry states across home, transactions, accounts, and dashboard.
 - [x] Make server field-level validation errors user-friendly in mobile forms.
 - [x] Ensure dashboard and transaction lists refresh after edits/deletes, not only creates.
-- [ ] Confirm date/time behavior with Asia/Kolkata defaults and client timezone handling.
+- [x] Confirm date/time behavior with Asia/Kolkata defaults and client timezone handling.
 
 ## P1 - Data Model And Backend Hardening
 
