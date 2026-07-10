@@ -1,11 +1,50 @@
 
 openapi: 3.1.0
 info:
-  title: Finance Parser API
-  version: 1.0.0
+  title: FINNRI MVP API
+  version: 1.1.0
 servers:
   - url: http://localhost:8080
 paths:
+  /v1/dashboard:
+    get:
+      summary: Return the deterministic spending dashboard for a date range
+      parameters:
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: tz
+          schema:
+            type: string
+            default: Asia/Kolkata
+      responses:
+        "200":
+          description: Dashboard calculated from owned transactions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+        "422":
+          description: Invalid or oversized date range
+  /v1/insights:
+    get:
+      deprecated: true
+      summary: Compatibility alias for GET /v1/dashboard
+      responses:
+        "200":
+          description: Dashboard calculated from owned transactions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
   /v1/parse:
     post:
       summary: Parse audio/text to structured expense/income JSON
@@ -36,43 +75,432 @@ paths:
   /v1/entries:
     post:
       summary: Create a transaction entry
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          description: Reuse the same key when retrying one logical create request.
+          schema:
+            type: string
+            maxLength: 128
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+              $ref: "#/components/schemas/FinalEntry"
       responses:
         "201":
           description: Entry created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+                $ref: "#/components/schemas/SavedEntry"
         "400":
           description: Invalid payload
+        "422":
+          description: Field validation or account ownership failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
         "500":
           description: Database error
     get:
       summary: List all transaction entries
       parameters:
         - in: query
+          name: type
+          schema:
+            type: string
+            enum: [expense, income]
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: mode
+          schema:
+            type: string
+            enum: [Cash, UPI, Credit Card, Wallets]
+        - in: query
+          name: q
+          description: Case-insensitive search across title, merchant, and notes.
+          schema:
+            type: string
+        - in: query
           name: tag
           description: Return only entries that include this tag.
           schema:
             type: string
+        - in: query
+          name: account_id
+          description: Return only entries linked to this owned account.
+          schema:
+            type: integer
+        - in: query
+          name: min_amount
+          schema:
+            type: string
+        - in: query
+          name: max_amount
+          schema:
+            type: string
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: page_size
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
       responses:
         "200":
           description: Entries
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+                $ref: "#/components/schemas/EntryPage"
+        "422":
+          description: Invalid filters
         "500":
           description: Database error
+  /v1/accounts:
+    get:
+      summary: List accounts owned by the authenticated user
+      responses:
+        "200":
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+    post:
+      summary: Create an account/payment source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountInput"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+  /v1/accounts/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    put:
+      summary: Update an owned account or make it the default
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountInput"
+      responses:
+        "200":
+          description: Updated account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "422":
+          description: Invalid account fields
+        "404":
+          description: Account not found
+    delete:
+      summary: Delete an unused owned account
+      responses:
+        "200":
+          description: Deleted
+        "409":
+          description: Account is used by transactions or is the user's only account
+        "404":
+          description: Account not found
+  /v1/entries/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    get:
+      summary: Get an owned transaction
+      responses:
+        "200":
+          description: Transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedEntry"
+        "404":
+          description: Not found
+    put:
+      summary: Update an owned transaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEntry"
+      responses:
+        "200":
+          description: Updated transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedEntry"
+        "422":
+          description: Field validation or account ownership failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+    delete:
+      summary: Delete an owned transaction
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Not found
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
   schemas:
+    Dashboard:
+      type: object
+      required: [period, summary, top_categories, top_merchants, account_spending, recent_transactions, insights]
+      properties:
+        period:
+          type: object
+          required: [start, end]
+          properties:
+            start:
+              type: string
+              format: date
+            end:
+              type: string
+              format: date
+        summary:
+          type: object
+          required: [total_spent, total_income, daily_average, transaction_count]
+          properties:
+            total_spent:
+              type: number
+            total_income:
+              type: number
+            daily_average:
+              type: number
+            transaction_count:
+              type: integer
+        top_categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardCategory"
+        top_merchants:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardMerchant"
+        account_spending:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardAccount"
+        recent_transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SavedEntry"
+        insights:
+          type: array
+          items:
+            $ref: "#/components/schemas/InsightCard"
+    DashboardCategory:
+      type: object
+      required: [category, amount, percentage, change]
+      properties:
+        category:
+          type: string
+        amount:
+          type: number
+        percentage:
+          type: number
+        change:
+          type: number
+    DashboardMerchant:
+      type: object
+      required: [merchant, amount, transaction_count]
+      properties:
+        merchant:
+          type: string
+        amount:
+          type: number
+        transaction_count:
+          type: integer
+    DashboardAccount:
+      type: object
+      required: [account_name, amount, percentage]
+      properties:
+        account_id:
+          type: [integer, "null"]
+        account_name:
+          type: string
+        amount:
+          type: number
+        percentage:
+          type: number
+    InsightCard:
+      type: object
+      required: [kind, severity, title, body]
+      properties:
+        kind:
+          type: string
+          enum: [period_comparison, category_increase, top_merchant, account_usage, unusual_spending]
+        severity:
+          type: string
+          enum: [info, warning, success]
+        title:
+          type: string
+        body:
+          type: string
     ExpenseOrIncomeEntry:
       $ref: ./schemas/expense_entry.schema.json
+    FinalEntry:
+      $ref: ./schemas/final_entry.schema.json
+    UpdateEntry:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+        type:
+          type: string
+          enum: [expense, income]
+        amount:
+          oneOf:
+            - type: number
+              exclusiveMinimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        currency:
+          type: string
+          const: INR
+        source:
+          type: string
+          enum: [manual, text, voice]
+        account_id:
+          type: [integer, "null"]
+          minimum: 1
+        mode:
+          type: string
+          enum: [Cash, UPI, Credit Card, Wallets]
+        category:
+          type: string
+        merchant:
+          type: string
+        notes:
+          type: string
+        date:
+          type: string
+          format: date
+        time:
+          type: string
+        tag:
+          type: string
+    SavedEntry:
+      allOf:
+        - $ref: "#/components/schemas/FinalEntry"
+        - type: object
+          properties:
+            id:
+              type: integer
+            account:
+              $ref: "#/components/schemas/Account"
+            source:
+              type: string
+              enum: [manual, text, voice]
+            source_text:
+              type: string
+    EntryPage:
+      type: object
+      required: [entries, page, page_size, total, total_pages]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/SavedEntry"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+    AccountInput:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        provider:
+          type: string
+        identifier:
+          type: string
+        is_default:
+          type: boolean
+    Account:
+      type: object
+      required: [id, name, type]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+        provider:
+          type: string
+        identifier:
+          type: string
+        is_default:
+          type: boolean
+    ValidationError:
+      type: object
+      required: [error, fields]
+      properties:
+        error:
+          const: invalid_entry
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+security:
+  - bearerAuth: []

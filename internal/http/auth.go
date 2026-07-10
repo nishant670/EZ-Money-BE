@@ -48,6 +48,10 @@ func (s *Server) authGuest(c *gin.Context) {
 		err := database.DB.Where("device_id = ? AND is_guest = ?", input.DeviceID, true).First(&user).Error
 		if err == nil {
 			// Found existing guest session
+			if err := ensureDefaultCashAccount(user.ID); err != nil {
+				c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
+				return
+			}
 			user.HasPin = user.PinHash != ""
 			c.JSON(200, AuthResponse{
 				Token: generateToken(&user),
@@ -77,12 +81,29 @@ func (s *Server) authGuest(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_create_guest"})
 		return
 	}
+	if err := ensureDefaultCashAccount(user.ID); err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_default_account"})
+		return
+	}
 
 	user.HasPin = user.PinHash != ""
 	c.JSON(200, AuthResponse{
 		Token: generateToken(&user),
 		User:  &user,
 	})
+}
+
+func ensureDefaultCashAccount(userID uint) error {
+	var count int64
+	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	return database.DB.Create(&models.Account{
+		UserID: userID, Type: "cash", Name: "Cash", IsDefault: true, Color: "#2ECC71",
+	}).Error
 }
 
 // POST /v1/auth/identify
@@ -252,6 +273,10 @@ func (s *Server) authRegister(c *gin.Context) {
 			c.JSON(500, gin.H{"error": "db_error"})
 			return
 		}
+	}
+	if err := ensureDefaultCashAccount(user.ID); err != nil {
+		c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
+		return
 	}
 
 	user.HasPin = user.PinHash != ""

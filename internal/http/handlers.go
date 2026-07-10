@@ -12,9 +12,11 @@ import (
 	"strings"
 	"time"
 	timepkg "time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xeipuuv/gojsonschema"
+	"gorm.io/gorm"
 
 	"finance-parser-go/internal/ai"
 	"finance-parser-go/internal/config"
@@ -25,7 +27,7 @@ import (
 type Server struct {
 	cfg       *config.Config
 	validator *gojsonschema.Schema
-	openai    *ai.OpenAIClient
+	parser    ai.Parser
 }
 
 func NewServer(cfg *config.Config) *gin.Engine {
@@ -42,6 +44,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 				strings.HasPrefix(c.Request.URL.Path, "/v1/quick-prompts") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/user") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/insights") ||
+				strings.HasPrefix(c.Request.URL.Path, "/v1/dashboard") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/accounts") ||
 				strings.HasPrefix(c.Request.URL.Path, "/v1/parse") {
 				log.Printf("[DEBUG] Auth Skip: %s", c.Request.URL.Path)
@@ -65,7 +68,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 	openai := ai.NewOpenAIClient(cfg)
 
-	s := &Server{cfg: cfg, validator: schema, openai: openai}
+	s := &Server{cfg: cfg, validator: schema, parser: openai}
 	// Auth
 	r.POST("/v1/auth/guest", s.authGuest)
 	r.POST("/v1/auth/identify", s.authIdentify)
@@ -98,6 +101,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Insights
+		authorized.GET("/dashboard", s.getDashboard)
 		authorized.GET("/insights", s.getInsights)
 	}
 
@@ -129,10 +133,12 @@ func (s *Server) handleParse(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "failed to read file"})
 			return
 		}
-		if t, err := s.openai.Transcribe(ctx, header.Filename, buf.Bytes()); err == nil {
+		if t, err := s.parser.Transcribe(ctx, header.Filename, buf.Bytes()); err == nil {
 			transcript = t
 		} else {
 			log.Printf("stt error: %v", err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "transcription_failed"})
+			return
 		}
 	}
 
@@ -143,8 +149,15 @@ func (s *Server) handleParse(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "no audio or hint_text provided"})
 		return
 	}
+	if s.cfg.MaxTranscriptChars > 0 && utf8.RuneCountInString(transcript) > s.cfg.MaxTranscriptChars {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+			"error":          "transcript_too_long",
+			"max_characters": s.cfg.MaxTranscriptChars,
+		})
+		return
+	}
 
-	parsed, err := s.openai.ParseText(ctx, transcript, tz)
+	parsed, err := s.parser.ParseText(ctx, transcript, tz)
 	if err != nil {
 		c.JSON(422, gin.H{"error": "could_not_parse", "transcript": transcript})
 		return
@@ -156,12 +169,11 @@ func (s *Server) handleParse(c *gin.Context) {
 		return
 	}
 
-	if s.ensureDate(parsedObj, transcript, tz) {
-		parsed, err = json.Marshal(parsedObj)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "serialization_failed"})
-			return
-		}
+	normalizeParsedDraft(parsedObj, transcript)
+	parsed, err = json.Marshal(parsedObj)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "serialization_failed"})
+		return
 	}
 
 	res, err := s.validator.Validate(gojsonschema.NewBytesLoader(parsed))
@@ -177,7 +189,6 @@ func (s *Server) handleParse(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "schema_invalid", "details": d, "transcript": transcript})
 		return
 	}
-	fmt.Print("parsedData", parsed)
 	c.Data(200, "application/json", parsed)
 }
 
@@ -189,19 +200,63 @@ func (s *Server) saveEntry(c *gin.Context) {
 	}
 	userID := val.(uint)
 
-	var entry models.Entry
-
-	if err := c.BindJSON(&entry); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	var input entryInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid_json"})
 		return
 	}
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
+		return
+	}
+	if input.AccountID != nil {
+		if ok, err := userOwnsAccount(userID, *input.AccountID); err != nil {
+			c.JSON(500, gin.H{"error": "account_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+			return
+		}
+	}
 
-	entry.UserID = userID
+	idempotencyKey, idempotencyFields := parseIdempotencyKey(c.GetHeader("Idempotency-Key"))
+	if len(idempotencyFields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": idempotencyFields})
+		return
+	}
+	if idempotencyKey != "" {
+		var existing models.Entry
+		if err := database.DB.Preload("Account").
+			Where("user_id = ? AND idempotency_key = ?", userID, idempotencyKey).
+			First(&existing).Error; err == nil {
+			c.Header("Idempotency-Replayed", "true")
+			c.JSON(200, existing)
+			return
+		} else if err != gorm.ErrRecordNotFound {
+			c.JSON(500, gin.H{"error": "idempotency_lookup_failed"})
+			return
+		}
+	}
 
+	entry := input.toModel(userID)
+	if idempotencyKey != "" {
+		entry.IdempotencyKey = &idempotencyKey
+	}
 	if err := database.DB.Create(&entry).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		if idempotencyKey != "" {
+			var existing models.Entry
+			if lookupErr := database.DB.Preload("Account").
+				Where("user_id = ? AND idempotency_key = ?", userID, idempotencyKey).
+				First(&existing).Error; lookupErr == nil {
+				c.Header("Idempotency-Replayed", "true")
+				c.JSON(200, existing)
+				return
+			}
+		}
+		c.JSON(500, gin.H{"error": "failed_create_entry"})
 		return
 	}
+	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 
 	c.JSON(201, entry)
 }
@@ -214,11 +269,20 @@ func (s *Server) listEntries(c *gin.Context) {
 	}
 	userID := val.(uint)
 
+	page, pageSize, fields := parseEntryPagination(c.Query("page"), c.Query("page_size"))
+	if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_filters", "fields": fields})
+		return
+	}
+
 	var entries []models.Entry
+	query := database.DB.Model(&models.Entry{}).Where("user_id = ?", userID)
 
-	query := database.DB.Where("user_id = ?", userID).Order("date desc, created_at desc")
-
-	if t := strings.TrimSpace(c.Query("type")); t != "" && t != "All" {
+	if t := strings.TrimSpace(c.Query("type")); t != "" && !strings.EqualFold(t, "all") {
+		if !strings.EqualFold(t, "expense") && !strings.EqualFold(t, "income") {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"type": "must be expense or income"}})
+			return
+		}
 		query = query.Where("LOWER(type) = LOWER(?)", t)
 	}
 
@@ -227,27 +291,68 @@ func (s *Server) listEntries(c *gin.Context) {
 	}
 
 	if mode := strings.TrimSpace(c.Query("mode")); mode != "" {
+		switch strings.ToLower(mode) {
+		case "cash", "upi", "credit card", "wallets":
+		default:
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"mode": "is invalid"}})
+			return
+		}
 		query = query.Where("LOWER(mode) = LOWER(?)", mode)
 	}
-
-	if minStr := c.Query("min_amount"); minStr != "" {
-		if min, err := strconv.ParseFloat(minStr, 64); err == nil {
-			query = query.Where("amount >= ?", min)
+	if accountID := strings.TrimSpace(c.Query("account_id")); accountID != "" {
+		parsed, err := strconv.ParseUint(accountID, 10, 32)
+		if err != nil || parsed == 0 {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"account_id": "must be a positive integer"}})
+			return
 		}
+		query = query.Where("account_id = ?", parsed)
+	}
+
+	var minAmount, maxAmount *models.Money
+	if minStr := c.Query("min_amount"); minStr != "" {
+		min, err := models.ParseMoney(minStr)
+		if err != nil {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"min_amount": err.Error()}})
+			return
+		}
+		minAmount = &min
+		query = query.Where("amount >= ?", min)
 	}
 
 	if maxStr := c.Query("max_amount"); maxStr != "" {
-		if max, err := strconv.ParseFloat(maxStr, 64); err == nil {
-			query = query.Where("amount <= ?", max)
+		max, err := models.ParseMoney(maxStr)
+		if err != nil {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"max_amount": err.Error()}})
+			return
 		}
+		maxAmount = &max
+		query = query.Where("amount <= ?", max)
+	}
+	if minAmount != nil && maxAmount != nil && *minAmount > *maxAmount {
+		c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"max_amount": "must be greater than or equal to min_amount"}})
+		return
 	}
 
-	if start := c.Query("start_date"); start != "" {
-		query = query.Where("date >= ?", start)
+	startDate := c.Query("start_date")
+	if startDate != "" {
+		if _, err := timepkg.Parse("2006-01-02", startDate); err != nil {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"start_date": "must use YYYY-MM-DD"}})
+			return
+		}
+		query = query.Where("date >= ?", startDate)
 	}
 
-	if end := c.Query("end_date"); end != "" {
-		query = query.Where("date <= ?", end)
+	endDate := c.Query("end_date")
+	if endDate != "" {
+		if _, err := timepkg.Parse("2006-01-02", endDate); err != nil {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"end_date": "must use YYYY-MM-DD"}})
+			return
+		}
+		query = query.Where("date <= ?", endDate)
+	}
+	if startDate != "" && endDate != "" && startDate > endDate {
+		c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"end_date": "must be on or after start_date"}})
+		return
 	}
 
 	if tag := strings.TrimSpace(c.Query("tag")); tag != "" {
@@ -255,20 +360,39 @@ func (s *Server) listEntries(c *gin.Context) {
 			query = query.Where("tags @> ?", string(tagFilter))
 		}
 	}
+	if search := strings.TrimSpace(c.Query("q")); search != "" {
+		if len(search) > 200 {
+			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"q": "must not exceed 200 characters"}})
+			return
+		}
+		pattern := "%" + search + "%"
+		query = query.Where(
+			"title ILIKE ? OR merchant ILIKE ? OR notes ILIKE ?",
+			pattern, pattern, pattern,
+		)
+	}
 
-	log.Printf("[DEBUG] listEntries Filters | Type: %s | Cat: %s | Mode: %s | Min: %s | Max: %s | Start: %s | End: %s | Tag: %s",
-		c.Query("type"), c.Query("category"), c.Query("mode"),
-		c.Query("min_amount"), c.Query("max_amount"),
-		c.Query("start_date"), c.Query("end_date"), c.Query("tag"),
-	)
-
-	if err := query.Find(&entries).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	listQuery := query.Session(&gorm.Session{})
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_count_entries"})
 		return
 	}
 
-	c.JSON(200, entries)
-	log.Printf("[DEBUG] listEntries: Found %d entries", len(entries))
+	if err := listQuery.Preload("Account").
+		Order("date desc, created_at desc").
+		Limit(pageSize).
+		Offset((page - 1) * pageSize).
+		Find(&entries).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_list_entries"})
+		return
+	}
+
+	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+	c.JSON(200, gin.H{
+		"entries": entries, "page": page, "page_size": pageSize,
+		"total": total, "total_pages": totalPages,
+	})
 }
 
 func (s *Server) getEntry(c *gin.Context) {
@@ -280,7 +404,7 @@ func (s *Server) getEntry(c *gin.Context) {
 	}
 
 	var entry models.Entry
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&entry).Error; err != nil {
+	if err := ownedEntries(database.DB, userID).Preload("Account").Where("id = ?", id).First(&entry).Error; err != nil {
 		c.JSON(404, gin.H{"error": "entry not found"})
 		return
 	}
@@ -297,58 +421,130 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}
 
 	var entry models.Entry
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&entry).Error; err != nil {
+	if err := ownedEntries(database.DB, userID).Where("id = ?", id).First(&entry).Error; err != nil {
 		c.JSON(404, gin.H{"error": "entry not found"})
 		return
 	}
 
-	var input map[string]interface{}
+	var input updateEntryInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(400, gin.H{"error": "invalid_json"})
 		return
 	}
 
-	// Update fields if present in input
-	if v, ok := input["title"].(string); ok {
-		entry.Title = v
+	amount, title, entryType := entry.Amount, entry.Title, entry.Type
+	currency, source, mode, category, date := entry.Currency, entry.Source, entry.Mode, entry.Category, entry.Date
+	if input.Amount != nil {
+		amount = *input.Amount
 	}
-	if v, ok := input["amount"].(float64); ok {
-		entry.Amount = v
+	if input.Type != nil {
+		entryType = *input.Type
 	}
-	if v, ok := input["type"].(string); ok {
-		entry.Type = strings.ToLower(v)
+	if input.Title != nil {
+		title = *input.Title
 	}
-	if v, ok := input["mode"].(string); ok {
-		entry.Mode = v
+	if input.Currency != nil {
+		currency = *input.Currency
 	}
-	if v, ok := input["category"].(string); ok {
-		entry.Category = v
+	if input.Source != nil {
+		source = *input.Source
 	}
-	if v, ok := input["notes"].(string); ok {
-		entry.Notes = v
+	if input.Mode != nil {
+		mode = *input.Mode
 	}
-	if v, ok := input["merchant"].(string); ok {
-		entry.Merchant = v
+	if input.Category != nil {
+		category = *input.Category
 	}
-	if v, ok := input["date"].(string); ok {
-		entry.Date = v
+	if input.Date != nil {
+		date = *input.Date
 	}
-	if v, ok := input["time"].(string); ok {
-		entry.Time = v
+	if fields := validateEntryValues(amount, title, entryType, currency, source, mode, category, date); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
+		return
 	}
-	if v, ok := input["tag"].(string); ok {
-		entry.Tag = v
+	if input.AccountID.Set && input.AccountID.Value != nil {
+		if ok, err := userOwnsAccount(userID, *input.AccountID.Value); err != nil {
+			c.JSON(500, gin.H{"error": "account_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+			return
+		}
 	}
-	if v, ok := input["attachment"].(string); ok {
-		entry.Attachment = v
+	if input.Title != nil {
+		entry.Title = *input.Title
+	}
+	if input.Amount != nil {
+		entry.Amount = *input.Amount
+	}
+	if input.Type != nil {
+		entry.Type = strings.ToLower(*input.Type)
+	}
+	if input.Currency != nil {
+		entry.Currency = strings.ToUpper(strings.TrimSpace(*input.Currency))
+	}
+	if input.Source != nil {
+		entry.Source = strings.ToLower(strings.TrimSpace(*input.Source))
+	}
+	if input.Mode != nil {
+		entry.Mode = *input.Mode
+	}
+	if input.CardNetwork != nil {
+		entry.CardNetwork = *input.CardNetwork
+	}
+	if input.Category != nil {
+		entry.Category = *input.Category
+	}
+	if input.Notes != nil {
+		entry.Notes = *input.Notes
+	}
+	if input.Merchant != nil {
+		entry.Merchant = *input.Merchant
+	}
+	if input.PurposeType != nil {
+		entry.PurposeType = *input.PurposeType
+	}
+	if input.Date != nil {
+		entry.Date = *input.Date
+	}
+	if input.Time != nil {
+		entry.Time = *input.Time
+	}
+	if input.Tag != nil {
+		entry.Tag = *input.Tag
+	}
+	if input.Tags != nil {
+		entry.Tags = *input.Tags
+	}
+	if input.SourceText != nil {
+		entry.SourceText = *input.SourceText
+	}
+	if input.Attachment != nil {
+		entry.Attachment = *input.Attachment
+	}
+	if input.AccountID.Set {
+		entry.AccountID = input.AccountID.Value
 	}
 
 	if err := database.DB.Save(&entry).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": "failed_update_entry"})
 		return
 	}
+	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 
 	c.JSON(200, entry)
+}
+
+func userOwnsAccount(userID, accountID uint) (bool, error) {
+	var count int64
+	err := database.DB.Model(&models.Account{}).
+		Where("id = ? AND user_id = ?", accountID, userID).
+		Count(&count).Error
+	return count == 1, err
+}
+
+func ownedEntries(db *gorm.DB, userID uint) *gorm.DB {
+	return db.Where("user_id = ?", userID)
 }
 
 func (s *Server) deleteEntry(c *gin.Context) {
@@ -359,8 +555,13 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		return
 	}
 
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Entry{}).Error; err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	result := ownedEntries(database.DB, userID).Where("id = ?", id).Delete(&models.Entry{})
+	if result.Error != nil {
+		c.JSON(500, gin.H{"error": result.Error.Error()})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(404, gin.H{"error": "entry not found"})
 		return
 	}
 
@@ -531,7 +732,7 @@ func (s *Server) updateProfile(c *gin.Context) {
 func cors(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", cfg.AllowOrigins)
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(204)
@@ -547,43 +748,6 @@ func logging() gin.HandlerFunc {
 		c.Next()
 		log.Printf("%s %s %d %s", c.Request.Method, c.Request.URL.Path, c.Writer.Status(), timepkg.Since(start))
 	}
-}
-
-func (s *Server) ensureDate(entry map[string]any, transcript, tz string) bool {
-	loc := loadLocationOrIndia(tz, s.cfg.TZDefault)
-	now := timepkg.Now().In(loc)
-
-	var desired string
-
-	dateStr, _ := entry["date"].(string)
-	dateStr = strings.TrimSpace(dateStr)
-	_, parsedErr := timepkg.Parse("2006-01-02", dateStr)
-	needsDateConfirmation := needsDateConfirmation(entry)
-
-	switch {
-	case needsDateConfirmation:
-		desired = now.Format("2006-01-02")
-	case dateStr == "" || parsedErr != nil:
-		desired = now.Format("2006-01-02")
-	}
-
-	if desired == "" {
-		return false
-	}
-
-	entry["date"] = desired
-	return true
-}
-
-func needsDateConfirmation(entry map[string]any) bool {
-	raw, ok := entry["needs_confirmation"].(map[string]any)
-	if !ok {
-		return false
-	}
-	if val, ok := raw["date"].(bool); ok {
-		return val
-	}
-	return false
 }
 
 func loadLocationOrIndia(requested, fallback string) *timepkg.Location {
@@ -631,13 +795,33 @@ func (s *Server) handleUpload(c *gin.Context) {
 }
 func (s *Server) saveAccount(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
-	var account models.Account
-	if err := c.BindJSON(&account); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	var input accountInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid_json"})
 		return
 	}
-	account.UserID = userID
-	if err := database.DB.Create(&account).Error; err != nil {
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_account", "fields": fields})
+		return
+	}
+	account := models.Account{UserID: userID}
+	input.apply(&account)
+	var accountCount int64
+	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&accountCount).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_count_accounts"})
+		return
+	}
+	if accountCount == 0 {
+		account.IsDefault = true
+	}
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if account.IsDefault {
+			if err := tx.Model(&models.Account{}).Where("user_id = ?", userID).Update("is_default", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Create(&account).Error
+	}); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
@@ -666,13 +850,30 @@ func (s *Server) updateAccount(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "account not found"})
 		return
 	}
-	if err := c.BindJSON(&account); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	wasDefault := account.IsDefault
+	var input accountInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid_json"})
 		return
 	}
-	account.ID = uint(id)
-	account.UserID = userID
-	if err := database.DB.Save(&account).Error; err != nil {
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_account", "fields": fields})
+		return
+	}
+	input.apply(&account)
+	if wasDefault {
+		account.IsDefault = true
+	}
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if account.IsDefault {
+			if err := tx.Model(&models.Account{}).
+				Where("user_id = ? AND id <> ?", userID, id).
+				Update("is_default", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Save(&account).Error
+	}); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
@@ -686,7 +887,42 @@ func (s *Server) deleteAccount(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Account{}).Error; err != nil {
+	var account models.Account
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&account).Error; err != nil {
+		c.JSON(404, gin.H{"error": "account not found"})
+		return
+	}
+	var entryCount int64
+	if err := database.DB.Model(&models.Entry{}).Where("account_id = ? AND user_id = ?", id, userID).Count(&entryCount).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_check_account_usage"})
+		return
+	}
+	if entryCount > 0 {
+		c.JSON(409, gin.H{"error": "account_in_use", "message": "Move or delete linked transactions before deleting this account."})
+		return
+	}
+	var accountCount int64
+	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&accountCount).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_count_accounts"})
+		return
+	}
+	if accountCount <= 1 {
+		c.JSON(409, gin.H{"error": "last_account", "message": "Create another account before deleting your only account."})
+		return
+	}
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(&account).Error; err != nil {
+			return err
+		}
+		if account.IsDefault {
+			var replacement models.Account
+			if err := tx.Where("user_id = ?", userID).Order("created_at asc").First(&replacement).Error; err != nil {
+				return err
+			}
+			return tx.Model(&replacement).Update("is_default", true).Error
+		}
+		return nil
+	}); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}

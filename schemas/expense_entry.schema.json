@@ -3,7 +3,12 @@
   "title": "ParsedDraftEntry",
   "type": "object",
   "required": [
-    "source_text"
+    "stage",
+    "source_text",
+    "confidence",
+    "needs_confirmation",
+    "missing_fields",
+    "clarifications"
   ],
   "properties": {
     "stage": {
@@ -124,7 +129,7 @@
         "type": "string"
       }
     },
-    "notes": {
+    "note": {
       "type": [
         "string",
         "null"
@@ -221,6 +226,19 @@
         "type": "string"
       },
       "description": "Concise questions to ask the user if key fields are ambiguous"
+    },
+    "missing_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["title", "amount", "type", "mode", "category", "date"]
+      }
+    },
+    "recurring_candidate": {
+      "type": ["boolean", "null"]
+    },
+    "split_candidate": {
+      "type": ["boolean", "null"]
     }
   },
   "additionalProperties": false

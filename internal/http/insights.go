@@ -1,8 +1,6 @@
 package http
 
 import (
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
 	"fmt"
 	"math"
 	"net/http"
@@ -10,302 +8,358 @@ import (
 	"strings"
 	"time"
 
+	"finance-parser-go/internal/database"
+	"finance-parser-go/internal/models"
+
 	"github.com/gin-gonic/gin"
 )
 
-type MonthlyHealth struct {
-	Income      float64 `json:"income"`
-	Spent       float64 `json:"spent"`
-	Savings     float64 `json:"savings"`
-	SavingsRate float64 `json:"savings_rate"` // Percentage
-	BurnRate    string  `json:"burn_rate"`    // Days remaining
+type DashboardPeriod struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
 }
 
-type CategoryBreakdown struct {
+type DashboardSummary struct {
+	TotalSpent       float64 `json:"total_spent"`
+	TotalIncome      float64 `json:"total_income"`
+	DailyAverage     float64 `json:"daily_average"`
+	TransactionCount int     `json:"transaction_count"`
+}
+
+type DashboardCategory struct {
 	Category   string  `json:"category"`
 	Amount     float64 `json:"amount"`
 	Percentage float64 `json:"percentage"`
-	Change     float64 `json:"change"` // vs last month
+	Change     float64 `json:"change"`
 }
 
-type MerchantInfo struct {
+type DashboardMerchant struct {
 	Merchant         string  `json:"merchant"`
 	Amount           float64 `json:"amount"`
 	TransactionCount int     `json:"transaction_count"`
-	Icon             string  `json:"icon"`
 }
 
-type AIInsightCard struct {
-	Type        string `json:"type"` // info, warning, success
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ActionLabel string `json:"action_label"`
-	ActionType  string `json:"action_type"`
-}
-
-type AccountSpending struct {
-	Type       string  `json:"type"`
-	Amount     float64 `json:"amount"`
-	Percentage float64 `json:"percentage"`
-}
-
-type CreditUtilization struct {
+type DashboardAccount struct {
+	AccountID   *uint   `json:"account_id"`
 	AccountName string  `json:"account_name"`
-	Used        float64 `json:"used"`
-	Limit       float64 `json:"limit"`
+	Amount      float64 `json:"amount"`
 	Percentage  float64 `json:"percentage"`
-	DueDate     string  `json:"due_date"`
-	Warning     bool    `json:"warning"`
 }
 
-type EMISummary struct {
-	TotalMonthlyEMI float64 `json:"total_monthly_emi"`
-	TotalLent       float64 `json:"total_lent"`
-	LentCount       int     `json:"lent_count"`
+type InsightCard struct {
+	Kind     string `json:"kind"`
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+	Body     string `json:"body"`
 }
 
-type BehavioralInsight struct {
-	AverageDailySpend float64 `json:"average_daily_spend"`
-	HighestSpendDay   string  `json:"highest_spend_day"`
+type DashboardResponse struct {
+	Period             DashboardPeriod     `json:"period"`
+	Summary            DashboardSummary    `json:"summary"`
+	TopCategories      []DashboardCategory `json:"top_categories"`
+	TopMerchants       []DashboardMerchant `json:"top_merchants"`
+	AccountSpending    []DashboardAccount  `json:"account_spending"`
+	RecentTransactions []models.Entry      `json:"recent_transactions"`
+	Insights           []InsightCard       `json:"insights"`
 }
 
-type ReviewItem struct {
-	Type  string `json:"type"` // uncategorized, missing_account, duplicates
-	Count int    `json:"count"`
-	Title string `json:"title"`
+type dashboardRange struct {
+	Start         time.Time
+	End           time.Time
+	PreviousStart time.Time
+	PreviousEnd   time.Time
+	Days          int
 }
 
-type InsightsResponse struct {
-	MonthlyHealth      MonthlyHealth       `json:"monthly_health"`
-	CategoryBreakdown  []CategoryBreakdown `json:"category_breakdown"`
-	TopMerchants       []MerchantInfo      `json:"top_merchants"`
-	AIInsights         []AIInsightCard     `json:"ai_insights"`
-	AccountSpending    []AccountSpending   `json:"account_spending"`
-	CreditUtilization  []CreditUtilization `json:"credit_utilization"`
-	EMISummary         EMISummary          `json:"emi_summary"`
-	BehavioralInsights BehavioralInsight   `json:"behavioral_insights"`
-	ReviewItems        []ReviewItem        `json:"review_items"`
+func parseDashboardRange(startValue, endValue string, now time.Time) (dashboardRange, map[string]string) {
+	fields := map[string]string{}
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	end := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	if startValue != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", startValue, now.Location())
+		if err != nil {
+			fields["start_date"] = "must use YYYY-MM-DD"
+		} else {
+			start = parsed
+		}
+	}
+	if endValue != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", endValue, now.Location())
+		if err != nil {
+			fields["end_date"] = "must use YYYY-MM-DD"
+		} else {
+			end = parsed
+		}
+	}
+	if len(fields) == 0 && start.After(end) {
+		fields["end_date"] = "must be on or after start_date"
+	}
+	days := int(end.Sub(start).Hours()/24) + 1
+	if len(fields) == 0 && days > 366 {
+		fields["start_date"] = "range must not exceed 366 days"
+	}
+	previousEnd := start.AddDate(0, 0, -1)
+	previousStart := previousEnd.AddDate(0, 0, -(days - 1))
+	return dashboardRange{
+		Start: start, End: end, PreviousStart: previousStart,
+		PreviousEnd: previousEnd, Days: days,
+	}, fields
+}
+
+func (s *Server) getDashboard(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	location := loadLocationOrIndia(c.Query("tz"), s.cfg.TZDefault)
+	dateRange, fields := parseDashboardRange(c.Query("start_date"), c.Query("end_date"), time.Now().In(location))
+	if len(fields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_range", "fields": fields})
+		return
+	}
+
+	var entries []models.Entry
+	if err := database.DB.Preload("Account").
+		Where("user_id = ? AND date >= ? AND date <= ?", userID,
+			dateRange.PreviousStart.Format("2006-01-02"), dateRange.End.Format("2006-01-02")).
+		Order("date desc, created_at desc").
+		Find(&entries).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
+		return
+	}
+
+	c.JSON(http.StatusOK, buildDashboard(entries, dateRange))
 }
 
 func (s *Server) getInsights(c *gin.Context) {
-	userId := c.MustGet("userID").(uint)
-	now := time.Now()
-	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Format("2006-01-02")
-	lastMonthStart := now.AddDate(0, -1, 0)
-	lastMonthStartStr := time.Date(lastMonthStart.Year(), lastMonthStart.Month(), 1, 0, 0, 0, 0, now.Location()).Format("2006-01-02")
-	lastMonthEndStr := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).AddDate(0, 0, -1).Format("2006-01-02")
+	s.getDashboard(c)
+}
 
-	var entries []models.Entry
-	database.DB.Where("user_id = ? AND date >= ?", userId, lastMonthStartStr).Find(&entries)
+func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardResponse {
+	start := dateRange.Start.Format("2006-01-02")
+	end := dateRange.End.Format("2006-01-02")
+	previousStart := dateRange.PreviousStart.Format("2006-01-02")
+	previousEnd := dateRange.PreviousEnd.Format("2006-01-02")
 
-	var accounts []models.Account
-	database.DB.Where("user_id = ?", userId).Find(&accounts)
-
-	res := InsightsResponse{
-		CategoryBreakdown: []CategoryBreakdown{},
-		TopMerchants:      []MerchantInfo{},
-		AIInsights:        []AIInsightCard{},
-		AccountSpending:   []AccountSpending{},
-		CreditUtilization: []CreditUtilization{},
-		ReviewItems:       []ReviewItem{},
+	current := make([]models.Entry, 0)
+	previous := make([]models.Entry, 0)
+	for _, entry := range entries {
+		switch {
+		case entry.Date >= start && entry.Date <= end:
+			current = append(current, entry)
+		case entry.Date >= previousStart && entry.Date <= previousEnd:
+			previous = append(previous, entry)
+		}
 	}
 
-	// 1. Monthly Health
-	var thisMonthIncome, thisMonthSpent float64
-	var lastMonthSpent float64
-	categorySpendThis := make(map[string]float64)
-	categorySpendLast := make(map[string]float64)
-	merchantSpend := make(map[string]*MerchantInfo)
-	accountSpend := make(map[string]float64)
-	dailySpend := make(map[string]float64)
+	response := DashboardResponse{
+		Period:        DashboardPeriod{Start: start, End: end},
+		TopCategories: []DashboardCategory{}, TopMerchants: []DashboardMerchant{},
+		AccountSpending: []DashboardAccount{}, RecentTransactions: []models.Entry{},
+		Insights: []InsightCard{},
+	}
 
-	for _, e := range entries {
-		if e.Date >= thisMonthStart {
-			if strings.ToLower(e.Type) == "income" {
-				thisMonthIncome += e.Amount
-			} else if strings.ToLower(e.Type) == "expense" {
-				thisMonthSpent += e.Amount
-				categorySpendThis[e.Category] += e.Amount
-				if e.Merchant != "" {
-					if _, ok := merchantSpend[e.Merchant]; !ok {
-						merchantSpend[e.Merchant] = &MerchantInfo{Merchant: e.Merchant}
-					}
-					merchantSpend[e.Merchant].Amount += e.Amount
-					merchantSpend[e.Merchant].TransactionCount++
-				}
-				accountSpend[e.Mode] += e.Amount
-				dailySpend[e.Date] += e.Amount
+	categoryCurrent := map[string]float64{}
+	categoryPrevious := map[string]float64{}
+	merchantCurrent := map[string]*DashboardMerchant{}
+	accountCurrent := map[string]*DashboardAccount{}
+	expenseAmounts := []float64{}
+
+	for _, entry := range previous {
+		if strings.EqualFold(entry.Type, "expense") {
+			categoryPrevious[normalizedLabel(entry.Category, "Uncategorized")] += entry.Amount.Float64()
+		}
+	}
+	for _, entry := range current {
+		response.Summary.TransactionCount++
+		amount := entry.Amount.Float64()
+		if strings.EqualFold(entry.Type, "income") {
+			response.Summary.TotalIncome += amount
+			continue
+		}
+		if !strings.EqualFold(entry.Type, "expense") {
+			continue
+		}
+		response.Summary.TotalSpent += amount
+		expenseAmounts = append(expenseAmounts, amount)
+
+		category := normalizedLabel(entry.Category, "Uncategorized")
+		categoryCurrent[category] += amount
+
+		merchant := strings.TrimSpace(entry.Merchant)
+		if merchant != "" {
+			if merchantCurrent[merchant] == nil {
+				merchantCurrent[merchant] = &DashboardMerchant{Merchant: merchant}
 			}
-		} else if e.Date >= lastMonthStartStr && e.Date <= lastMonthEndStr {
-			if strings.ToLower(e.Type) == "expense" {
-				lastMonthSpent += e.Amount
-				categorySpendLast[e.Category] += e.Amount
+			merchantCurrent[merchant].Amount += amount
+			merchantCurrent[merchant].TransactionCount++
+		}
+
+		accountKey, accountName := "unassigned", "Unassigned"
+		var accountID *uint
+		if entry.AccountID != nil {
+			accountID = entry.AccountID
+			accountKey = fmt.Sprintf("%d", *entry.AccountID)
+			accountName = entry.Mode
+			if entry.Account != nil && strings.TrimSpace(entry.Account.Name) != "" {
+				accountName = entry.Account.Name
 			}
 		}
+		if accountCurrent[accountKey] == nil {
+			accountCurrent[accountKey] = &DashboardAccount{AccountID: accountID, AccountName: accountName}
+		}
+		accountCurrent[accountKey].Amount += amount
 	}
 
-	res.MonthlyHealth.Income = thisMonthIncome
-	res.MonthlyHealth.Spent = thisMonthSpent
-	res.MonthlyHealth.Savings = thisMonthIncome - thisMonthSpent
-	if thisMonthIncome > 0 {
-		res.MonthlyHealth.SavingsRate = math.Max(0, (res.MonthlyHealth.Savings/thisMonthIncome)*100)
+	if dateRange.Days > 0 {
+		response.Summary.DailyAverage = response.Summary.TotalSpent / float64(dateRange.Days)
 	}
-
-	// Burn Rate Calculation (Very simplified: based on this month's spending and current day)
-	currentDay := now.Day()
-	if currentDay > 0 && thisMonthSpent > 0 {
-		avgDaily := thisMonthSpent / float64(currentDay)
-		// Assume user has some balance, or just use income - spent
-		balance := thisMonthIncome - thisMonthSpent
-		if balance > 0 && avgDaily > 0 {
-			daysLeft := balance / avgDaily
-			res.MonthlyHealth.BurnRate = strings.Split(time.Duration(daysLeft*24*float64(time.Hour)).String(), "h")[0] // Rough estimate
-			res.MonthlyHealth.BurnRate = fmt.Sprintf("At your current spending, your balance will last ~%.0f days.", daysLeft)
-		} else {
-			res.MonthlyHealth.BurnRate = "Your spending is currently exceeding your income."
-		}
-	}
-
-	// 2. Category Breakdown
-	for cat, amt := range categorySpendThis {
-		percentage := 0.0
-		if thisMonthSpent > 0 {
-			percentage = (amt / thisMonthSpent) * 100
-		}
-		lastAmt := categorySpendLast[cat]
-		change := 0.0
-		if lastAmt > 0 {
-			change = ((amt - lastAmt) / lastAmt) * 100
-		}
-		res.CategoryBreakdown = append(res.CategoryBreakdown, CategoryBreakdown{
-			Category:   cat,
-			Amount:     amt,
-			Percentage: percentage,
-			Change:     change,
+	for category, amount := range categoryCurrent {
+		change := percentageChange(amount, categoryPrevious[category])
+		response.TopCategories = append(response.TopCategories, DashboardCategory{
+			Category: category, Amount: amount,
+			Percentage: safePercentage(amount, response.Summary.TotalSpent), Change: change,
 		})
 	}
-	sort.Slice(res.CategoryBreakdown, func(i, j int) bool {
-		return res.CategoryBreakdown[i].Amount > res.CategoryBreakdown[j].Amount
+	sort.Slice(response.TopCategories, func(i, j int) bool {
+		return response.TopCategories[i].Amount > response.TopCategories[j].Amount
+	})
+	if len(response.TopCategories) > 5 {
+		response.TopCategories = response.TopCategories[:5]
+	}
+
+	for _, merchant := range merchantCurrent {
+		response.TopMerchants = append(response.TopMerchants, *merchant)
+	}
+	sort.Slice(response.TopMerchants, func(i, j int) bool {
+		return response.TopMerchants[i].Amount > response.TopMerchants[j].Amount
+	})
+	if len(response.TopMerchants) > 5 {
+		response.TopMerchants = response.TopMerchants[:5]
+	}
+
+	for _, account := range accountCurrent {
+		account.Percentage = safePercentage(account.Amount, response.Summary.TotalSpent)
+		response.AccountSpending = append(response.AccountSpending, *account)
+	}
+	sort.Slice(response.AccountSpending, func(i, j int) bool {
+		return response.AccountSpending[i].Amount > response.AccountSpending[j].Amount
 	})
 
-	// 3. Top Merchants
-	for _, info := range merchantSpend {
-		res.TopMerchants = append(res.TopMerchants, *info)
-	}
-	sort.Slice(res.TopMerchants, func(i, j int) bool {
-		return res.TopMerchants[i].Amount > res.TopMerchants[j].Amount
-	})
-	if len(res.TopMerchants) > 5 {
-		res.TopMerchants = res.TopMerchants[:5]
-	}
-
-	// 4. AI Insights (Mocked logic)
-	if res.MonthlyHealth.SavingsRate < 10 {
-		res.AIInsights = append(res.AIInsights, AIInsightCard{
-			Type:        "warning",
-			Title:       "Low Savings Rate",
-			Description: "Your savings rate is below 10%. Consider reviewing non-essential expenses.",
-			ActionLabel: "Review Expenses",
-			ActionType:  "navigate_transactions",
-		})
-	}
-
-	if len(res.TopMerchants) > 0 && res.TopMerchants[0].Amount > thisMonthIncome*0.2 {
-		res.AIInsights = append(res.AIInsights, AIInsightCard{
-			Type:        "info",
-			Title:       "High Merchant Spend",
-			Description: fmt.Sprintf("You've spent %.0f%% of your income at %s alone.", (res.TopMerchants[0].Amount/thisMonthIncome)*100, res.TopMerchants[0].Merchant),
-			ActionLabel: "View Details",
-			ActionType:  "view_merchant",
-		})
-	}
-
-	// 5. Account Intelligence
-	for mode, amt := range accountSpend {
-		percentage := 0.0
-		if thisMonthSpent > 0 {
-			percentage = (amt / thisMonthSpent) * 100
+	sort.Slice(current, func(i, j int) bool {
+		if current[i].Date == current[j].Date {
+			return current[i].CreatedAt.After(current[j].CreatedAt)
 		}
-		res.AccountSpending = append(res.AccountSpending, AccountSpending{
-			Type:       mode,
-			Amount:     amt,
-			Percentage: percentage,
+		return current[i].Date > current[j].Date
+	})
+	if len(current) > 5 {
+		current = current[:5]
+	}
+	response.RecentTransactions = current
+	response.Insights = buildInsightCards(
+		response, previousExpenseTotal(previous), categoryPrevious, expenseAmounts,
+	)
+	return response
+}
+
+func buildInsightCards(
+	dashboard DashboardResponse,
+	previousSpent float64,
+	categoryPrevious map[string]float64,
+	expenseAmounts []float64,
+) []InsightCard {
+	cards := []InsightCard{}
+	if dashboard.Summary.TotalSpent > 0 || previousSpent > 0 {
+		change := percentageChange(dashboard.Summary.TotalSpent, previousSpent)
+		direction := "higher"
+		if change < 0 {
+			direction = "lower"
+		}
+		cards = append(cards, InsightCard{
+			Kind: "period_comparison", Severity: "info", Title: "Period comparison",
+			Body: fmt.Sprintf("Spending is %.0f%% %s than the previous period.", math.Abs(change), direction),
 		})
 	}
 
-	for _, acc := range accounts {
-		if strings.EqualFold(acc.Type, "credit") && acc.CreditLimit > 0 {
-			used := 0.0 // Needs careful logic to track specific card spend. For now using mode match.
-			for _, e := range entries {
-				if e.Date >= thisMonthStart && strings.EqualFold(e.Mode, acc.Name) {
-					used += e.Amount
-				}
-			}
-			utilization := (used / acc.CreditLimit) * 100
-			res.CreditUtilization = append(res.CreditUtilization, CreditUtilization{
-				AccountName: acc.Name,
-				Used:        used,
-				Limit:       acc.CreditLimit,
-				Percentage:  utilization,
-				DueDate:     fmt.Sprintf("%d", acc.DueDay),
-				Warning:     utilization > 60,
+	for _, category := range dashboard.TopCategories {
+		if previous := categoryPrevious[category.Category]; previous > 0 && category.Change >= 20 {
+			cards = append(cards, InsightCard{
+				Kind: "category_increase", Severity: "warning", Title: category.Category + " increased",
+				Body: fmt.Sprintf("%s spending is %.0f%% higher than the previous period.", category.Category, category.Change),
 			})
+			break
 		}
 	}
-
-	// 6. EMI Summary (Mocked logic based on tags)
-	var emiTotal float64
-	var lentTotal float64
-	var lentCount int
-	for _, e := range entries {
-		if e.Date >= thisMonthStart {
-			if strings.Contains(strings.ToLower(e.Tag), "emi") {
-				emiTotal += e.Amount
-			}
-			if strings.Contains(strings.ToLower(e.Tag), "lent") {
-				lentTotal += e.Amount
-				lentCount++
-			}
-		}
-	}
-	res.EMISummary.TotalMonthlyEMI = emiTotal
-	res.EMISummary.TotalLent = lentTotal
-	res.EMISummary.LentCount = lentCount
-
-	// 7. Behavioral Insights
-	if currentDay > 0 {
-		res.BehavioralInsights.AverageDailySpend = thisMonthSpent / float64(currentDay)
-	}
-	// Highest Spend Day
-	weekdaySpends := make(map[string]float64)
-	for d, amt := range dailySpend {
-		t, _ := time.Parse("2006-01-02", d)
-		weekdaySpends[t.Weekday().String()] += amt
-	}
-	highestAmt := 0.0
-	highestDay := ""
-	for day, amt := range weekdaySpends {
-		if amt > highestAmt {
-			highestAmt = amt
-			highestDay = day
-		}
-	}
-	res.BehavioralInsights.HighestSpendDay = highestDay
-
-	// 8. Review Items
-	uncategorized := 0
-	for _, e := range entries {
-		if e.Date >= thisMonthStart && (e.Category == "" || strings.ToLower(e.Category) == "uncategorized" || strings.ToLower(e.Category) == "other") {
-			uncategorized++
-		}
-	}
-	if uncategorized > 0 {
-		res.ReviewItems = append(res.ReviewItems, ReviewItem{
-			Type:  "uncategorized",
-			Count: uncategorized,
-			Title: "Uncategorized Transactions",
+	if len(dashboard.TopMerchants) > 0 {
+		top := dashboard.TopMerchants[0]
+		cards = append(cards, InsightCard{
+			Kind: "top_merchant", Severity: "info", Title: "Top merchant",
+			Body: fmt.Sprintf("%s accounted for ₹%.2f across %d transaction(s).", top.Merchant, top.Amount, top.TransactionCount),
 		})
 	}
+	if len(dashboard.AccountSpending) > 0 {
+		top := dashboard.AccountSpending[0]
+		cards = append(cards, InsightCard{
+			Kind: "account_usage", Severity: "info", Title: "Most-used account",
+			Body: fmt.Sprintf("%s handled %.0f%% of spending.", top.AccountName, top.Percentage),
+		})
+	}
+	if unusual := unusualExpense(expenseAmounts); unusual > 0 {
+		cards = append(cards, InsightCard{
+			Kind: "unusual_spending", Severity: "warning", Title: "Unusual spending",
+			Body: fmt.Sprintf("A ₹%.2f expense was substantially above this period's average.", unusual),
+		})
+	}
+	return cards
+}
 
-	c.JSON(http.StatusOK, res)
+func normalizedLabel(value, fallback string) string {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return trimmed
+	}
+	return fallback
+}
+
+func previousExpenseTotal(entries []models.Entry) float64 {
+	total := 0.0
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Type, "expense") {
+			total += entry.Amount.Float64()
+		}
+	}
+	return total
+}
+
+func safePercentage(value, total float64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return value / total * 100
+}
+
+func percentageChange(current, previous float64) float64 {
+	if previous <= 0 {
+		if current > 0 {
+			return 100
+		}
+		return 0
+	}
+	return (current - previous) / previous * 100
+}
+
+func unusualExpense(amounts []float64) float64 {
+	if len(amounts) < 3 {
+		return 0
+	}
+	total := 0.0
+	maximum := 0.0
+	for _, amount := range amounts {
+		total += amount
+		if amount > maximum {
+			maximum = amount
+		}
+	}
+	average := total / float64(len(amounts))
+	if maximum >= average*2 {
+		return maximum
+	}
+	return 0
 }
