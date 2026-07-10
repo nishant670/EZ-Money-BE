@@ -18,7 +18,9 @@ func main() {
 	fmt.Println("DB_NAME:", os.Getenv("DB_NAME"))
 	fmt.Println("DB_USER:", os.Getenv("DB_USER"))
 	database.Connect()
-	database.DB.AutoMigrate(&models.User{}, &models.Account{}, &models.Entry{}, &models.QuickPrompt{})
+	if err := database.DB.AutoMigrate(&models.User{}, &models.Account{}, &models.Entry{}, &models.QuickPrompt{}); err != nil {
+		log.Fatalf("database schema migration failed: %v", err)
+	}
 
 	cfg := config.Load()
 	r := httpserver.NewServer(cfg)
