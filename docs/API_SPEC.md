@@ -30,6 +30,13 @@ Auth endpoints that create a session return an opaque bearer `token`,
 `expires_at`, and the user object. The token is stored server-side only as a
 hash and must be treated as revocable.
 
+## OTP Verification
+`POST /v1/auth/otp/send` creates a random, expiring OTP challenge for an email
+or phone identifier and stores only the OTP hash. `POST /v1/auth/otp/verify`
+exchanges a valid OTP for an opaque, expiring, one-time `claim_token`.
+Registration and contact updates must consume that claim token; plaintext
+tokens such as `claim_email:...` or `claim_phone:...` are invalid.
+
 ## Canonical Contract
 Phase 1.2 keeps the implemented versioned routes as the authoritative MVP API:
 transaction persistence is exposed as `/v1/entries`, and parsing is exposed as

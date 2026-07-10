@@ -30,3 +30,73 @@ func TestHashSessionToken(t *testing.T) {
 		t.Fatal("token hash must be stable")
 	}
 }
+
+func TestGenerateClaimTokenIsOpaque(t *testing.T) {
+	token := generateClaimToken()
+	if !validClaimTokenFormat(token) {
+		t.Fatalf("expected valid opaque claim token, got %q", token)
+	}
+	if strings.HasPrefix(token, "claim_") {
+		t.Fatalf("claim token must not use plaintext claim_ format: %q", token)
+	}
+	if strings.Contains(token, "email:") || strings.Contains(token, "phone:") {
+		t.Fatalf("claim token must not embed identifier metadata: %q", token)
+	}
+}
+
+func TestOldPlaintextClaimTokensAreRejected(t *testing.T) {
+	for _, token := range []string{
+		"claim_email:user@example.com",
+		"claim_phone:+919876543210",
+		"claim_+919876543210",
+	} {
+		if validClaimTokenFormat(token) {
+			t.Fatalf("old plaintext token should be rejected: %q", token)
+		}
+	}
+}
+
+func TestHashClaimToken(t *testing.T) {
+	token := generateClaimToken()
+	hash := hashClaimToken(token)
+	if len(hash) != 64 {
+		t.Fatalf("expected 64 character sha256 hex hash, got %d", len(hash))
+	}
+	if hash == token {
+		t.Fatal("claim token hash must not store the raw token")
+	}
+	if hash != hashClaimToken(token) {
+		t.Fatal("claim token hash must be stable")
+	}
+}
+
+func TestOTPHashVerification(t *testing.T) {
+	hash, err := hashOTP("493820")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash == "493820" {
+		t.Fatal("OTP hash must not store the raw OTP")
+	}
+	if !verifyOTPHash(hash, "493820") {
+		t.Fatal("expected OTP hash to verify the original code")
+	}
+	if verifyOTPHash(hash, "1234") || verifyOTPHash(hash, "123456") {
+		t.Fatal("static legacy OTPs must not verify against a different generated OTP")
+	}
+}
+
+func TestGenerateOTPCodeFormat(t *testing.T) {
+	otp, err := generateOTPCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otp) != 6 {
+		t.Fatalf("expected 6 digit OTP, got %q", otp)
+	}
+	for _, char := range otp {
+		if char < '0' || char > '9' {
+			t.Fatalf("expected numeric OTP, got %q", otp)
+		}
+	}
+}

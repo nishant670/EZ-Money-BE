@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -20,6 +21,9 @@ type Config struct {
 	RateLimitBurst     int
 	MaxUploadMB        int64
 	MaxTranscriptChars int
+	OTPDebugResponse   bool
+	OTPExpiresMinutes  int
+	ClaimTokenMinutes  int
 }
 
 func getenv(key, def string) string {
@@ -47,6 +51,18 @@ func atof(key string, def float64) float64 {
 	return def
 }
 
+func atob(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			return true
+		case "0", "false", "no", "n", "off":
+			return false
+		}
+	}
+	return def
+}
+
 func Load() *Config {
 	return &Config{
 		Port:               getenv("PORT", "8080"),
@@ -63,5 +79,8 @@ func Load() *Config {
 		RateLimitBurst:     atoi("RATE_LIMIT_BURST", 10),
 		MaxUploadMB:        int64(atoi("MAX_UPLOAD_MB", 15)),
 		MaxTranscriptChars: atoi("MAX_TRANSCRIPT_CHARS", 1000),
+		OTPDebugResponse:   atob("OTP_DEBUG_RESPONSE", false),
+		OTPExpiresMinutes:  atoi("OTP_EXPIRES_MINUTES", 10),
+		ClaimTokenMinutes:  atoi("CLAIM_TOKEN_EXPIRES_MINUTES", 15),
 	}
 }

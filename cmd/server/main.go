@@ -18,7 +18,7 @@ func main() {
 	fmt.Println("DB_NAME:", os.Getenv("DB_NAME"))
 	fmt.Println("DB_USER:", os.Getenv("DB_USER"))
 	database.Connect()
-	if err := database.DB.AutoMigrate(&models.User{}, &models.AuthSession{}, &models.Account{}, &models.Entry{}, &models.QuickPrompt{}); err != nil {
+	if err := database.DB.AutoMigrate(&models.User{}, &models.AuthSession{}, &models.AuthVerification{}, &models.Account{}, &models.Entry{}, &models.QuickPrompt{}); err != nil {
 		log.Fatalf("database schema migration failed: %v", err)
 	}
 

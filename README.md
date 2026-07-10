@@ -55,7 +55,16 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0003_make_entry_account_op
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0004_add_entry_idempotency.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0005_require_entry_account_id.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0006_create_auth_sessions.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0007_create_auth_verifications.sql
 ```
+
+## Auth verification
+
+OTP codes are randomly generated and stored only as hashes. Verified OTPs issue
+opaque, expiring, one-time `claim_token` values for registration or contact
+updates; the token does not contain the email or phone number. For local manual
+testing only, set `OTP_DEBUG_RESPONSE=true` to include `dev_otp` in the
+`POST /v1/auth/otp/send` response.
 
 ## Test
 ```bash

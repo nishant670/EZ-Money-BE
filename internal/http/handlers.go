@@ -705,27 +705,39 @@ func (s *Server) updateProfile(c *gin.Context) {
 		return
 	}
 
-	// 2. Handle Contact Updates with Security (Claim Token)
-	if payload.Email != "" && (user.Email == nil || *user.Email != payload.Email) {
-		// Verify Claim Token for Email
-		if !strings.HasPrefix(payload.ClaimToken, "claim_email:"+payload.Email) {
-			c.JSON(403, gin.H{"error": "Email verification required. Please verify OTP."})
+	emailChanged := payload.Email != "" && (user.Email == nil || *user.Email != payload.Email)
+	phoneChanged := payload.Phone != "" && (user.Phone == nil || *user.Phone != payload.Phone)
+	if emailChanged && phoneChanged {
+		c.JSON(403, gin.H{"error": "Only one verified contact field can be updated at a time."})
+		return
+	}
+
+	if emailChanged || phoneChanged {
+		claim, err := consumeClaimToken(payload.ClaimToken)
+		if err != nil {
+			c.JSON(403, gin.H{"error": "Contact verification required. Please verify OTP."})
 			return
 		}
-		user.Email = &payload.Email
+		if emailChanged {
+			_, normalizedEmail, err := normalizeIdentifier(payload.Email)
+			if err != nil || claim.IdentifierType != "email" || claim.Identifier != normalizedEmail {
+				c.JSON(403, gin.H{"error": "Email verification required. Please verify OTP."})
+				return
+			}
+			user.Email = &normalizedEmail
+		}
+		if phoneChanged {
+			_, normalizedPhone, err := normalizeIdentifier(payload.Phone)
+			if err != nil || claim.IdentifierType != "phone" || claim.Identifier != normalizedPhone {
+				c.JSON(403, gin.H{"error": "Phone verification required. Please verify OTP."})
+				return
+			}
+			user.Phone = &normalizedPhone
+		}
 	} else if payload.Email == "" {
 		// Optional: Allow clearing email? Or just ignore if empty?
 		// For now assuming empty string in payload means 'no change' or 'clear' managed by FE logic.
 		// If explicit clear is needed, logic might differ. Assuming update sends current value if unchanged.
-	}
-
-	if payload.Phone != "" && (user.Phone == nil || *user.Phone != payload.Phone) {
-		// Verify Claim Token for Phone
-		if !strings.HasPrefix(payload.ClaimToken, "claim_phone:"+payload.Phone) {
-			c.JSON(403, gin.H{"error": "Phone verification required. Please verify OTP."})
-			return
-		}
-		user.Phone = &payload.Phone
 	}
 
 	user.Username = payload.Username
