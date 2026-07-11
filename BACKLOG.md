@@ -89,7 +89,7 @@ Legend:
 - [x] Backend full Go test suite passes when local `httptest` networking is available.
 - [x] Fix mobile lint errors.
 - [x] Reduce or intentionally document mobile lint warnings.
-- [ ] Add mobile component tests for confirmation editing, uncertainty display, account selection, validation, and disabled double-submit.
+- [x] Add mobile component tests for confirmation editing, uncertainty display, account selection, validation, and disabled double-submit.
 - [ ] Add mobile flow tests for guest first transaction, text parse, manual entry, edit/delete, and dashboard refresh.
 - [ ] Add API contract tests against `EZ-Money-BE/openapi.yaml`.
 - [ ] Add an end-to-end smoke test for guest capture -> parse -> confirm -> save -> dashboard update.
