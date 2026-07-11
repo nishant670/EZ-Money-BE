@@ -40,7 +40,12 @@ func AuthMiddleware() gin.HandlerFunc {
 		var session models.AuthSession
 		if err := database.DB.Preload("User").
 			Where("token_hash = ? AND revoked_at IS NULL AND expires_at > ?", hashSessionToken(token), time.Now().UTC()).
-			First(&session).Error; err != nil {
+			Limit(1).
+			Find(&session).Error; err != nil {
+			c.AbortWithStatusJSON(500, gin.H{"error": "auth_session_lookup_failed"})
+			return
+		}
+		if session.ID == 0 {
 			c.AbortWithStatusJSON(401, gin.H{"error": "invalid_or_expired_session"})
 			return
 		}

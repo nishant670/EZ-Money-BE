@@ -287,6 +287,98 @@ paths:
           description: Deleted
         "404":
           description: Not found
+  /v1/notifications:
+    get:
+      summary: List notifications for the authenticated user
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [all, unread, read]
+            default: all
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: page_size
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        "200":
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPage"
+        "422":
+          description: Invalid filters
+  /v1/notifications/unread-count:
+    get:
+      summary: Return the authenticated user's unread notification count
+      responses:
+        "200":
+          description: Unread count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unread_count]
+                properties:
+                  unread_count:
+                    type: integer
+  /v1/notifications/read-all:
+    patch:
+      summary: Mark all notifications read for the authenticated user
+      responses:
+        "200":
+          description: Updated count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated:
+                    type: integer
+  /v1/notifications/{id}/read:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    patch:
+      summary: Mark one owned notification read
+      responses:
+        "200":
+          description: Notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "404":
+          description: Not found
+  /v1/notifications/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    delete:
+      summary: Delete one owned notification
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Not found
 components:
   securitySchemes:
     bearerAuth:
@@ -493,6 +585,49 @@ components:
           type: string
         is_default:
           type: boolean
+    Notification:
+      type: object
+      required: [id, user_id, type, title, body, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        type:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        action_url:
+          type: string
+        read_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    NotificationPage:
+      type: object
+      required: [notifications, unread_count, page, page_size, total, total_pages]
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
+        unread_count:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
     ValidationError:
       type: object
       required: [error, fields]

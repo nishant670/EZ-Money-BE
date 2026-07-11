@@ -9,11 +9,12 @@ Accepts **audio** (or `hint_text`), transcribes with Whisper, parses with an LLM
 go version
 go mod tidy
 cp .env.example .env
-# edit .env and add: OPENAI_API_KEY=<your project key>
+# edit .env and fill required redacted values such as OPENAI_API_KEY and DB_PASSWORD
 go run ./cmd/server
 ```
 
-If `cp .env.example .env` doesn't work, create it manually (contents below).
+If `cp .env.example .env` doesn't work, create it manually from the committed
+template. `.env.example` lists every required variable with secrets redacted.
 
 ## Rotate the OpenAI key
 
@@ -27,8 +28,8 @@ The key is read only by the backend from `EZ-Money-BE/.env`.
 5. Confirm that the key's OpenAI project has billing/credits and access to
    `gpt-4o-mini` and `gpt-4o-mini-transcribe`.
 
-`.env` is ignored by Git. Commit `.env.example`, which contains configuration
-names but no secrets.
+`.env` is ignored by Git. Commit only `.env.example`, which contains
+configuration names and safe defaults but no real secrets.
 
 ## Development cost controls
 
@@ -58,6 +59,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0004_add_entry_idempotency
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0005_require_entry_account_id.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0006_create_auth_sessions.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0007_create_auth_verifications.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0008_guest_device_and_login_lockout.sql
 ```
 
 ## Auth verification
