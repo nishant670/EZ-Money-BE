@@ -14,6 +14,11 @@
 - DELETE /v1/accounts/:id
 - GET /v1/dashboard
 - GET /v1/insights
+- GET /v1/notifications
+- GET /v1/notifications/unread-count
+- PATCH /v1/notifications/:id/read
+- PATCH /v1/notifications/read-all
+- DELETE /v1/notifications/:id
 
 ## Dashboard
 `GET /v1/dashboard?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` returns only
@@ -45,6 +50,13 @@ clients, and OpenAPI should use the versioned route names above.
 
 ## Transaction Account Rule
 Transaction create and update payloads require `account_id`. The account must belong to the authenticated user. Transaction responses include the linked account summary, and account deletion must fail while transactions still reference it.
+
+## Notifications
+Notifications are authenticated, user-owned records exposed through `/v1/notifications`.
+The MVP notification source is transaction create, update, and delete events. Clients
+can list by `status=all|unread|read`, fetch an unread count, mark one notification
+read, mark all read, or delete one notification. Push delivery is not part of this
+contract yet; these are in-app notifications.
 
 ## Parse Response Should Include
 amount, currency, type, merchant, category, account_hint, date, note, tags, recurring_candidate, split_candidate, confidence, missing_fields.

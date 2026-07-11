@@ -80,7 +80,7 @@ Legend:
 - [x] Add restrictive production CORS configuration instead of defaulting to `*`.
 - [x] Apply rate limiting to auth and AI endpoints.
 - [x] Add request size/time limits consistently to upload/auth/parse paths.
-- [ ] Add `.env.example` with redacted required variables.
+- [x] Add `.env.example` with redacted required variables.
 - [ ] Document source-text/transcript retention and deletion policy.
 - [ ] Add account/data deletion path before any public beta.
 

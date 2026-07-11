@@ -71,7 +71,7 @@ Incomplete or unsafe:
 - Rate limiting is applied to auth endpoints and the AI parse endpoint.
 - Request body limits and request context timeouts are applied to auth, parse, and upload paths.
 - CORS now uses an explicit exact-origin allow list and does not default to `*`.
-- The local `.env` contains secrets but is ignored by Git; this review found no tracked `.env`. Secrets should still be rotated if they were ever shared and a redacted `.env.example` is needed.
+- The local `.env` contains secrets but is ignored by Git; the committed `.env.example` now lists required variables with secrets redacted.
 
 ### Web: `finnri-web`
 
@@ -230,7 +230,7 @@ Status: implemented in the working tree; manual mobile QA remains.
 - Add rate limiting and restrictive production CORS. Status: implemented in the working tree.
 - Add request size and timeout limits to auth, parse, and upload paths. Status: implemented in the working tree.
 - Keep uploads deferred, or validate content and use private object storage/signed access before re-enabling.
-- Add secret template, rotation procedure, retention policy, and data deletion path.
+- Add secret template, rotation procedure, retention policy, and data deletion path. Status: redacted `.env.example` is implemented; rotation, retention, and deletion remain open.
 
 ### PR 7 — Quality gate and MVP acceptance suite
 

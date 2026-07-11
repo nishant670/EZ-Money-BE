@@ -38,15 +38,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 	if cfg.AuthBearer != "" {
 		r.Use(func(c *gin.Context) {
-			if c.Request.URL.Path == "/health" ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/auth/") ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/entries") ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/quick-prompts") ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/user") ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/insights") ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/dashboard") ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/accounts") ||
-				strings.HasPrefix(c.Request.URL.Path, "/v1/parse") {
+			if skipsStaticBearer(c.Request.URL.Path) {
 				log.Printf("[DEBUG] Auth Skip: %s", c.Request.URL.Path)
 				c.Next()
 				return
@@ -108,11 +100,31 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// Insights
 		authorized.GET("/dashboard", s.getDashboard)
 		authorized.GET("/insights", s.getInsights)
+
+		// Notifications
+		authorized.GET("/notifications", s.listNotifications)
+		authorized.GET("/notifications/unread-count", s.getUnreadNotificationCount)
+		authorized.PATCH("/notifications/read-all", s.markAllNotificationsRead)
+		authorized.PATCH("/notifications/:id/read", s.markNotificationRead)
+		authorized.DELETE("/notifications/:id", s.deleteNotification)
 	}
 
 	r.Static("/uploads", "./uploads")
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
 	return r
+}
+
+func skipsStaticBearer(path string) bool {
+	return path == "/health" ||
+		strings.HasPrefix(path, "/v1/auth/") ||
+		strings.HasPrefix(path, "/v1/entries") ||
+		strings.HasPrefix(path, "/v1/quick-prompts") ||
+		strings.HasPrefix(path, "/v1/user") ||
+		strings.HasPrefix(path, "/v1/insights") ||
+		strings.HasPrefix(path, "/v1/dashboard") ||
+		strings.HasPrefix(path, "/v1/accounts") ||
+		strings.HasPrefix(path, "/v1/notifications") ||
+		strings.HasPrefix(path, "/v1/parse")
 }
 
 func (s *Server) handleParse(c *gin.Context) {
@@ -271,6 +283,7 @@ func (s *Server) saveEntry(c *gin.Context) {
 		return
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
+	_ = createEntryNotification(userID, "transaction.created", "Transaction added", entryNotificationBody("Added", entry), entry.ID)
 
 	c.JSON(201, entry)
 }
@@ -555,6 +568,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 		return
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
+	_ = createEntryNotification(userID, "transaction.updated", "Transaction updated", entryNotificationBody("Updated", entry), entry.ID)
 
 	c.JSON(200, entry)
 }
@@ -579,6 +593,16 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		return
 	}
 
+	var entry models.Entry
+	if err := ownedEntries(database.DB, userID).Where("id = ?", id).First(&entry).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(404, gin.H{"error": "entry not found"})
+			return
+		}
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
 	result := ownedEntries(database.DB, userID).Where("id = ?", id).Delete(&models.Entry{})
 	if result.Error != nil {
 		c.JSON(500, gin.H{"error": result.Error.Error()})
@@ -588,6 +612,7 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "entry not found"})
 		return
 	}
+	_ = createNotification(userID, "transaction.deleted", "Transaction deleted", entryNotificationBody("Deleted", entry), "")
 
 	c.JSON(200, gin.H{"message": "entry deleted"})
 }
