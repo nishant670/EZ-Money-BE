@@ -1,6 +1,6 @@
 # FINNRI Backlog
 
-Last audited: 2026-07-10
+Last audited: 2026-07-11
 
 This is the working checklist for FINNRI. Pick the first unchecked task in the
 highest-priority section, complete it, verify it, then update this file in the
@@ -81,8 +81,8 @@ Legend:
 - [x] Apply rate limiting to auth and AI endpoints.
 - [x] Add request size/time limits consistently to upload/auth/parse paths.
 - [x] Add `.env.example` with redacted required variables.
-- [ ] Document source-text/transcript retention and deletion policy.
-- [ ] Add account/data deletion path before any public beta.
+- [x] Document source-text/transcript retention and deletion policy.
+- [x] Add account/data deletion path before any public beta.
 
 ## P1 - Quality Gates
 
@@ -107,7 +107,7 @@ Legend:
 
 ## P1 - Data Model And Backend Hardening
 
-- [ ] Add persistent `ParseAttempt` model or explicitly defer it with a privacy rationale.
+- [x] Add persistent `ParseAttempt` model or explicitly defer it with a privacy rationale.
 - [ ] Add `Category` model or explicitly keep string categories for MVP with a migration plan.
 - [ ] Move larger dashboard aggregations from in-memory scans to bounded SQL queries before scale.
 - [ ] Add database constraints for positive amounts, supported transaction types, supported sources, and owned account references where feasible.

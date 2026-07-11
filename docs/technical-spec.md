@@ -144,12 +144,18 @@ Accounts are user-defined payment sources, not bank connections. Store only data
 - exact-decimal `amount`, `currency`, and type (`expense` or `income`)
 - merchant, occurred date/time, note, tags
 - source (`voice`, `text`, or `manual`)
-- optional source text and AI confidence metadata under a retention policy
+- optional source text and AI confidence metadata under the retention policy in
+  `docs/AI_PARSING.md`
 - timestamps
 
 `account_id` is the source of truth. A free-text payment mode or account label must not substitute for the foreign key. Historical transactions should retain a stable account reference; deleting a used account should be restricted or soft-deleted.
 
 ### ParseAttempt
+
+Parse attempts are explicitly deferred for MVP to avoid retaining raw financial
+text unless the product has a clear privacy basis for doing so. The current
+backend must not persist parse-attempt rows, raw transcripts, provider prompts,
+or raw provider responses. If audit storage is added later, it must define:
 
 - `id`, `user_id`, input type, source text/transcript
 - provider/model metadata
@@ -189,7 +195,8 @@ The normalized draft contract contains:
 - `date`, optional time, note, and tags
 - lightweight recurring/split candidate flags when confidently inferred
 - field-level confidence, `missing_fields`, and concise clarifications
-- source text/transcript when retained
+- source text/transcript in the draft response, and only on a saved entry when
+  the user confirms persistence
 
 Rules:
 
@@ -198,6 +205,8 @@ Rules:
 - The parsing endpoint has no transaction repository dependency.
 - AI may word a deterministic insight but may not invent calculations.
 - Raw voice is transient and deleted after transcription by default.
+- Parse requests are not retained server-side in MVP. Confirmed entries may
+  retain `source_text`; editing or deleting the entry edits or deletes that text.
 - The provider is accessed through internal parser and transcription interfaces. Provider/model selection belongs in configuration, not handlers or UI.
 
 ## 7. Confirm transaction flow
@@ -232,6 +241,7 @@ aligned to this versioned contract.
 - `GET /v1/entries/:id`
 - `PUT /v1/entries/:id`
 - `DELETE /v1/entries/:id`
+- `DELETE /v1/user`
 - `GET /v1/accounts`
 - `POST /v1/accounts`
 - `PUT /v1/accounts/:id`
@@ -251,7 +261,9 @@ Transaction listing supports pagination plus search/filter by merchant, category
 - Never print DSNs, tokens, provider responses, transcripts, or transaction bodies in logs.
 - Use HTTPS, restrictive production CORS, request-size limits, timeouts, and rate limits on auth and AI endpoints.
 - Validate uploaded content by detected MIME type, extension, size, and generated filename; receipts are optional and may be deferred if safe storage is not ready.
-- Minimize personal and financial data, document retention/deletion, and provide account/data deletion before public launch.
+- Minimize personal and financial data. Follow `docs/AI_PARSING.md` for
+  source-text/transcript retention, and use `DELETE /v1/user` for account/data
+  deletion.
 - Store only masked payment identifiers. Encrypt sensitive fields/backups where appropriate.
 - Apply authorization tests to every account and transaction route.
 - Treat insights as spending analysis, not investment, tax, legal, credit, or regulated financial advice.

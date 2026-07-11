@@ -45,6 +45,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Dashboard"
+  /v1/user:
+    delete:
+      summary: Permanently delete the authenticated user and owned data
+      responses:
+        "200":
+          description: User and owned data deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteUserResponse"
+        "401":
+          description: Missing or invalid session
+        "404":
+          description: User not found
+        "500":
+          description: Delete failed
   /v1/parse:
     post:
       summary: Parse audio/text to structured expense/income JSON
@@ -638,5 +654,11 @@ components:
           type: object
           additionalProperties:
             type: string
+    DeleteUserResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          const: account deleted
 security:
   - bearerAuth: []

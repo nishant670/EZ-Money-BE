@@ -11,10 +11,10 @@ id, user_id, name, type, institution_name, last_four_optional, is_default, times
 id, user_id nullable, name, type, icon, color, is_system
 
 ### Transaction
-id, user_id, account_id required for new writes, amount, type, category_id, merchant, date, note, tags, source, source_text, ai_confidence, timestamps
+id, user_id, account_id required for new writes, amount, type, category_id, merchant, date, note, tags, source, optional source_text retained only after user confirmation, ai_confidence, timestamps
 
 ### ParseAttempt
-id, user_id, input_type, source_text, provider, raw_response, normalized_result, confidence, created_at
+Deferred for MVP to minimize sensitive raw financial text storage. Do not persist parse attempts, transcripts, provider prompts, or raw provider responses until a short retention window, access controls, and deletion job are defined.
 
 ### Insight
 id, user_id, type, title, body, severity, related_entity_id, dismissed_at, created_at
