@@ -87,7 +87,7 @@ Legend:
 ## P1 - Quality Gates
 
 - [x] Backend full Go test suite passes when local `httptest` networking is available.
-- [ ] Fix mobile lint errors.
+- [x] Fix mobile lint errors.
 - [ ] Reduce or intentionally document mobile lint warnings.
 - [ ] Add mobile component tests for confirmation editing, uncertainty display, account selection, validation, and disabled double-submit.
 - [ ] Add mobile flow tests for guest first transaction, text parse, manual entry, edit/delete, and dashboard refresh.
