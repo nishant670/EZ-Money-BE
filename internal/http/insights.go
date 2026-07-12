@@ -46,6 +46,19 @@ type DashboardAccount struct {
 	Percentage  float64 `json:"percentage"`
 }
 
+type DashboardRecurringCandidate struct {
+	Label            string  `json:"label"`
+	Merchant         string  `json:"merchant"`
+	Category         string  `json:"category"`
+	AverageAmount    float64 `json:"average_amount"`
+	IntervalGuess    string  `json:"interval_guess"`
+	Confidence       float64 `json:"confidence"`
+	Occurrences      int     `json:"occurrences"`
+	LastSeenDate     string  `json:"last_seen_date"`
+	NextExpectedDate string  `json:"next_expected_date"`
+	ReviewDue        bool    `json:"review_due"`
+}
+
 type InsightCard struct {
 	Kind     string `json:"kind"`
 	Severity string `json:"severity"`
@@ -54,13 +67,14 @@ type InsightCard struct {
 }
 
 type DashboardResponse struct {
-	Period             DashboardPeriod     `json:"period"`
-	Summary            DashboardSummary    `json:"summary"`
-	TopCategories      []DashboardCategory `json:"top_categories"`
-	TopMerchants       []DashboardMerchant `json:"top_merchants"`
-	AccountSpending    []DashboardAccount  `json:"account_spending"`
-	RecentTransactions []models.Entry      `json:"recent_transactions"`
-	Insights           []InsightCard       `json:"insights"`
+	Period              DashboardPeriod               `json:"period"`
+	Summary             DashboardSummary              `json:"summary"`
+	TopCategories       []DashboardCategory           `json:"top_categories"`
+	TopMerchants        []DashboardMerchant           `json:"top_merchants"`
+	AccountSpending     []DashboardAccount            `json:"account_spending"`
+	RecentTransactions  []models.Entry                `json:"recent_transactions"`
+	Insights            []InsightCard                 `json:"insights"`
+	RecurringCandidates []DashboardRecurringCandidate `json:"recurring_candidates"`
 }
 
 type dashboardRange struct {
@@ -154,7 +168,7 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		Period:        DashboardPeriod{Start: start, End: end},
 		TopCategories: []DashboardCategory{}, TopMerchants: []DashboardMerchant{},
 		AccountSpending: []DashboardAccount{}, RecentTransactions: []models.Entry{},
-		Insights: []InsightCard{},
+		Insights: []InsightCard{}, RecurringCandidates: []DashboardRecurringCandidate{},
 	}
 
 	categoryCurrent := map[string]float64{}
@@ -254,6 +268,7 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		current = current[:5]
 	}
 	response.RecentTransactions = current
+	response.RecurringCandidates = detectRecurringCandidates(entries, dateRange)
 	response.Insights = buildInsightCards(
 		response, previousExpenseTotal(previous), categoryPrevious, expenseAmounts,
 	)
@@ -308,7 +323,237 @@ func buildInsightCards(
 			Body: fmt.Sprintf("A ₹%.2f expense was substantially above this period's average.", unusual),
 		})
 	}
+	if len(dashboard.RecurringCandidates) > 0 {
+		candidate := dashboard.RecurringCandidates[0]
+		cards = append(cards, InsightCard{
+			Kind: "recurring_candidate", Severity: "info", Title: "Recurring spend to review",
+			Body: fmt.Sprintf("Review %d likely recurring expense(s), including %s around ₹%.2f.", len(dashboard.RecurringCandidates), candidate.Label, candidate.AverageAmount),
+		})
+	}
 	return cards
+}
+
+type recurringGroup struct {
+	label    string
+	merchant string
+	category string
+	entries  []models.Entry
+}
+
+type recurringInterval struct {
+	name string
+	days int
+}
+
+func detectRecurringCandidates(entries []models.Entry, dateRange dashboardRange) []DashboardRecurringCandidate {
+	groups := map[string]*recurringGroup{}
+	for _, entry := range entries {
+		if !strings.EqualFold(entry.Type, "expense") {
+			continue
+		}
+		if _, err := time.ParseInLocation("2006-01-02", entry.Date, dateRange.Start.Location()); err != nil {
+			continue
+		}
+		label := recurringLabel(entry)
+		if label == "" {
+			continue
+		}
+		category := normalizedLabel(entry.Category, "Uncategorized")
+		key := strings.ToLower(label) + "|" + strings.ToLower(category)
+		if groups[key] == nil {
+			groups[key] = &recurringGroup{
+				label: label, merchant: strings.TrimSpace(entry.Merchant), category: category,
+			}
+		}
+		groups[key].entries = append(groups[key].entries, entry)
+	}
+
+	candidates := []DashboardRecurringCandidate{}
+	for _, group := range groups {
+		if candidate, ok := recurringCandidateFromGroup(group, dateRange); ok {
+			candidates = append(candidates, candidate)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].ReviewDue != candidates[j].ReviewDue {
+			return candidates[i].ReviewDue
+		}
+		if candidates[i].Confidence != candidates[j].Confidence {
+			return candidates[i].Confidence > candidates[j].Confidence
+		}
+		return candidates[i].NextExpectedDate < candidates[j].NextExpectedDate
+	})
+	if len(candidates) > 5 {
+		candidates = candidates[:5]
+	}
+	return candidates
+}
+
+func recurringCandidateFromGroup(group *recurringGroup, dateRange dashboardRange) (DashboardRecurringCandidate, bool) {
+	entries := append([]models.Entry(nil), group.entries...)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Date < entries[j].Date
+	})
+	if len(entries) < 2 {
+		return DashboardRecurringCandidate{}, false
+	}
+
+	amounts := make([]float64, 0, len(entries))
+	dates := make([]time.Time, 0, len(entries))
+	for _, entry := range entries {
+		date, err := time.ParseInLocation("2006-01-02", entry.Date, dateRange.Start.Location())
+		if err != nil {
+			return DashboardRecurringCandidate{}, false
+		}
+		dates = append(dates, date)
+		amounts = append(amounts, entry.Amount.Float64())
+	}
+	if !recurringAmountsAreStable(amounts) {
+		return DashboardRecurringCandidate{}, false
+	}
+
+	interval, ok := guessRecurringInterval(dates)
+	if !ok {
+		return DashboardRecurringCandidate{}, false
+	}
+
+	average := averageFloat(amounts)
+	lastSeen := dates[len(dates)-1]
+	nextExpected := nextRecurringDate(lastSeen, interval)
+	confidence := recurringConfidence(len(entries), amounts)
+	reviewDue := !nextExpected.Before(dateRange.Start) && !nextExpected.After(dateRange.End.AddDate(0, 0, 7))
+
+	return DashboardRecurringCandidate{
+		Label:            group.label,
+		Merchant:         group.merchant,
+		Category:         group.category,
+		AverageAmount:    average,
+		IntervalGuess:    interval.name,
+		Confidence:       confidence,
+		Occurrences:      len(entries),
+		LastSeenDate:     lastSeen.Format("2006-01-02"),
+		NextExpectedDate: nextExpected.Format("2006-01-02"),
+		ReviewDue:        reviewDue,
+	}, true
+}
+
+func recurringLabel(entry models.Entry) string {
+	for _, value := range []string{entry.Merchant, entry.Title} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func guessRecurringInterval(dates []time.Time) (recurringInterval, bool) {
+	if len(dates) < 2 {
+		return recurringInterval{}, false
+	}
+	intervals := make([]int, 0, len(dates)-1)
+	for i := 1; i < len(dates); i++ {
+		days := int(dates[i].Sub(dates[i-1]).Hours() / 24)
+		if days <= 0 {
+			return recurringInterval{}, false
+		}
+		intervals = append(intervals, days)
+	}
+	average := averageInt(intervals)
+	switch {
+	case average >= 6 && average <= 8 && intervalSpreadWithin(intervals, 2):
+		return recurringInterval{name: "weekly", days: 7}, true
+	case average >= 27 && average <= 35 && intervalSpreadWithin(intervals, 5):
+		return recurringInterval{name: "monthly", days: 30}, true
+	default:
+		return recurringInterval{}, false
+	}
+}
+
+func nextRecurringDate(lastSeen time.Time, interval recurringInterval) time.Time {
+	if interval.name == "monthly" {
+		return lastSeen.AddDate(0, 1, 0)
+	}
+	return lastSeen.AddDate(0, 0, interval.days)
+}
+
+func recurringAmountsAreStable(amounts []float64) bool {
+	if len(amounts) < 2 {
+		return false
+	}
+	minimum, maximum := amounts[0], amounts[0]
+	for _, amount := range amounts[1:] {
+		if amount < minimum {
+			minimum = amount
+		}
+		if amount > maximum {
+			maximum = amount
+		}
+	}
+	average := averageFloat(amounts)
+	if average <= 0 {
+		return false
+	}
+	return (maximum - minimum) <= math.Max(20, average*0.15)
+}
+
+func recurringConfidence(occurrences int, amounts []float64) float64 {
+	confidence := 0.65
+	if occurrences >= 3 {
+		confidence = 0.80
+	}
+	if recurringAmountSpread(amounts) <= 0.05 {
+		confidence += 0.10
+	}
+	if occurrences >= 4 {
+		confidence += 0.05
+	}
+	return math.Min(confidence, 0.95)
+}
+
+func recurringAmountSpread(amounts []float64) float64 {
+	average := averageFloat(amounts)
+	if average <= 0 {
+		return 1
+	}
+	minimum, maximum := amounts[0], amounts[0]
+	for _, amount := range amounts[1:] {
+		if amount < minimum {
+			minimum = amount
+		}
+		if amount > maximum {
+			maximum = amount
+		}
+	}
+	return (maximum - minimum) / average
+}
+
+func averageFloat(values []float64) float64 {
+	total := 0.0
+	for _, value := range values {
+		total += value
+	}
+	return total / float64(len(values))
+}
+
+func averageInt(values []int) int {
+	total := 0
+	for _, value := range values {
+		total += value
+	}
+	return int(math.Round(float64(total) / float64(len(values))))
+}
+
+func intervalSpreadWithin(values []int, tolerance int) bool {
+	minimum, maximum := values[0], values[0]
+	for _, value := range values[1:] {
+		if value < minimum {
+			minimum = value
+		}
+		if value > maximum {
+			maximum = value
+		}
+	}
+	return maximum-minimum <= tolerance
 }
 
 func normalizedLabel(value, fallback string) string {

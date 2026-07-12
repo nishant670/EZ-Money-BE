@@ -43,6 +43,24 @@ func runtimeSchemaStatements() []string {
 			ALTER COLUMN balance TYPE NUMERIC(19,2) USING ROUND(balance::numeric, 2),
 			ALTER COLUMN balance SET DEFAULT 0,
 			ALTER COLUMN balance SET NOT NULL`,
+		`INSERT INTO accounts (user_id, type, name, color, is_default, created_at, updated_at)
+			SELECT users.id, 'cash', 'Cash', '#2ECC71', true, NOW(), NOW()
+			FROM users
+			WHERE NOT EXISTS (
+				SELECT 1 FROM accounts WHERE accounts.user_id = users.id
+			)`,
+		`UPDATE entries
+			SET account_id = defaults.id
+			FROM (
+				SELECT DISTINCT ON (user_id) id, user_id
+				FROM accounts
+				ORDER BY user_id, is_default DESC, id
+			) AS defaults
+			WHERE entries.user_id = defaults.user_id
+				AND entries.account_id IS NULL`,
+		`UPDATE entries
+			SET source = 'manual'
+			WHERE source IS NULL OR TRIM(source) = ''`,
 		`ALTER TABLE entries
 			ALTER COLUMN account_id SET NOT NULL,
 			ALTER COLUMN amount SET NOT NULL,
@@ -88,5 +106,39 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE entries
 			ADD CONSTRAINT fk_entries_owned_account
 			FOREIGN KEY (user_id, account_id) REFERENCES accounts(user_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_friends_user_archived
+			ON split_friends (user_id, archived, name)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_bills_user_date
+			ON split_bills (user_id, date DESC, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_participants_user_friend
+			ON split_participants (user_id, friend_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_settlements_user_friend
+			ON split_settlements (user_id, friend_id, date DESC)`,
+		`ALTER TABLE split_bills
+			DROP CONSTRAINT IF EXISTS split_bills_total_amount_positive_check`,
+		`ALTER TABLE split_bills
+			ADD CONSTRAINT split_bills_total_amount_positive_check CHECK (total_amount > 0)`,
+		`ALTER TABLE split_bills
+			DROP CONSTRAINT IF EXISTS split_bills_currency_check`,
+		`ALTER TABLE split_bills
+			ADD CONSTRAINT split_bills_currency_check CHECK (currency = 'INR')`,
+		`ALTER TABLE split_participants
+			DROP CONSTRAINT IF EXISTS split_participants_share_amount_positive_check`,
+		`ALTER TABLE split_participants
+			ADD CONSTRAINT split_participants_share_amount_positive_check CHECK (share_amount > 0)`,
+		`ALTER TABLE split_participants
+			DROP CONSTRAINT IF EXISTS split_participants_direction_check`,
+		`ALTER TABLE split_participants
+			ADD CONSTRAINT split_participants_direction_check
+			CHECK (direction IN ('friend_owes_user', 'user_owes_friend'))`,
+		`ALTER TABLE split_settlements
+			DROP CONSTRAINT IF EXISTS split_settlements_amount_positive_check`,
+		`ALTER TABLE split_settlements
+			ADD CONSTRAINT split_settlements_amount_positive_check CHECK (amount > 0)`,
+		`ALTER TABLE split_settlements
+			DROP CONSTRAINT IF EXISTS split_settlements_direction_check`,
+		`ALTER TABLE split_settlements
+			ADD CONSTRAINT split_settlements_direction_check
+			CHECK (direction IN ('friend_paid_user', 'user_paid_friend'))`,
 	}
 }

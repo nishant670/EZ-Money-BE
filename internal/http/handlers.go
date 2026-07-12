@@ -112,6 +112,17 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.PATCH("/notifications/read-all", s.markAllNotificationsRead)
 		authorized.PATCH("/notifications/:id/read", s.markNotificationRead)
 		authorized.DELETE("/notifications/:id", s.deleteNotification)
+
+		// Split ledger
+		authorized.POST("/split/friends", s.createSplitFriend)
+		authorized.GET("/split/friends", s.listSplitFriends)
+		authorized.PUT("/split/friends/:id", s.updateSplitFriend)
+		authorized.DELETE("/split/friends/:id", s.archiveSplitFriend)
+		authorized.POST("/split/bills", s.createSplitBill)
+		authorized.GET("/split/bills", s.listSplitBills)
+		authorized.POST("/split/settlements", s.createSplitSettlement)
+		authorized.GET("/split/settlements", s.listSplitSettlements)
+		authorized.GET("/split/balances", s.listSplitBalances)
 	}
 
 	r.Static("/uploads", "./uploads")
@@ -129,6 +140,7 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/dashboard") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/notifications") ||
+		strings.HasPrefix(path, "/v1/split") ||
 		strings.HasPrefix(path, "/v1/parse")
 }
 
@@ -840,6 +852,10 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			model any
 			name  string
 		}{
+			{&models.SplitSettlement{}, "split settlements"},
+			{&models.SplitParticipant{}, "split participants"},
+			{&models.SplitBill{}, "split bills"},
+			{&models.SplitFriend{}, "split friends"},
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.Entry{}, "entries"},

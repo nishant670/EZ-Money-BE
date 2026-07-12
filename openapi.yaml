@@ -395,6 +395,142 @@ paths:
           description: Deleted
         "404":
           description: Not found
+  /v1/split/friends:
+    post:
+      summary: Create a bill-splitting friend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SplitFriendInput"
+      responses:
+        "201":
+          description: Friend created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitFriend"
+        "422":
+          description: Invalid friend payload
+    get:
+      summary: List bill-splitting friends
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, all]
+      responses:
+        "200":
+          description: Friends
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SplitFriend"
+  /v1/split/friends/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    put:
+      summary: Update a bill-splitting friend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SplitFriendInput"
+      responses:
+        "200":
+          description: Friend updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitFriend"
+        "404":
+          description: Friend not found
+    delete:
+      summary: Archive a bill-splitting friend
+      responses:
+        "200":
+          description: Friend archived
+        "404":
+          description: Friend not found
+  /v1/split/bills:
+    post:
+      summary: Create a split bill with friend shares
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SplitBillInput"
+      responses:
+        "201":
+          description: Split bill created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitBill"
+        "422":
+          description: Invalid bill payload or friend ownership
+    get:
+      summary: List split bills
+      responses:
+        "200":
+          description: Split bills
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SplitBill"
+  /v1/split/settlements:
+    post:
+      summary: Record a split settlement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SplitSettlementInput"
+      responses:
+        "201":
+          description: Settlement created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitSettlement"
+        "422":
+          description: Invalid settlement payload or friend ownership
+    get:
+      summary: List split settlements
+      responses:
+        "200":
+          description: Split settlements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SplitSettlement"
+  /v1/split/balances:
+    get:
+      summary: Return friend balances after bills and settlements
+      responses:
+        "200":
+          description: Friend balances
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SplitBalance"
 components:
   securitySchemes:
     bearerAuth:
@@ -403,7 +539,7 @@ components:
   schemas:
     Dashboard:
       type: object
-      required: [period, summary, top_categories, top_merchants, account_spending, recent_transactions, insights]
+      required: [period, summary, top_categories, top_merchants, account_spending, recent_transactions, insights, recurring_candidates]
       properties:
         period:
           type: object
@@ -447,6 +583,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/InsightCard"
+        recurring_candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardRecurringCandidate"
     DashboardCategory:
       type: object
       required: [category, amount, percentage, change]
@@ -481,13 +621,42 @@ components:
           type: number
         percentage:
           type: number
+    DashboardRecurringCandidate:
+      type: object
+      required: [label, merchant, category, average_amount, interval_guess, confidence, occurrences, last_seen_date, next_expected_date, review_due]
+      properties:
+        label:
+          type: string
+        merchant:
+          type: string
+        category:
+          type: string
+        average_amount:
+          type: number
+        interval_guess:
+          type: string
+          enum: [weekly, monthly]
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        occurrences:
+          type: integer
+        last_seen_date:
+          type: string
+          format: date
+        next_expected_date:
+          type: string
+          format: date
+        review_due:
+          type: boolean
     InsightCard:
       type: object
       required: [kind, severity, title, body]
       properties:
         kind:
           type: string
-          enum: [period_comparison, category_increase, top_merchant, account_usage, unusual_spending]
+          enum: [period_comparison, category_increase, top_merchant, account_usage, unusual_spending, recurring_candidate]
         severity:
           type: string
           enum: [info, warning, success]
@@ -669,6 +838,175 @@ components:
           type: integer
         total_pages:
           type: integer
+    SplitFriendInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+    SplitFriend:
+      type: object
+      required: [id, user_id, name, archived, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        archived:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SplitParticipantInput:
+      type: object
+      required: [friend_id, share_amount, direction]
+      properties:
+        friend_id:
+          type: integer
+        share_amount:
+          type: number
+          multipleOf: 0.01
+          exclusiveMinimum: 0
+        direction:
+          type: string
+          enum: [friend_owes_user, user_owes_friend]
+    SplitParticipant:
+      allOf:
+        - $ref: "#/components/schemas/SplitParticipantInput"
+        - type: object
+          required: [id, user_id, bill_id]
+          properties:
+            id:
+              type: integer
+            user_id:
+              type: integer
+            bill_id:
+              type: integer
+            friend:
+              $ref: "#/components/schemas/SplitFriend"
+    SplitBillInput:
+      type: object
+      required: [title, total_amount, date, participants]
+      properties:
+        entry_id:
+          type: [integer, "null"]
+        title:
+          type: string
+        total_amount:
+          type: number
+          multipleOf: 0.01
+          exclusiveMinimum: 0
+        currency:
+          type: string
+          enum: [INR]
+          default: INR
+        date:
+          type: string
+          format: date
+        notes:
+          type: string
+        participants:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/SplitParticipantInput"
+    SplitBill:
+      type: object
+      required: [id, user_id, title, total_amount, currency, date, participants, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        entry_id:
+          type: [integer, "null"]
+        title:
+          type: string
+        total_amount:
+          type: number
+          multipleOf: 0.01
+        currency:
+          type: string
+          enum: [INR]
+        date:
+          type: string
+          format: date
+        notes:
+          type: string
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/SplitParticipant"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SplitSettlementInput:
+      type: object
+      required: [friend_id, amount, direction, date]
+      properties:
+        friend_id:
+          type: integer
+        amount:
+          type: number
+          multipleOf: 0.01
+          exclusiveMinimum: 0
+        direction:
+          type: string
+          enum: [friend_paid_user, user_paid_friend]
+        date:
+          type: string
+          format: date
+        notes:
+          type: string
+    SplitSettlement:
+      allOf:
+        - $ref: "#/components/schemas/SplitSettlementInput"
+        - type: object
+          required: [id, user_id, created_at, updated_at]
+          properties:
+            id:
+              type: integer
+            user_id:
+              type: integer
+            friend:
+              $ref: "#/components/schemas/SplitFriend"
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+    SplitBalance:
+      type: object
+      required: [friend, total_owed_by_friend, total_owed_to_friend, net_balance]
+      properties:
+        friend:
+          $ref: "#/components/schemas/SplitFriend"
+        total_owed_by_friend:
+          type: number
+          multipleOf: 0.01
+        total_owed_to_friend:
+          type: number
+          multipleOf: 0.01
+        net_balance:
+          type: number
+          multipleOf: 0.01
     ValidationError:
       type: object
       required: [error, fields]

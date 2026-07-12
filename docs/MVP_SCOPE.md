@@ -13,9 +13,10 @@ Prove that users will form a daily finance-tracking habit when capture is effort
 - Dashboard
 - Basic deterministic insights
 - Lightweight recurring and split candidates
+- Later-phase split ledger API for friends, balances, and settlements
 
 ## Deferred
-- Full Splitwise-style groups and settlements
+- Full Splitwise-style groups with friend-to-friend ledgers
 - EMI calculator
 - Full subscription manager
 - Web dashboard
