@@ -91,7 +91,7 @@ Legend:
 - [x] Reduce or intentionally document mobile lint warnings.
 - [x] Add mobile component tests for confirmation editing, uncertainty display, account selection, validation, and disabled double-submit.
 - [x] Add mobile flow tests for guest first transaction, text parse, manual entry, edit/delete, and dashboard refresh.
-- [ ] Add API contract tests against `EZ-Money-BE/openapi.yaml`.
+- [x] Add API contract tests against `EZ-Money-BE/openapi.yaml`.
 - [ ] Add an end-to-end smoke test for guest capture -> parse -> confirm -> save -> dashboard update.
 - [ ] Document manual mobile QA for voice capture on a real device/simulator.
 - [ ] Document accessibility QA for labels, touch targets, font scaling, contrast, and reduced motion.
