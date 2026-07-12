@@ -100,3 +100,19 @@ func TestGenerateOTPCodeFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestValidOTPCode(t *testing.T) {
+	validCodes := []string{"000000", "123456", "493820"}
+	for _, code := range validCodes {
+		if !validOTPCode(code) {
+			t.Fatalf("expected %q to be valid", code)
+		}
+	}
+
+	invalidCodes := []string{"", "12345", "1234567", "12345a", " 123456"}
+	for _, code := range invalidCodes {
+		if validOTPCode(code) {
+			t.Fatalf("expected %q to be invalid", code)
+		}
+	}
+}

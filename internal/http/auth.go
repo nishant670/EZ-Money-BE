@@ -65,6 +65,18 @@ func generateOTPCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
+func validOTPCode(otp string) bool {
+	if len(otp) != 6 {
+		return false
+	}
+	for _, char := range otp {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func hashOTP(otp string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
 	if err != nil {
@@ -371,10 +383,14 @@ func (s *Server) authOtpSend(c *gin.Context) {
 		return
 	}
 
-	otp, err := generateOTPCode()
-	if err != nil {
-		c.JSON(500, gin.H{"error": "otp_generation_failed"})
-		return
+	otp := s.cfg.OTPDevCode
+	if !s.cfg.OTPDebugResponse || !validOTPCode(otp) {
+		generatedOTP, err := generateOTPCode()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "otp_generation_failed"})
+			return
+		}
+		otp = generatedOTP
 	}
 	otpHash, err := hashOTP(otp)
 	if err != nil {

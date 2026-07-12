@@ -23,6 +23,7 @@ type Config struct {
 	MaxUploadMB        int64
 	MaxTranscriptChars int
 	OTPDebugResponse   bool
+	OTPDevCode         string
 	OTPExpiresMinutes  int
 	ClaimTokenMinutes  int
 }
@@ -82,6 +83,7 @@ func Load() *Config {
 		MaxUploadMB:        int64(atoi("MAX_UPLOAD_MB", 15)),
 		MaxTranscriptChars: atoi("MAX_TRANSCRIPT_CHARS", 1000),
 		OTPDebugResponse:   atob("OTP_DEBUG_RESPONSE", false),
+		OTPDevCode:         getenv("OTP_DEV_CODE", ""),
 		OTPExpiresMinutes:  atoi("OTP_EXPIRES_MINUTES", 10),
 		ClaimTokenMinutes:  atoi("CLAIM_TOKEN_EXPIRES_MINUTES", 15),
 	}
