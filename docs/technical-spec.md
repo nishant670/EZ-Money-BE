@@ -281,6 +281,8 @@ Transaction listing supports pagination plus search/filter by merchant, category
 
 - Component tests for confirmation editing, uncertainty display, account selection, validation, and disabled double-submit.
 - Flow tests for guest first transaction, voice/text parse, manual entry, edit/delete, and dashboard refresh.
+- Manual voice capture QA on a real device/simulator is documented in
+  `docs/MANUAL_MOBILE_QA.md`.
 - Accessibility checks for labels, focus, font scaling, contrast, reduced motion, and 44×44 touch targets.
 
 ### End-to-end acceptance

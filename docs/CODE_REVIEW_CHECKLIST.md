@@ -26,3 +26,4 @@
 - Transaction validation tests.
 - Account ownership tests.
 - Dashboard calculation tests.
+- Manual mobile voice QA follows `docs/MANUAL_MOBILE_QA.md` when native audio behavior changes.
