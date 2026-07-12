@@ -94,7 +94,7 @@ Legend:
 - [x] Add API contract tests against `EZ-Money-BE/openapi.yaml`.
 - [x] Add an end-to-end smoke test for guest capture -> parse -> confirm -> save -> dashboard update.
 - [x] Document manual mobile QA for voice capture on a real device/simulator.
-- [ ] Document accessibility QA for labels, touch targets, font scaling, contrast, and reduced motion.
+- [x] Document accessibility QA for labels, touch targets, font scaling, contrast, and reduced motion.
 
 ## P1 - Product Flow Polish
 

@@ -283,7 +283,8 @@ Transaction listing supports pagination plus search/filter by merchant, category
 - Flow tests for guest first transaction, voice/text parse, manual entry, edit/delete, and dashboard refresh.
 - Manual voice capture QA on a real device/simulator is documented in
   `docs/MANUAL_MOBILE_QA.md`.
-- Accessibility checks for labels, focus, font scaling, contrast, reduced motion, and 44×44 touch targets.
+- Accessibility checks for labels, focus, font scaling, contrast, reduced motion,
+  and 44×44 touch targets are documented in `docs/ACCESSIBILITY_QA.md`.
 
 ### End-to-end acceptance
 

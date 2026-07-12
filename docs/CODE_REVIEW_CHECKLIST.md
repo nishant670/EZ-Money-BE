@@ -27,3 +27,4 @@
 - Account ownership tests.
 - Dashboard calculation tests.
 - Manual mobile voice QA follows `docs/MANUAL_MOBILE_QA.md` when native audio behavior changes.
+- Manual accessibility QA follows `docs/ACCESSIBILITY_QA.md` when mobile UI changes.
