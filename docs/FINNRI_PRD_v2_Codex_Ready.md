@@ -92,7 +92,7 @@ Use deterministic calculations first, AI wording second. Examples: monthly compa
 ## Data Model
 - User
 - Account
-- Category
+- Category string on each transaction for MVP; normalized category model later
 - Transaction
 - ParseAttempt
 - Insight

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"testing"
 
 	"finance-parser-go/internal/models"
@@ -15,8 +16,11 @@ func TestAccountInputValidation(t *testing.T) {
 		{"valid", accountInput{Name: "Cash", Type: "cash"}, true},
 		{"missing name", accountInput{Type: "cash"}, false},
 		{"invalid type", accountInput{Name: "Broker", Type: "investment"}, false},
-		{"invalid due day", accountInput{Name: "Card", Type: "credit", DueDay: 32}, false},
-		{"negative limit", accountInput{Name: "Card", Type: "credit", CreditLimit: -1}, false},
+		{"canonical credit card", accountInput{Name: "Card", Type: "credit_card"}, true},
+		{"legacy credit alias", accountInput{Name: "Card", Type: "credit"}, true},
+		{"legacy wallets alias", accountInput{Name: "Wallet", Type: "wallets"}, true},
+		{"invalid due day", accountInput{Name: "Card", Type: "credit_card", DueDay: 32}, false},
+		{"negative limit", accountInput{Name: "Card", Type: "credit_card", CreditLimit: -1}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -35,5 +39,49 @@ func TestAccountInputDoesNotOverwriteOwnership(t *testing.T) {
 	}
 	if account.Name != "Daily Cash" || account.Type != "cash" {
 		t.Fatalf("input was not normalized: %#v", account)
+	}
+}
+
+func TestAccountInputCanonicalizesLegacyTypeAliases(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"credit", "credit_card"},
+		{" CREDIT_CARD ", "credit_card"},
+		{"debit", "debit_card"},
+		{"wallets", "wallet"},
+	}
+	for _, test := range tests {
+		t.Run(test.input, func(t *testing.T) {
+			account := models.Account{}
+			(accountInput{Name: "Alias", Type: test.input}).apply(&account)
+			if account.Type != test.want {
+				t.Fatalf("Type = %q, want %q", account.Type, test.want)
+			}
+		})
+	}
+}
+
+func TestAccountInputUsesFixedPointMoney(t *testing.T) {
+	var input accountInput
+	if err := json.Unmarshal([]byte(`{
+		"name":"Card",
+		"type":"credit_card",
+		"credit_limit":12345.67,
+		"balance":"100.50"
+	}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.CreditLimit.String() != "12345.67" || input.Balance.String() != "100.50" {
+		t.Fatalf("money fields were not fixed-point: %#v", input)
+	}
+
+	if err := json.Unmarshal([]byte(`{
+		"name":"Card",
+		"type":"credit_card",
+		"credit_limit":1.234
+	}`), &input); err == nil {
+		t.Fatal("expected excess precision to fail")
 	}
 }

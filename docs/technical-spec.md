@@ -62,7 +62,8 @@ Keep the current service and introduce clearer internal boundaries incrementally
 - `ai_parser`: provider-neutral transcription, parsing, normalization, confidence, and missing-field reporting.
 - `dashboard`: deterministic monthly aggregates and recent activity.
 - `insights`: deterministic templates; optional AI wording after facts are computed.
-- `categories`: system categories and optional user categories.
+- `categories`: deferred for MVP; entries keep category names as strings until
+  category taxonomy, icons, budgets, and user customization stabilize.
 - `audit`: parse-attempt metadata and security-relevant events, with retention controls.
 
 Handlers should accept request DTOs rather than binding database models directly. Services enforce ownership and validation; repositories perform persistence. This separation can be introduced within the current Go application without a service rewrite.
@@ -125,8 +126,12 @@ Guest records own data exactly like registered users. Upgrading a guest account 
 
 - `id`, `user_id`
 - `name`
-- `type`: `cash`, `upi`, `bank`, `credit_card`, or `wallet`
+- `type`: `cash`, `upi`, `bank`, `credit_card`, `debit_card`, `wallet`, or `other`.
+  Legacy client aliases `credit`, `debit`, and `wallets` are normalized by the
+  backend to the canonical values above.
 - optional institution name and masked identifier/last four
+- `credit_limit` and `balance` use the same fixed-point money storage as
+  transaction amounts (`numeric(19,2)` in PostgreSQL, `models.Money` in Go).
 - `is_default`
 - timestamps
 
@@ -134,13 +139,29 @@ Accounts are user-defined payment sources, not bank connections. Store only data
 
 ### Category
 
+Deferred as a standalone table for MVP. The backend stores the user-confirmed
+category name on `entries.category`, validates it as required, and uses that
+string for filters and dashboard rollups.
+
+Future normalized shape:
+
 - `id`
 - nullable `user_id` for system categories
 - name, transaction type, icon/color, and `is_system`
+- timestamps
+
+Migration plan:
+
+- Create `categories` with seeded system rows and optional user-defined rows.
+- Backfill categories from distinct entry category strings per user and type.
+- Add nullable `entries.category_id` while preserving `entries.category`.
+- Dual-read and dual-write during one client compatibility window.
+- Make `category_id` required only after mobile clients can edit and display the
+  normalized category model.
 
 ### Transaction
 
-- `id`, `user_id`, non-null `account_id`, optional `category_id`
+- `id`, `user_id`, non-null `account_id`, required string `category`
 - exact-decimal `amount`, `currency`, and type (`expense` or `income`)
 - merchant, occurred date/time, note, tags
 - source (`voice`, `text`, or `manual`)
@@ -149,6 +170,12 @@ Accounts are user-defined payment sources, not bank connections. Store only data
 - timestamps
 
 `account_id` is the source of truth. A free-text payment mode or account label must not substitute for the foreign key. Historical transactions should retain a stable account reference; deleting a used account should be restricted or soft-deleted.
+
+The database mirrors the API validation where PostgreSQL can enforce it:
+`entries.amount > 0`, `entries.type IN ('expense', 'income')`,
+`entries.source IN ('manual', 'text', 'voice')`, canonical account types, and a
+composite owned-account foreign key from `entries(user_id, account_id)` to
+`accounts(user_id, id)`.
 
 ### ParseAttempt
 
@@ -275,6 +302,8 @@ Transaction listing supports pagination plus search/filter by merchant, category
 - Unit tests for parser normalization, enum/date handling, missing fields, deterministic insights, and transaction validation.
 - Handler/integration tests for guest session, parse-without-save, transaction CRUD, filters, pagination, account ownership, and cross-user denial.
 - Migration tests and database constraints for positive amounts, supported types, and account foreign keys.
+  Current migrations enforce positive entry amounts, supported entry/source
+  enums, canonical account type values, and owned account references.
 - Contract tests against OpenAPI and malformed/provider-failure responses.
 
 ### Mobile

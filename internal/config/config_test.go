@@ -44,6 +44,7 @@ func TestEnvExampleContainsRequiredRedactedVariables(t *testing.T) {
 		"MAX_UPLOAD_MB",
 		"MAX_TRANSCRIPT_CHARS",
 		"OTP_DEBUG_RESPONSE",
+		"OTP_DEV_CODE",
 		"OTP_EXPIRES_MINUTES",
 		"CLAIM_TOKEN_EXPIRES_MINUTES",
 		"DB_HOST",

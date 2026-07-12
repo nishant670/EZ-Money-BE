@@ -6,22 +6,30 @@ import (
 	"finance-parser-go/internal/models"
 )
 
-var validAccountTypes = map[string]bool{
-	"cash": true, "credit": true, "debit": true, "wallet": true,
-	"upi": true, "bank": true, "other": true,
+var canonicalAccountTypes = map[string]string{
+	"cash":        "cash",
+	"upi":         "upi",
+	"bank":        "bank",
+	"credit_card": "credit_card",
+	"credit":      "credit_card",
+	"debit_card":  "debit_card",
+	"debit":       "debit_card",
+	"wallet":      "wallet",
+	"wallets":     "wallet",
+	"other":       "other",
 }
 
 type accountInput struct {
-	Type        string  `json:"type"`
-	Name        string  `json:"name"`
-	Color       string  `json:"color"`
-	Provider    string  `json:"provider"`
-	Identifier  string  `json:"identifier"`
-	CreditLimit float64 `json:"credit_limit"`
-	DueDay      int     `json:"due_day"`
-	FeeMonth    string  `json:"fee_month"`
-	Balance     float64 `json:"balance"`
-	IsDefault   bool    `json:"is_default"`
+	Type        string       `json:"type"`
+	Name        string       `json:"name"`
+	Color       string       `json:"color"`
+	Provider    string       `json:"provider"`
+	Identifier  string       `json:"identifier"`
+	CreditLimit models.Money `json:"credit_limit"`
+	DueDay      int          `json:"due_day"`
+	FeeMonth    string       `json:"fee_month"`
+	Balance     models.Money `json:"balance"`
+	IsDefault   bool         `json:"is_default"`
 }
 
 func (input accountInput) validate() map[string]string {
@@ -29,7 +37,7 @@ func (input accountInput) validate() map[string]string {
 	if strings.TrimSpace(input.Name) == "" {
 		fields["name"] = "is required"
 	}
-	if !validAccountTypes[strings.ToLower(strings.TrimSpace(input.Type))] {
+	if normalizeAccountType(input.Type) == "" {
 		fields["type"] = "is invalid"
 	}
 	if input.CreditLimit < 0 {
@@ -42,7 +50,7 @@ func (input accountInput) validate() map[string]string {
 }
 
 func (input accountInput) apply(account *models.Account) {
-	account.Type = strings.ToLower(strings.TrimSpace(input.Type))
+	account.Type = normalizeAccountType(input.Type)
 	account.Name = strings.TrimSpace(input.Name)
 	account.Color = strings.TrimSpace(input.Color)
 	account.Provider = strings.TrimSpace(input.Provider)
@@ -52,4 +60,8 @@ func (input accountInput) apply(account *models.Account) {
 	account.FeeMonth = strings.TrimSpace(input.FeeMonth)
 	account.Balance = input.Balance
 	account.IsDefault = input.IsDefault
+}
+
+func normalizeAccountType(accountType string) string {
+	return canonicalAccountTypes[strings.ToLower(strings.TrimSpace(accountType))]
 }

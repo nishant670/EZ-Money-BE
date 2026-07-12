@@ -162,8 +162,11 @@ These block the stated acceptance criteria or user trust.
 ## 7. Important but non-blocking gaps
 
 - Reduce onboarding length and measure time to first confirmed transaction.
-- Add database constraints for positive amounts, supported transaction types, supported sources, and owned account references where feasible.
-- Normalize categories to a category table after account linkage is stable.
+- Database constraints now enforce positive entry amounts, supported
+  transaction/source enums, canonical account type values, and owned account
+  references.
+- Keep entry categories as required strings for MVP; normalize to a category
+  table later after taxonomy, icons, budgets, and user customization stabilize.
 - Add parse-attempt audit metadata with privacy-aware retention.
 - Move growing dashboard aggregations into bounded SQL queries.
 - Apply request IDs, redacted structured logs, timeouts, and rate limits.
@@ -273,7 +276,9 @@ Lightweight recurring or split candidate metadata may remain in MVP only when it
 
 - Sparse mobile and contract tests mean confirmation, account-selection, ownership, and dashboard regressions are likely.
 - OpenAPI is more complete, but contract tests are still needed to keep clients and server aligned.
-- String dates/times, account balance `float64`, and some free-text enums still create correctness and migration debt outside the fixed transaction amount path.
+- String dates/times and some free-text enums still create correctness and
+  migration debt outside the fixed transaction amount path. Account balances and
+  credit limits now use fixed-point money.
 - Runtime `AutoMigrate` cannot safely represent reviewed production migrations.
 - Both frontend lint suites fail, reducing the value of CI until errors are brought to zero.
 
