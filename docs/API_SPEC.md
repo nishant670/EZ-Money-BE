@@ -19,6 +19,7 @@
 - PATCH /v1/notifications/:id/read
 - PATCH /v1/notifications/read-all
 - DELETE /v1/notifications/:id
+- DELETE /v1/user
 
 ## Dashboard
 `GET /v1/dashboard?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` returns only
@@ -34,6 +35,12 @@ at 366 days. `/v1/insights` remains a temporary compatibility alias.
 Auth endpoints that create a session return an opaque bearer `token`,
 `expires_at`, and the user object. The token is stored server-side only as a
 hash and must be treated as revocable.
+
+## Account/Data Deletion
+`DELETE /v1/user` permanently deletes the authenticated user's transactions,
+accounts, quick prompts, notifications, sessions, profile record, and matching
+OTP/claim verification records. Legacy local upload files referenced by the
+user's entries are removed only when they resolve safely under `uploads/`.
 
 ## OTP Verification
 `POST /v1/auth/otp/send` creates a random, expiring OTP challenge for an email

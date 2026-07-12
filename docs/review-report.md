@@ -120,6 +120,8 @@ select them again as open backlog work.
 | Dashboard endpoint and deterministic insights are missing or hardcoded. | `GET /v1/dashboard` exists and mobile insight screen uses backend dashboard data. |
 | API docs use unimplemented product route names. | `/v1/entries` and `/v1/parse` are the canonical Phase 1.2 routes in docs and OpenAPI. |
 | Receipt upload is visible in MVP flow. | Mobile upload UI and `/v1/upload` client calls are removed; hardened uploads are deferred to a later phase. |
+| Parse retention is undefined. | `docs/AI_PARSING.md` now defines transient audio handling, no MVP parse-attempt persistence, confirmed-entry `source_text` retention, and deletion behavior. |
+| Account/data deletion is missing. | `DELETE /v1/user` now deletes the authenticated user's profile, owned data, sessions, matching verification rows, and safe local upload references. |
 
 ## 5. Current conflicts with the updated PRD
 
@@ -128,13 +130,12 @@ select them again as open backlog work.
 1. **Guest-first is implemented but not optimized.** A new user is routed through a lengthy onboarding sequence before guest creation.
 2. **Mobile quality gates are not met.** Mobile lint still fails, and no automated mobile component/flow tests were found.
 3. **Manual QA remains undocumented.** Voice capture, accessibility, and real-device/simulator flows still need explicit QA records.
-4. **Parse retention is undefined.** Source text/transcripts may contain sensitive details, but retention and deletion policy is not documented.
-5. **Some data-model hardening remains deferred.** Parse attempts, categories, SQL-bounded dashboard queries, and stronger database constraints remain future backend hardening work.
+4. **Some data-model hardening remains deferred.** Categories, SQL-bounded dashboard queries, and stronger database constraints remain future backend hardening work.
 
 ### Trust and security conflicts
 
 1. The server-side upload endpoint still exists and must remain deferred, removed, or hardened before public exposure.
-2. Raw source text is stored on transactions without a documented retention/deletion policy.
+2. Local upload storage remains deferred and must stay hardened or unavailable before public exposure.
 
 ### Explicitly deferred scope found in the repository
 
@@ -230,7 +231,7 @@ Status: implemented in the working tree; manual mobile QA remains.
 - Add rate limiting and restrictive production CORS. Status: implemented in the working tree.
 - Add request size and timeout limits to auth, parse, and upload paths. Status: implemented in the working tree.
 - Keep uploads deferred, or validate content and use private object storage/signed access before re-enabling.
-- Add secret template, rotation procedure, retention policy, and data deletion path. Status: redacted `.env.example` is implemented; rotation, retention, and deletion remain open.
+- Add secret template, rotation procedure, retention policy, and data deletion path. Status: redacted `.env.example`, rotation procedure, source-text/transcript retention policy, and `DELETE /v1/user` are implemented.
 
 ### PR 7 — Quality gate and MVP acceptance suite
 
@@ -265,7 +266,7 @@ Lightweight recurring or split candidate metadata may remain in MVP only when it
 - OTP verification depends on an external delivery channel before public beta; local `dev_otp` responses must stay disabled outside development.
 - The dormant public upload endpoint creates malware/XSS/privacy exposure if re-exposed without hardening.
 - Future logging changes must continue to avoid DSNs, tokens, transcripts, and transaction bodies.
-- Source-text retention may contain sensitive personal details without user awareness.
+- Confirmed-entry `source_text` can still contain sensitive personal details; client copy and edit controls must make this visible to users.
 - Local secrets are ignored by Git, but accidental sharing and historical exposure still need operational controls.
 
 ### Engineering risks

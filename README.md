@@ -43,6 +43,16 @@ configuration names and safe defaults but no real secrets.
 - Each parse logs token counts, not prompt content or the API key.
 - The API does not retry failed OpenAI calls, preventing duplicate charges.
 
+## Source text and transcript retention
+
+- Uploaded voice audio is held in memory only long enough to transcribe it.
+- `/v1/parse` returns a draft and does not persist parse attempts, transcripts,
+  provider prompts, or raw provider responses.
+- Confirmed entries may store `source_text` as transaction provenance. Editing
+  or deleting the entry edits or deletes that stored text.
+- A future `ParseAttempt` audit store must define a short retention window,
+  access controls, and deletion job before it is enabled.
+
 ## Database migration
 
 Apply checked-in migrations in filename order before deploying the updated
@@ -69,6 +79,13 @@ opaque, expiring, one-time `claim_token` values for registration or contact
 updates; the token does not contain the email or phone number. For local manual
 testing only, set `OTP_DEBUG_RESPONSE=true` to include `dev_otp` in the
 `POST /v1/auth/otp/send` response.
+
+## Account deletion
+
+`DELETE /v1/user` permanently deletes the authenticated user's profile and owned
+data: entries, accounts, quick prompts, notifications, auth sessions, and
+matching OTP/claim verification rows. Legacy local upload files referenced by
+entries are removed only when they resolve safely under `uploads/`.
 
 ## Test
 ```bash

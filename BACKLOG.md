@@ -1,6 +1,6 @@
 # FINNRI Backlog
 
-Last audited: 2026-07-10
+Last audited: 2026-07-11
 
 This is the working checklist for FINNRI. Pick the first unchecked task in the
 highest-priority section, complete it, verify it, then update this file in the
@@ -81,20 +81,20 @@ Legend:
 - [x] Apply rate limiting to auth and AI endpoints.
 - [x] Add request size/time limits consistently to upload/auth/parse paths.
 - [x] Add `.env.example` with redacted required variables.
-- [ ] Document source-text/transcript retention and deletion policy.
-- [ ] Add account/data deletion path before any public beta.
+- [x] Document source-text/transcript retention and deletion policy.
+- [x] Add account/data deletion path before any public beta.
 
 ## P1 - Quality Gates
 
 - [x] Backend full Go test suite passes when local `httptest` networking is available.
-- [ ] Fix mobile lint errors.
-- [ ] Reduce or intentionally document mobile lint warnings.
-- [ ] Add mobile component tests for confirmation editing, uncertainty display, account selection, validation, and disabled double-submit.
-- [ ] Add mobile flow tests for guest first transaction, text parse, manual entry, edit/delete, and dashboard refresh.
-- [ ] Add API contract tests against `EZ-Money-BE/openapi.yaml`.
-- [ ] Add an end-to-end smoke test for guest capture -> parse -> confirm -> save -> dashboard update.
-- [ ] Document manual mobile QA for voice capture on a real device/simulator.
-- [ ] Document accessibility QA for labels, touch targets, font scaling, contrast, and reduced motion.
+- [x] Fix mobile lint errors.
+- [x] Reduce or intentionally document mobile lint warnings.
+- [x] Add mobile component tests for confirmation editing, uncertainty display, account selection, validation, and disabled double-submit.
+- [x] Add mobile flow tests for guest first transaction, text parse, manual entry, edit/delete, and dashboard refresh.
+- [x] Add API contract tests against `EZ-Money-BE/openapi.yaml`.
+- [x] Add an end-to-end smoke test for guest capture -> parse -> confirm -> save -> dashboard update.
+- [x] Document manual mobile QA for voice capture on a real device/simulator.
+- [x] Document accessibility QA for labels, touch targets, font scaling, contrast, and reduced motion.
 
 ## P1 - Product Flow Polish
 
@@ -107,7 +107,7 @@ Legend:
 
 ## P1 - Data Model And Backend Hardening
 
-- [ ] Add persistent `ParseAttempt` model or explicitly defer it with a privacy rationale.
+- [x] Add persistent `ParseAttempt` model or explicitly defer it with a privacy rationale.
 - [ ] Add `Category` model or explicitly keep string categories for MVP with a migration plan.
 - [ ] Move larger dashboard aggregations from in-memory scans to bounded SQL queries before scale.
 - [ ] Add database constraints for positive amounts, supported transaction types, supported sources, and owned account references where feasible.

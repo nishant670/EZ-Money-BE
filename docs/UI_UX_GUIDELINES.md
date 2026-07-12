@@ -20,3 +20,4 @@
 - Screen reader labels
 - Support reduced motion
 - Support font scaling
+- Manual QA follows `docs/ACCESSIBILITY_QA.md`.

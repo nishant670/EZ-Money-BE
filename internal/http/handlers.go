@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -89,6 +93,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.PUT("/quick-prompts/:id", s.updateQuickPrompt)
 		authorized.DELETE("/quick-prompts/:id", s.deleteQuickPrompt)
 		authorized.PUT("/user", s.updateProfile)
+		authorized.DELETE("/user", s.deleteUser)
 		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
 
 		// Accounts
@@ -788,6 +793,134 @@ func (s *Server) updateProfile(c *gin.Context) {
 
 	// Re-serialize user to ensure clean JSON response
 	c.JSON(200, gin.H{"user": user})
+}
+
+func (s *Server) deleteUser(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	user := models.User{ID: userID}
+	if value, exists := c.Get("user"); exists {
+		if currentUser, ok := value.(*models.User); ok && currentUser != nil {
+			user = *currentUser
+		}
+	}
+	if user.ID == 0 {
+		c.JSON(401, gin.H{"error": "unauthorized"})
+		return
+	}
+	if user.Email == nil && user.Phone == nil {
+		if err := database.DB.First(&user, userID).Error; err != nil {
+			c.JSON(404, gin.H{"error": "user_not_found"})
+			return
+		}
+	}
+
+	attachments, err := deleteUserData(database.DB, user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_delete_user"})
+		return
+	}
+	deleteLocalUploadFiles(attachments)
+	c.JSON(200, gin.H{"message": "account deleted"})
+}
+
+func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
+	if user.ID == 0 {
+		return nil, errors.New("user_id_required")
+	}
+
+	var attachments []string
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Entry{}).
+			Where("user_id = ? AND attachment <> ?", user.ID, "").
+			Pluck("attachment", &attachments).Error; err != nil {
+			return err
+		}
+
+		deletes := []struct {
+			model any
+			name  string
+		}{
+			{&models.Notification{}, "notifications"},
+			{&models.QuickPrompt{}, "quick prompts"},
+			{&models.Entry{}, "entries"},
+			{&models.Account{}, "accounts"},
+			{&models.AuthSession{}, "auth sessions"},
+		}
+		for _, item := range deletes {
+			if err := tx.Where("user_id = ?", user.ID).Delete(item.model).Error; err != nil {
+				return fmt.Errorf("delete %s: %w", item.name, err)
+			}
+		}
+
+		for _, identifier := range verificationIdentifiersForUser(user) {
+			if err := tx.Where("identifier_type = ? AND identifier = ?", identifier.identifierType, identifier.identifier).
+				Delete(&models.AuthVerification{}).Error; err != nil {
+				return fmt.Errorf("delete auth verifications: %w", err)
+			}
+		}
+
+		if err := tx.Where("id = ?", user.ID).Delete(&models.User{}).Error; err != nil {
+			return fmt.Errorf("delete user: %w", err)
+		}
+		return nil
+	})
+	return attachments, err
+}
+
+type verificationIdentifier struct {
+	identifierType string
+	identifier     string
+}
+
+func verificationIdentifiersForUser(user models.User) []verificationIdentifier {
+	identifiers := make([]verificationIdentifier, 0, 2)
+	if user.Email != nil {
+		email := strings.TrimSpace(*user.Email)
+		if email != "" {
+			identifiers = append(identifiers, verificationIdentifier{identifierType: "email", identifier: strings.ToLower(email)})
+		}
+	}
+	if user.Phone != nil {
+		phone := strings.TrimSpace(*user.Phone)
+		if phone != "" {
+			identifiers = append(identifiers, verificationIdentifier{identifierType: "phone", identifier: phone})
+		}
+	}
+	return identifiers
+}
+
+func localUploadPathFromAttachment(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", false
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.Path != "" {
+		value = parsed.Path
+	}
+
+	cleaned := filepath.Clean(strings.TrimPrefix(value, "/"))
+	relative, err := filepath.Rel("uploads", cleaned)
+	if err != nil || relative == "." || strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
+		return "", false
+	}
+	return filepath.Join("uploads", relative), true
+}
+
+func deleteLocalUploadFiles(attachments []string) {
+	seen := make(map[string]struct{}, len(attachments))
+	for _, attachment := range attachments {
+		path, ok := localUploadPathFromAttachment(attachment)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("failed_delete_upload file=%s err=%v", filepath.Base(path), err)
+		}
+	}
 }
 
 func cors(cfg *config.Config) gin.HandlerFunc {
