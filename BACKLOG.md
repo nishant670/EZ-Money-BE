@@ -110,8 +110,8 @@ Legend:
 - [x] Add persistent `ParseAttempt` model or explicitly defer it with a privacy rationale.
 - [x] Add `Category` model or explicitly keep string categories for MVP with a migration plan.
 - [ ] Move larger dashboard aggregations from in-memory scans to bounded SQL queries before scale.
-- [ ] Add database constraints for positive amounts, supported transaction types, supported sources, and owned account references where feasible.
-- [ ] Decide whether account balances/credit limits should use fixed-point money instead of `float64`.
+- [x] Add database constraints for positive amounts, supported transaction types, supported sources, and owned account references where feasible.
+- [x] Decide whether account balances/credit limits should use fixed-point money instead of `float64`.
 - [x] Standardize account type enum names across docs, backend, and mobile (`credit_card` vs `credit`, `wallet` vs `wallets`).
 
 ## P2 - Deferred / Later Phases

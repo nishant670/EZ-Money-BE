@@ -5,7 +5,9 @@
 id, guest_id, phone/email optional, display_name, locale, currency, created_at
 
 ### Account
-id, user_id, name, type, institution_name, last_four_optional, is_default, timestamps
+id, user_id, name, type, institution_name, last_four_optional,
+credit_limit fixed-point money, balance fixed-point money, is_default,
+timestamps
 
 Account `type` uses lowercase singular API values: `cash`, `upi`, `bank`,
 `credit_card`, `debit_card`, `wallet`, or `other`. Legacy aliases `credit`,
@@ -32,6 +34,11 @@ Migration plan:
 id, user_id, account_id required for new writes, amount, type, category string,
 merchant, date, note, tags, source, optional source_text retained only after
 user confirmation, ai_confidence, timestamps
+
+Database constraints enforce positive transaction amounts, supported transaction
+types (`expense`, `income`), supported sources (`manual`, `text`, `voice`), and
+owned account references through a composite foreign key from
+`entries(user_id, account_id)` to `accounts(user_id, id)`.
 
 ### ParseAttempt
 Deferred for MVP to minimize sensitive raw financial text storage. Do not persist parse attempts, transcripts, provider prompts, or raw provider responses until a short retention window, access controls, and deletion job are defined.

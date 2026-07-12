@@ -130,6 +130,8 @@ Guest records own data exactly like registered users. Upgrading a guest account 
   Legacy client aliases `credit`, `debit`, and `wallets` are normalized by the
   backend to the canonical values above.
 - optional institution name and masked identifier/last four
+- `credit_limit` and `balance` use the same fixed-point money storage as
+  transaction amounts (`numeric(19,2)` in PostgreSQL, `models.Money` in Go).
 - `is_default`
 - timestamps
 
@@ -168,6 +170,12 @@ Migration plan:
 - timestamps
 
 `account_id` is the source of truth. A free-text payment mode or account label must not substitute for the foreign key. Historical transactions should retain a stable account reference; deleting a used account should be restricted or soft-deleted.
+
+The database mirrors the API validation where PostgreSQL can enforce it:
+`entries.amount > 0`, `entries.type IN ('expense', 'income')`,
+`entries.source IN ('manual', 'text', 'voice')`, canonical account types, and a
+composite owned-account foreign key from `entries(user_id, account_id)` to
+`accounts(user_id, id)`.
 
 ### ParseAttempt
 
@@ -294,6 +302,8 @@ Transaction listing supports pagination plus search/filter by merchant, category
 - Unit tests for parser normalization, enum/date handling, missing fields, deterministic insights, and transaction validation.
 - Handler/integration tests for guest session, parse-without-save, transaction CRUD, filters, pagination, account ownership, and cross-user denial.
 - Migration tests and database constraints for positive amounts, supported types, and account foreign keys.
+  Current migrations enforce positive entry amounts, supported entry/source
+  enums, canonical account type values, and owned account references.
 - Contract tests against OpenAPI and malformed/provider-failure responses.
 
 ### Mobile

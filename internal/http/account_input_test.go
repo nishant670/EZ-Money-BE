@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"testing"
 
 	"finance-parser-go/internal/models"
@@ -59,5 +60,28 @@ func TestAccountInputCanonicalizesLegacyTypeAliases(t *testing.T) {
 				t.Fatalf("Type = %q, want %q", account.Type, test.want)
 			}
 		})
+	}
+}
+
+func TestAccountInputUsesFixedPointMoney(t *testing.T) {
+	var input accountInput
+	if err := json.Unmarshal([]byte(`{
+		"name":"Card",
+		"type":"credit_card",
+		"credit_limit":12345.67,
+		"balance":"100.50"
+	}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.CreditLimit.String() != "12345.67" || input.Balance.String() != "100.50" {
+		t.Fatalf("money fields were not fixed-point: %#v", input)
+	}
+
+	if err := json.Unmarshal([]byte(`{
+		"name":"Card",
+		"type":"credit_card",
+		"credit_limit":1.234
+	}`), &input); err == nil {
+		t.Fatal("expected excess precision to fail")
 	}
 }

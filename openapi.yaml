@@ -584,6 +584,19 @@ components:
           type: string
         identifier:
           type: string
+        credit_limit:
+          type: number
+          multipleOf: 0.01
+          minimum: 0
+        due_day:
+          type: integer
+          minimum: 0
+          maximum: 31
+        fee_month:
+          type: string
+        balance:
+          type: number
+          multipleOf: 0.01
         is_default:
           type: boolean
     Account:
@@ -601,6 +614,16 @@ components:
           type: string
         identifier:
           type: string
+        credit_limit:
+          type: number
+          multipleOf: 0.01
+        due_day:
+          type: integer
+        fee_month:
+          type: string
+        balance:
+          type: number
+          multipleOf: 0.01
         is_default:
           type: boolean
     Notification:

@@ -20,16 +20,16 @@ var canonicalAccountTypes = map[string]string{
 }
 
 type accountInput struct {
-	Type        string  `json:"type"`
-	Name        string  `json:"name"`
-	Color       string  `json:"color"`
-	Provider    string  `json:"provider"`
-	Identifier  string  `json:"identifier"`
-	CreditLimit float64 `json:"credit_limit"`
-	DueDay      int     `json:"due_day"`
-	FeeMonth    string  `json:"fee_month"`
-	Balance     float64 `json:"balance"`
-	IsDefault   bool    `json:"is_default"`
+	Type        string       `json:"type"`
+	Name        string       `json:"name"`
+	Color       string       `json:"color"`
+	Provider    string       `json:"provider"`
+	Identifier  string       `json:"identifier"`
+	CreditLimit models.Money `json:"credit_limit"`
+	DueDay      int          `json:"due_day"`
+	FeeMonth    string       `json:"fee_month"`
+	Balance     models.Money `json:"balance"`
+	IsDefault   bool         `json:"is_default"`
 }
 
 func (input accountInput) validate() map[string]string {
