@@ -7,7 +7,7 @@ import (
 type Account struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	UserID      uint      `json:"user_id"`
-	Type        string    `json:"type"` // cash, credit, debit, wallet, upi, bank, other
+	Type        string    `json:"type"` // cash, upi, bank, credit_card, debit_card, wallet, other
 	Name        string    `json:"name"`
 	Color       string    `json:"color"`
 	Provider    string    `json:"provider"`   // bank name or issuer

@@ -112,7 +112,7 @@ Legend:
 - [ ] Move larger dashboard aggregations from in-memory scans to bounded SQL queries before scale.
 - [ ] Add database constraints for positive amounts, supported transaction types, supported sources, and owned account references where feasible.
 - [ ] Decide whether account balances/credit limits should use fixed-point money instead of `float64`.
-- [ ] Standardize account type enum names across docs, backend, and mobile (`credit_card` vs `credit`, `wallet` vs `wallets`).
+- [x] Standardize account type enum names across docs, backend, and mobile (`credit_card` vs `credit`, `wallet` vs `wallets`).
 
 ## P2 - Deferred / Later Phases
 

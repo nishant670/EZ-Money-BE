@@ -18,6 +18,15 @@ func EnsureRuntimeSchema() error {
 			ON notifications (user_id, read_at, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_notifications_user_created
 			ON notifications (user_id, created_at DESC)`,
+		`UPDATE accounts
+			SET type = 'credit_card'
+			WHERE LOWER(type) = 'credit'`,
+		`UPDATE accounts
+			SET type = 'debit_card'
+			WHERE LOWER(type) = 'debit'`,
+		`UPDATE accounts
+			SET type = 'wallet'
+			WHERE LOWER(type) = 'wallets'`,
 	}
 
 	for _, statement := range statements {

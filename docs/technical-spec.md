@@ -125,7 +125,9 @@ Guest records own data exactly like registered users. Upgrading a guest account 
 
 - `id`, `user_id`
 - `name`
-- `type`: `cash`, `upi`, `bank`, `credit_card`, or `wallet`
+- `type`: `cash`, `upi`, `bank`, `credit_card`, `debit_card`, `wallet`, or `other`.
+  Legacy client aliases `credit`, `debit`, and `wallets` are normalized by the
+  backend to the canonical values above.
 - optional institution name and masked identifier/last four
 - `is_default`
 - timestamps
