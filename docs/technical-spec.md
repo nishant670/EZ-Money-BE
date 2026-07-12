@@ -62,7 +62,8 @@ Keep the current service and introduce clearer internal boundaries incrementally
 - `ai_parser`: provider-neutral transcription, parsing, normalization, confidence, and missing-field reporting.
 - `dashboard`: deterministic monthly aggregates and recent activity.
 - `insights`: deterministic templates; optional AI wording after facts are computed.
-- `categories`: system categories and optional user categories.
+- `categories`: deferred for MVP; entries keep category names as strings until
+  category taxonomy, icons, budgets, and user customization stabilize.
 - `audit`: parse-attempt metadata and security-relevant events, with retention controls.
 
 Handlers should accept request DTOs rather than binding database models directly. Services enforce ownership and validation; repositories perform persistence. This separation can be introduced within the current Go application without a service rewrite.
@@ -136,13 +137,29 @@ Accounts are user-defined payment sources, not bank connections. Store only data
 
 ### Category
 
+Deferred as a standalone table for MVP. The backend stores the user-confirmed
+category name on `entries.category`, validates it as required, and uses that
+string for filters and dashboard rollups.
+
+Future normalized shape:
+
 - `id`
 - nullable `user_id` for system categories
 - name, transaction type, icon/color, and `is_system`
+- timestamps
+
+Migration plan:
+
+- Create `categories` with seeded system rows and optional user-defined rows.
+- Backfill categories from distinct entry category strings per user and type.
+- Add nullable `entries.category_id` while preserving `entries.category`.
+- Dual-read and dual-write during one client compatibility window.
+- Make `category_id` required only after mobile clients can edit and display the
+  normalized category model.
 
 ### Transaction
 
-- `id`, `user_id`, non-null `account_id`, optional `category_id`
+- `id`, `user_id`, non-null `account_id`, required string `category`
 - exact-decimal `amount`, `currency`, and type (`expense` or `income`)
 - merchant, occurred date/time, note, tags
 - source (`voice`, `text`, or `manual`)

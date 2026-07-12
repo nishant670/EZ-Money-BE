@@ -12,10 +12,26 @@ Account `type` uses lowercase singular API values: `cash`, `upi`, `bank`,
 `debit`, and `wallets` are normalized to the canonical values before storage.
 
 ### Category
-id, user_id nullable, name, type, icon, color, is_system
+Deferred as a separate table for MVP. Entries keep a required `category` string
+so AI capture, manual entry, filters, dashboard rollups, and mobile forms remain
+simple while category names are still changing.
+
+Future normalized shape: id, user_id nullable, name, type, icon, color,
+is_system, timestamps.
+
+Migration plan:
+- Create `categories` with seeded system rows and optional user rows.
+- Backfill distinct `(user_id, lower(category), type)` values from entries.
+- Add nullable `entries.category_id` while continuing to expose `category`.
+- Dual-read by preferring `category_id` when present and falling back to the
+  string column.
+- Dual-write both fields for one client release, then make `category_id`
+  required once old clients are no longer supported.
 
 ### Transaction
-id, user_id, account_id required for new writes, amount, type, category_id, merchant, date, note, tags, source, optional source_text retained only after user confirmation, ai_confidence, timestamps
+id, user_id, account_id required for new writes, amount, type, category string,
+merchant, date, note, tags, source, optional source_text retained only after
+user confirmation, ai_confidence, timestamps
 
 ### ParseAttempt
 Deferred for MVP to minimize sensitive raw financial text storage. Do not persist parse attempts, transcripts, provider prompts, or raw provider responses until a short retention window, access controls, and deletion job are defined.

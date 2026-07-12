@@ -163,7 +163,8 @@ These block the stated acceptance criteria or user trust.
 
 - Reduce onboarding length and measure time to first confirmed transaction.
 - Add database constraints for positive amounts, supported transaction types, supported sources, and owned account references where feasible.
-- Normalize categories to a category table after account linkage is stable.
+- Keep entry categories as required strings for MVP; normalize to a category
+  table later after taxonomy, icons, budgets, and user customization stabilize.
 - Add parse-attempt audit metadata with privacy-aware retention.
 - Move growing dashboard aggregations into bounded SQL queries.
 - Apply request IDs, redacted structured logs, timeouts, and rate limits.

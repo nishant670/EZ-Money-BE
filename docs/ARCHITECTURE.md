@@ -18,7 +18,7 @@
 - auth
 - accounts
 - transactions
-- categories
+- categories (deferred normalized model; MVP uses entry category strings)
 - ai_parser
 - insights
 - settings
