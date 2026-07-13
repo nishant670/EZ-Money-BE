@@ -14,10 +14,11 @@ Prove that users will form a daily finance-tracking habit when capture is effort
 - Basic deterministic insights
 - Lightweight recurring and split candidates
 - Later-phase split ledger API for friends, balances, and settlements
+- Later-phase EMI calculator API
 
 ## Deferred
 - Full Splitwise-style groups with friend-to-friend ledgers
-- EMI calculator
+- Full EMI planning workflow beyond the calculator API
 - Full subscription manager
 - Web dashboard
 - Open-ended AI advisor

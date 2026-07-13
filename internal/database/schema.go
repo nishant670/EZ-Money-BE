@@ -74,10 +74,17 @@ func runtimeSchemaStatements() []string {
 			WHERE LOWER(source) IN ('manual', 'text', 'voice')`,
 		`DO $$
 		BEGIN
-			ALTER TABLE accounts
-				ADD CONSTRAINT accounts_user_id_id_unique UNIQUE (user_id, id);
+			IF NOT EXISTS (
+				SELECT 1
+				FROM pg_constraint
+				WHERE conrelid = 'accounts'::regclass
+					AND conname = 'accounts_user_id_id_unique'
+			) AND to_regclass('accounts_user_id_id_unique') IS NULL THEN
+				ALTER TABLE accounts
+					ADD CONSTRAINT accounts_user_id_id_unique UNIQUE (user_id, id);
+			END IF;
 		EXCEPTION
-			WHEN duplicate_object THEN NULL;
+			WHEN duplicate_object OR duplicate_table THEN NULL;
 		END
 		$$`,
 		`ALTER TABLE accounts
@@ -108,6 +115,28 @@ func runtimeSchemaStatements() []string {
 			FOREIGN KEY (user_id, account_id) REFERENCES accounts(user_id, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_friends_user_archived
 			ON split_friends (user_id, archived, name)`,
+		`ALTER TABLE split_bills
+			ADD COLUMN IF NOT EXISTS group_id BIGINT`,
+		`CREATE TABLE IF NOT EXISTS split_groups (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			archived BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS split_group_members (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			group_id BIGINT NOT NULL REFERENCES split_groups(id) ON DELETE CASCADE,
+			friend_id BIGINT NOT NULL REFERENCES split_friends(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_groups_user_archived
+			ON split_groups (user_id, archived, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_group_members_unique
+			ON split_group_members (user_id, group_id, friend_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_bills_user_date
 			ON split_bills (user_id, date DESC, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_participants_user_friend

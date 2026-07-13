@@ -23,6 +23,8 @@ func main() {
 		&models.QuickPrompt{},
 		&models.Notification{},
 		&models.SplitFriend{},
+		&models.SplitGroup{},
+		&models.SplitGroupMember{},
 		&models.SplitBill{},
 		&models.SplitParticipant{},
 		&models.SplitSettlement{},

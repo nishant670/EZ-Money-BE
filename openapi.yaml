@@ -461,6 +461,66 @@ paths:
           description: Friend archived
         "404":
           description: Friend not found
+  /v1/split/groups:
+    post:
+      summary: Create a bill-splitting group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SplitGroupInput"
+      responses:
+        "201":
+          description: Group created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitGroup"
+        "422":
+          description: Invalid group payload
+    get:
+      summary: List bill-splitting groups
+      responses:
+        "200":
+          description: Groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SplitGroup"
+  /v1/split/groups/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    put:
+      summary: Update a bill-splitting group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SplitGroupInput"
+      responses:
+        "200":
+          description: Group updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitGroup"
+        "404":
+          description: Group not found
+    delete:
+      summary: Archive a bill-splitting group
+      responses:
+        "200":
+          description: Group archived
+        "404":
+          description: Group not found
   /v1/split/bills:
     post:
       summary: Create a split bill with friend shares
@@ -531,6 +591,24 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SplitBalance"
+  /v1/tools/emi/calculate:
+    post:
+      summary: Calculate EMI summary and amortization schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EMICalculationInput"
+      responses:
+        "200":
+          description: EMI calculation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EMICalculation"
+        "422":
+          description: Invalid EMI fields
 components:
   securitySchemes:
     bearerAuth:
@@ -870,6 +948,53 @@ components:
         updated_at:
           type: string
           format: date-time
+    SplitGroupInput:
+      type: object
+      required: [name, friend_ids]
+      properties:
+        name:
+          type: string
+        friend_ids:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+    SplitGroupMember:
+      type: object
+      required: [id, user_id, group_id, friend_id]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        group_id:
+          type: integer
+        friend_id:
+          type: integer
+        friend:
+          $ref: "#/components/schemas/SplitFriend"
+    SplitGroup:
+      type: object
+      required: [id, user_id, name, archived, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        name:
+          type: string
+        archived:
+          type: boolean
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/SplitGroupMember"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     SplitParticipantInput:
       type: object
       required: [friend_id, share_amount, direction]
@@ -903,6 +1028,8 @@ components:
       properties:
         entry_id:
           type: [integer, "null"]
+        group_id:
+          type: [integer, "null"]
         title:
           type: string
         total_amount:
@@ -933,6 +1060,10 @@ components:
           type: integer
         entry_id:
           type: [integer, "null"]
+        group_id:
+          type: [integer, "null"]
+        group:
+          $ref: "#/components/schemas/SplitGroup"
         title:
           type: string
         total_amount:
@@ -1005,6 +1136,75 @@ components:
           type: number
           multipleOf: 0.01
         net_balance:
+          type: number
+          multipleOf: 0.01
+    EMICalculationInput:
+      type: object
+      required: [principal_amount, annual_interest_rate_percent, tenure_months]
+      properties:
+        principal_amount:
+          type: number
+          multipleOf: 0.01
+          exclusiveMinimum: 0
+        annual_interest_rate_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        tenure_months:
+          type: integer
+          minimum: 1
+          maximum: 360
+        currency:
+          type: string
+          enum: [INR]
+          default: INR
+    EMICalculation:
+      type: object
+      required: [principal_amount, currency, annual_interest_rate_percent, tenure_months, monthly_emi, total_payment, total_interest, schedule]
+      properties:
+        principal_amount:
+          type: number
+          multipleOf: 0.01
+        currency:
+          type: string
+          enum: [INR]
+        annual_interest_rate_percent:
+          type: number
+        tenure_months:
+          type: integer
+        monthly_emi:
+          type: number
+          multipleOf: 0.01
+        total_payment:
+          type: number
+          multipleOf: 0.01
+        total_interest:
+          type: number
+          multipleOf: 0.01
+        schedule:
+          type: array
+          maxItems: 360
+          items:
+            $ref: "#/components/schemas/EMIScheduleMonth"
+    EMIScheduleMonth:
+      type: object
+      required: [month, opening_balance, payment_amount, principal_amount, interest_amount, closing_balance]
+      properties:
+        month:
+          type: integer
+        opening_balance:
+          type: number
+          multipleOf: 0.01
+        payment_amount:
+          type: number
+          multipleOf: 0.01
+        principal_amount:
+          type: number
+          multipleOf: 0.01
+        interest_amount:
+          type: number
+          multipleOf: 0.01
+        closing_balance:
           type: number
           multipleOf: 0.01
     ValidationError:

@@ -332,7 +332,7 @@ Required CI gates are Go tests/vet, mobile lint/typecheck/tests, API contract te
 The following are not Phase 1 deliverables:
 
 - Full Splitwise-style groups with friend-to-friend ledgers beyond the current user-owned split ledger API.
-- EMI calculator or EMI planning workflow.
+- EMI planning workflow beyond the stateless calculator API.
 - Full subscription manager.
 - New web dashboard features, advanced reports, exports, and bulk editing.
 - Bank/UPI/Account Aggregator integrations.

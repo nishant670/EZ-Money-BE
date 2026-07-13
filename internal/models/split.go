@@ -13,11 +13,34 @@ type SplitFriend struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type SplitGroup struct {
+	ID        uint               `gorm:"primaryKey" json:"id"`
+	UserID    uint               `gorm:"index;not null" json:"user_id"`
+	Name      string             `gorm:"not null" json:"name"`
+	Archived  bool               `gorm:"not null;default:false" json:"archived"`
+	Members   []SplitGroupMember `json:"members,omitempty" gorm:"foreignKey:GroupID"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
+}
+
+type SplitGroupMember struct {
+	ID        uint        `gorm:"primaryKey" json:"id"`
+	UserID    uint        `gorm:"index;not null" json:"user_id"`
+	GroupID   uint        `gorm:"index;not null" json:"group_id"`
+	Group     SplitGroup  `json:"-" gorm:"foreignKey:GroupID;constraint:OnDelete:CASCADE"`
+	FriendID  uint        `gorm:"index;not null" json:"friend_id"`
+	Friend    SplitFriend `json:"friend,omitempty" gorm:"foreignKey:FriendID;constraint:OnDelete:CASCADE"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+}
+
 type SplitBill struct {
 	ID           uint               `gorm:"primaryKey" json:"id"`
 	UserID       uint               `gorm:"index;not null" json:"user_id"`
 	EntryID      *uint              `gorm:"index" json:"entry_id"`
 	Entry        *Entry             `json:"entry,omitempty" gorm:"foreignKey:EntryID;constraint:OnDelete:SET NULL"`
+	GroupID      *uint              `gorm:"index" json:"group_id"`
+	Group        *SplitGroup        `json:"group,omitempty" gorm:"foreignKey:GroupID;constraint:OnDelete:SET NULL"`
 	Title        string             `gorm:"not null" json:"title"`
 	TotalAmount  Money              `gorm:"type:numeric(19,2);not null" json:"total_amount"`
 	Currency     string             `gorm:"type:char(3);not null;default:INR" json:"currency"`

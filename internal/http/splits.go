@@ -34,8 +34,14 @@ type splitParticipantInput struct {
 	Direction   string       `json:"direction"`
 }
 
+type splitGroupInput struct {
+	Name      string `json:"name"`
+	FriendIDs []uint `json:"friend_ids"`
+}
+
 type splitBillInput struct {
 	EntryID      *uint                   `json:"entry_id"`
+	GroupID      *uint                   `json:"group_id"`
 	Title        string                  `json:"title"`
 	TotalAmount  models.Money            `json:"total_amount"`
 	Currency     string                  `json:"currency"`
@@ -147,6 +153,127 @@ func (s *Server) archiveSplitFriend(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "split friend archived"})
 }
 
+func (s *Server) createSplitGroup(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+
+	var input splitGroupInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group", "fields": fields})
+		return
+	}
+	if fields, err := validateSplitGroupFriends(userID, input.FriendIDs); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group", "fields": fields})
+		return
+	}
+
+	var group models.SplitGroup
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		group = models.SplitGroup{UserID: userID, Name: strings.TrimSpace(input.Name)}
+		if err := tx.Create(&group).Error; err != nil {
+			return err
+		}
+		return createSplitGroupMembers(tx, userID, group.ID, input.FriendIDs)
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_group"})
+		return
+	}
+	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
+	c.JSON(http.StatusCreated, group)
+}
+
+func (s *Server) listSplitGroups(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+
+	query := database.DB.Preload("Members.Friend").Where("user_id = ?", userID)
+	if !strings.EqualFold(c.Query("status"), "all") {
+		query = query.Where("archived = ?", false)
+	}
+
+	var groups []models.SplitGroup
+	if err := query.Order("name asc, created_at desc").Find(&groups).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_groups"})
+		return
+	}
+	c.JSON(http.StatusOK, groups)
+}
+
+func (s *Server) updateSplitGroup(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var input splitGroupInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group", "fields": fields})
+		return
+	}
+	if fields, err := validateSplitGroupFriends(userID, input.FriendIDs); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group", "fields": fields})
+		return
+	}
+
+	var group models.SplitGroup
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := ownedSplitGroups(tx, userID).Where("id = ?", id).First(&group).Error; err != nil {
+			return err
+		}
+		group.Name = strings.TrimSpace(input.Name)
+		if err := tx.Save(&group).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ? AND group_id = ?", userID, group.ID).Delete(&models.SplitGroupMember{}).Error; err != nil {
+			return err
+		}
+		return createSplitGroupMembers(tx, userID, group.ID, input.FriendIDs)
+	}); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_group"})
+		return
+	}
+	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
+	c.JSON(http.StatusOK, group)
+}
+
+func (s *Server) archiveSplitGroup(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	result := ownedSplitGroups(database.DB.Model(&models.SplitGroup{}), userID).
+		Where("id = ?", id).
+		Update("archived", true)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_archive_split_group"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "split group archived"})
+}
+
 func (s *Server) createSplitBill(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
@@ -175,6 +302,15 @@ func (s *Server) createSplitBill(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": fields})
 		return
 	}
+	if input.GroupID != nil {
+		if ok, err := userOwnsActiveSplitGroup(userID, *input.GroupID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "split_group_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": gin.H{"group_id": "must belong to the current user"}})
+			return
+		}
+	}
 
 	var bill models.SplitBill
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
@@ -189,7 +325,7 @@ func (s *Server) createSplitBill(c *gin.Context) {
 		if err := tx.Create(&participants).Error; err != nil {
 			return err
 		}
-		return tx.Preload("Participants.Friend").First(&bill, bill.ID).Error
+		return tx.Preload("Group").Preload("Participants.Friend").First(&bill, bill.ID).Error
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_bill"})
 		return
@@ -202,7 +338,7 @@ func (s *Server) listSplitBills(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
 	var bills []models.SplitBill
-	if err := database.DB.Preload("Participants.Friend").
+	if err := database.DB.Preload("Group").Preload("Participants.Friend").
 		Where("user_id = ?", userID).
 		Order("date desc, created_at desc").
 		Find(&bills).Error; err != nil {
@@ -298,6 +434,30 @@ func (input splitFriendInput) apply(friend *models.SplitFriend) {
 	friend.Phone = strings.TrimSpace(input.Phone)
 }
 
+func (input splitGroupInput) validate() map[string]string {
+	fields := map[string]string{}
+	if strings.TrimSpace(input.Name) == "" {
+		fields["name"] = "is required"
+	}
+	if len(strings.TrimSpace(input.Name)) > 120 {
+		fields["name"] = "must not exceed 120 characters"
+	}
+	if len(input.FriendIDs) == 0 {
+		fields["friend_ids"] = "must include at least one friend"
+	}
+	seen := map[uint]bool{}
+	for index, friendID := range input.FriendIDs {
+		if friendID == 0 {
+			fields[fmt.Sprintf("friend_ids[%d]", index)] = "must be a positive integer"
+		}
+		if seen[friendID] {
+			fields[fmt.Sprintf("friend_ids[%d]", index)] = "duplicate friend"
+		}
+		seen[friendID] = true
+	}
+	return fields
+}
+
 func (input splitBillInput) validate() map[string]string {
 	fields := map[string]string{}
 	if strings.TrimSpace(input.Title) == "" {
@@ -312,6 +472,9 @@ func (input splitBillInput) validate() map[string]string {
 	}
 	if _, err := time.Parse("2006-01-02", input.Date); err != nil {
 		fields["date"] = "must use YYYY-MM-DD"
+	}
+	if input.GroupID != nil && *input.GroupID == 0 {
+		fields["group_id"] = "must be a positive integer"
 	}
 	if len(input.Participants) == 0 {
 		fields["participants"] = "must include at least one friend share"
@@ -350,6 +513,7 @@ func (input splitBillInput) toModel(userID uint) models.SplitBill {
 	return models.SplitBill{
 		UserID:      userID,
 		EntryID:     input.EntryID,
+		GroupID:     input.GroupID,
 		Title:       strings.TrimSpace(input.Title),
 		TotalAmount: input.TotalAmount,
 		Currency:    normalizedSplitCurrency(input.Currency),
@@ -470,6 +634,152 @@ func validateSplitParticipantFriends(userID uint, participants []splitParticipan
 	return fields, nil
 }
 
+func validateSplitGroupFriends(userID uint, friendIDs []uint) (gin.H, error) {
+	fields := gin.H{}
+	for index, friendID := range friendIDs {
+		if friendID == 0 {
+			continue
+		}
+		ok, err := userOwnsActiveSplitFriend(userID, friendID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			fields[fmt.Sprintf("friend_ids[%d]", index)] = "must belong to the current user"
+		}
+	}
+	return fields, nil
+}
+
+func validateEntrySplitReferences(userID uint, input *entrySplitInput) (gin.H, error) {
+	fields := gin.H{}
+	if input == nil {
+		return fields, nil
+	}
+	if input.GroupID != nil {
+		ok, err := userOwnsActiveSplitGroup(userID, *input.GroupID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			fields["split.group_id"] = "must belong to the current user"
+		}
+	}
+	for index, participant := range input.Participants {
+		if participant.FriendID == nil {
+			continue
+		}
+		ok, err := userOwnsActiveSplitFriend(userID, *participant.FriendID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			fields[fmt.Sprintf("split.participants[%d].friend_id", index)] = "must belong to the current user"
+		}
+	}
+	return fields, nil
+}
+
+func createEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *entrySplitInput) error {
+	if input == nil {
+		return nil
+	}
+
+	friendIDs := make([]uint, 0, len(input.Participants))
+	participants := make([]models.SplitParticipant, 0, len(input.Participants))
+	for _, participant := range input.Participants {
+		friendID := uint(0)
+		if participant.FriendID != nil {
+			friendID = *participant.FriendID
+		} else {
+			friend := participant.Friend.toModel(userID)
+			if err := tx.Create(&friend).Error; err != nil {
+				return err
+			}
+			friendID = friend.ID
+		}
+		friendIDs = append(friendIDs, friendID)
+		direction := normalizeSplitDirection(participant.Direction)
+		if direction == "" {
+			direction = splitDirectionFriendOwesUser
+		}
+		participants = append(participants, models.SplitParticipant{
+			UserID:      userID,
+			FriendID:    friendID,
+			ShareAmount: participant.ShareAmount,
+			Direction:   direction,
+		})
+	}
+
+	groupID := input.GroupID
+	if groupID == nil && strings.TrimSpace(input.GroupName) != "" {
+		group := models.SplitGroup{UserID: userID, Name: strings.TrimSpace(input.GroupName)}
+		if err := tx.Create(&group).Error; err != nil {
+			return err
+		}
+		groupID = &group.ID
+	}
+	if groupID != nil {
+		if err := createSplitGroupMembers(tx, userID, *groupID, friendIDs); err != nil {
+			return err
+		}
+	}
+
+	entryID := entry.ID
+	bill := models.SplitBill{
+		UserID:      userID,
+		EntryID:     &entryID,
+		GroupID:     groupID,
+		Title:       entry.Title,
+		TotalAmount: entry.Amount,
+		Currency:    entry.Currency,
+		Date:        entry.Date,
+		Notes:       strings.TrimSpace(input.Notes),
+	}
+	if bill.Title == "" {
+		bill.Title = "Split transaction"
+	}
+	if bill.Currency == "" {
+		bill.Currency = "INR"
+	}
+	if err := tx.Create(&bill).Error; err != nil {
+		return err
+	}
+	for index := range participants {
+		participants[index].BillID = bill.ID
+	}
+	return tx.Create(&participants).Error
+}
+
+func createSplitGroupMembers(tx *gorm.DB, userID, groupID uint, friendIDs []uint) error {
+	seen := map[uint]bool{}
+	members := make([]models.SplitGroupMember, 0, len(friendIDs))
+	for _, friendID := range friendIDs {
+		if friendID == 0 || seen[friendID] {
+			continue
+		}
+		seen[friendID] = true
+		var count int64
+		if err := tx.Model(&models.SplitGroupMember{}).
+			Where("user_id = ? AND group_id = ? AND friend_id = ?", userID, groupID, friendID).
+			Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		members = append(members, models.SplitGroupMember{
+			UserID:   userID,
+			GroupID:  groupID,
+			FriendID: friendID,
+		})
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	return tx.Create(&members).Error
+}
+
 func normalizedSplitCurrency(currency string) string {
 	if strings.TrimSpace(currency) == "" {
 		return "INR"
@@ -507,6 +817,14 @@ func userOwnsActiveSplitFriend(userID, friendID uint) (bool, error) {
 	return count == 1, err
 }
 
+func userOwnsActiveSplitGroup(userID, groupID uint) (bool, error) {
+	var count int64
+	err := ownedSplitGroups(database.DB.Model(&models.SplitGroup{}), userID).
+		Where("id = ? AND archived = ?", groupID, false).
+		Count(&count).Error
+	return count == 1, err
+}
+
 func userOwnsEntry(userID, entryID uint) (bool, error) {
 	var count int64
 	err := ownedEntries(database.DB.Model(&models.Entry{}), userID).
@@ -516,6 +834,10 @@ func userOwnsEntry(userID, entryID uint) (bool, error) {
 }
 
 func ownedSplitFriends(db *gorm.DB, userID uint) *gorm.DB {
+	return db.Where("user_id = ?", userID)
+}
+
+func ownedSplitGroups(db *gorm.DB, userID uint) *gorm.DB {
 	return db.Where("user_id = ?", userID)
 }
 

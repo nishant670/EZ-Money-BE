@@ -14,10 +14,17 @@ WHERE LOWER(source) IN ('manual', 'text', 'voice');
 
 DO $$
 BEGIN
-    ALTER TABLE accounts
-        ADD CONSTRAINT accounts_user_id_id_unique UNIQUE (user_id, id);
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'accounts'::regclass
+            AND conname = 'accounts_user_id_id_unique'
+    ) AND to_regclass('accounts_user_id_id_unique') IS NULL THEN
+        ALTER TABLE accounts
+            ADD CONSTRAINT accounts_user_id_id_unique UNIQUE (user_id, id);
+    END IF;
 EXCEPTION
-    WHEN duplicate_object THEN NULL;
+    WHEN duplicate_object OR duplicate_table THEN NULL;
 END
 $$;
 

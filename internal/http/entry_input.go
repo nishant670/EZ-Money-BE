@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,21 @@ type entryInput struct {
 	SourceText  string             `json:"source_text"`
 	Attachment  string             `json:"attachment"`
 	AccountID   *uint              `json:"account_id"`
+	Split       *entrySplitInput   `json:"split"`
+}
+
+type entrySplitInput struct {
+	GroupID      *uint                        `json:"group_id"`
+	GroupName    string                       `json:"group_name"`
+	Notes        string                       `json:"notes"`
+	Participants []entrySplitParticipantInput `json:"participants"`
+}
+
+type entrySplitParticipantInput struct {
+	FriendID    *uint            `json:"friend_id"`
+	Friend      splitFriendInput `json:"friend"`
+	ShareAmount models.Money     `json:"share_amount"`
+	Direction   string           `json:"direction"`
 }
 
 type updateEntryInput struct {
@@ -115,6 +131,61 @@ func (input entryInput) validate() map[string]string {
 		fields["account_id"] = "is required"
 	} else if *input.AccountID == 0 {
 		fields["account_id"] = "must be a positive integer"
+	}
+	for field, message := range input.Split.validate() {
+		fields[field] = message
+	}
+	if input.Split != nil {
+		totalShares := models.Money(0)
+		for _, participant := range input.Split.Participants {
+			totalShares += participant.ShareAmount
+		}
+		if totalShares > input.Amount {
+			fields["split.participants"] = "shares must not exceed transaction amount"
+		}
+	}
+	return fields
+}
+
+func (input *entrySplitInput) validate() map[string]string {
+	fields := map[string]string{}
+	if input == nil {
+		return fields
+	}
+	if len(input.Participants) == 0 {
+		fields["split.participants"] = "must include at least one friend share"
+	}
+	if input.GroupID != nil && *input.GroupID == 0 {
+		fields["split.group_id"] = "must be a positive integer"
+	}
+	seen := map[string]bool{}
+	for index, participant := range input.Participants {
+		prefix := "split.participants[" + strconv.Itoa(index) + "]"
+		if participant.FriendID == nil && strings.TrimSpace(participant.Friend.Name) == "" {
+			fields[prefix+".friend"] = "must include friend_id or friend.name"
+		}
+		if participant.FriendID != nil && *participant.FriendID == 0 {
+			fields[prefix+".friend_id"] = "must be a positive integer"
+		}
+		if !participant.ShareAmount.IsPositive() {
+			fields[prefix+".share_amount"] = "must be positive"
+		}
+		direction := normalizeSplitDirection(participant.Direction)
+		if strings.TrimSpace(participant.Direction) == "" {
+			direction = splitDirectionFriendOwesUser
+		}
+		if direction == "" {
+			fields[prefix+".direction"] = "must be friend_owes_user or user_owes_friend"
+		}
+		key := strings.ToLower(strings.TrimSpace(participant.Friend.Name))
+		if participant.FriendID != nil {
+			key = strconv.Itoa(int(*participant.FriendID))
+		}
+		key += ":" + direction
+		if seen[key] {
+			fields[prefix+".friend"] = "duplicate friend and direction"
+		}
+		seen[key] = true
 	}
 	return fields
 }

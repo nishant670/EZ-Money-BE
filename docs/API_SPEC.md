@@ -23,11 +23,16 @@
 - GET /v1/split/friends
 - PUT /v1/split/friends/:id
 - DELETE /v1/split/friends/:id
+- POST /v1/split/groups
+- GET /v1/split/groups
+- PUT /v1/split/groups/:id
+- DELETE /v1/split/groups/:id
 - POST /v1/split/bills
 - GET /v1/split/bills
 - POST /v1/split/settlements
 - GET /v1/split/settlements
 - GET /v1/split/balances
+- POST /v1/tools/emi/calculate
 - DELETE /v1/user
 
 ## Dashboard
@@ -81,12 +86,26 @@ contract yet; these are in-app notifications.
 
 ## Split Ledger
 Split endpoints are authenticated and user-owned. Friends are local contacts for
-bill splitting. Split bills contain one or more participant shares where
+bill splitting. Groups are named friend collections for common trips,
+households, or recurring crews. Split bills contain one or more participant shares where
 `friend_owes_user` increases the friend's balance and `user_owes_friend`
 increases what the user owes. Settlements use `friend_paid_user` or
 `user_paid_friend` to reduce outstanding balances. `GET /v1/split/balances`
 returns positive `net_balance` when the friend owes the user, and negative when
 the user owes the friend.
+
+`POST /v1/entries` may include an optional `split` object. When present, the
+transaction and linked split bill are created atomically. Participants can
+reference existing `friend_id` values or include a new `friend.name`; `group_id`
+can attach the bill to an existing group, while `group_name` creates a new group
+from the transaction's participants.
+
+## EMI Tools
+`POST /v1/tools/emi/calculate` is an authenticated, stateless INR calculator. It
+accepts `principal_amount`, `annual_interest_rate_percent`, `tenure_months`, and
+optional `currency`, then returns `monthly_emi`, `total_payment`,
+`total_interest`, and a month-by-month amortization `schedule`. Tenure is capped
+at 360 months and annual interest is capped at 100%.
 
 ## Parse Response Should Include
 amount, currency, type, merchant, category, account_hint, date, note, tags, recurring_candidate, split_candidate, confidence, missing_fields.

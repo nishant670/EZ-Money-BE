@@ -55,8 +55,14 @@ subscription review workflow is added later.
 ### SplitFriend
 id, user_id, name, email, phone, archived, timestamps
 
+### SplitGroup
+id, user_id, name, archived, timestamps
+
+### SplitGroupMember
+id, user_id, group_id, friend_id, timestamps
+
 ### SplitBill
-id, user_id, entry_id optional, title, total_amount fixed-point money,
+id, user_id, entry_id optional, group_id optional, title, total_amount fixed-point money,
 currency, date, notes, timestamps
 
 ### SplitParticipant

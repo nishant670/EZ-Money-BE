@@ -4,7 +4,7 @@
 **Supporting line:** Speak your expenses. Confirm in seconds. Understand where your money goes.
 
 ## Product Decision
-FINNRI should start as a focused MVP, not a broad personal finance suite. The MVP is: effortless AI capture, confirm-first trust, account-linked transactions, and simple actionable insights. Full bill splitting, EMI tools, full subscription management, web dashboard, bank integrations, and open-ended AI financial advice are deferred until the core habit loop is proven.
+FINNRI should start as a focused MVP, not a broad personal finance suite. The MVP is: effortless AI capture, confirm-first trust, account-linked transactions, and simple actionable insights. Later-phase split ledger and EMI calculator APIs can exist as isolated utilities, while full planning workflows, full subscription management, web dashboard, bank integrations, and open-ended AI financial advice remain deferred until the core habit loop is proven.
 
 ## Executive Summary
 FINNRI is an AI-powered personal finance companion for young Indians. Users speak or type what happened financially, AI extracts draft transaction details, the user confirms or edits, and FINNRI turns the data into clear insights.
@@ -41,10 +41,11 @@ Included:
 - Deterministic insights with optional AI wording
 - Lightweight recurring/subscription candidate detection
 - Optional simple split metadata
+- Later-phase EMI calculator API
 
 Deferred:
 - Full bill splitting groups and settlements
-- EMI calculator
+- Full EMI planning workflow beyond the calculator API
 - Full subscription manager
 - Web dashboard
 - Open-ended AI financial advisor

@@ -95,3 +95,67 @@ func TestSplitBillInputRejectsInvalidShares(t *testing.T) {
 		t.Fatalf("expected shares over total to be rejected, got %v", fields)
 	}
 }
+
+func TestEntryCreateCanCreateLinkedSplitWithInlineFriend(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	authResponse := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{
+			"device_id": "entry-linked-split-device",
+		}, http.StatusOK,
+	)
+	accounts := performJSONRequest[[]models.Account](
+		t, router, http.MethodGet, "/v1/accounts", authResponse.Token, nil, http.StatusOK,
+	)
+	if len(accounts) == 0 {
+		t.Fatal("guest account was not created")
+	}
+
+	entry := performJSONRequest[models.Entry](
+		t, router, http.MethodPost, "/v1/entries", authResponse.Token,
+		map[string]any{
+			"title":      "Trip dinner",
+			"type":       "expense",
+			"amount":     "2000.00",
+			"currency":   "INR",
+			"source":     "manual",
+			"mode":       "UPI",
+			"category":   "Food",
+			"merchant":   "Cafe",
+			"date":       "2026-07-13",
+			"time":       "21:00",
+			"account_id": accounts[0].ID,
+			"split": map[string]any{
+				"group_name": "Goa trip",
+				"participants": []map[string]any{
+					{
+						"friend":       map[string]any{"name": "Riya"},
+						"share_amount": "1000.00",
+					},
+				},
+			},
+		}, http.StatusCreated,
+	)
+	if entry.ID == 0 {
+		t.Fatalf("entry was not created: %#v", entry)
+	}
+
+	bills := performJSONRequest[[]models.SplitBill](
+		t, router, http.MethodGet, "/v1/split/bills", authResponse.Token, nil, http.StatusOK,
+	)
+	if len(bills) != 1 || bills[0].EntryID == nil || *bills[0].EntryID != entry.ID {
+		t.Fatalf("expected one linked split bill, got %#v", bills)
+	}
+	if bills[0].GroupID == nil || len(bills[0].Participants) != 1 {
+		t.Fatalf("expected linked group and participant, got %#v", bills[0])
+	}
+
+	balances := performJSONRequest[[]splitBalance](
+		t, router, http.MethodGet, "/v1/split/balances", authResponse.Token, nil, http.StatusOK,
+	)
+	if len(balances) != 1 || balances[0].NetBalance.String() != "1000.00" {
+		t.Fatalf("expected friend to owe 1000.00, got %#v", balances)
+	}
+}

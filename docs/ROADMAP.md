@@ -10,7 +10,7 @@ Guest onboarding, AI capture, confirmation, accounts, transactions, dashboard, b
 Recurring detection, weekly review, budget alerts, improved insights, optional login/sync.
 
 ## Phase 3 - Social/Utilities
-Full bill splitting, friend balances, credit card due reminders, EMI tools.
+Full bill splitting, friend balances, credit card due reminders, EMI planning beyond the calculator API.
 
 ## Phase 4 - Power User/Web
 Web dashboard, exports, advanced filters, bulk editing, statement imports.
