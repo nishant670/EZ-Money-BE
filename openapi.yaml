@@ -395,6 +395,183 @@ paths:
           description: Deleted
         "404":
           description: Not found
+  /v1/budgets:
+    get:
+      summary: List monthly budgets owned by the authenticated user
+      responses:
+        "200":
+          description: Budgets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Budget"
+    post:
+      summary: Create a monthly INR budget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetInput"
+      responses:
+        "201":
+          description: Budget created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Budget"
+        "422":
+          description: Invalid budget fields
+  /v1/budgets/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    put:
+      summary: Update an owned monthly budget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetInput"
+      responses:
+        "200":
+          description: Updated budget
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Budget"
+        "404":
+          description: Budget not found
+        "422":
+          description: Invalid budget fields
+    delete:
+      summary: Delete an owned budget and its alert state
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Budget not found
+  /v1/subscriptions:
+    get:
+      summary: List subscriptions owned by the authenticated user
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [all, active, paused, cancelled]
+            default: all
+      responses:
+        "200":
+          description: Subscriptions with due-state metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Subscription"
+        "422":
+          description: Invalid filters
+    post:
+      summary: Create a subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionInput"
+      responses:
+        "201":
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+        "422":
+          description: Invalid subscription fields or account ownership
+  /v1/subscriptions/reminders:
+    post:
+      summary: Create deduplicated due/overdue subscription reminders
+      responses:
+        "200":
+          description: Reminder count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [created]
+                properties:
+                  created:
+                    type: integer
+  /v1/subscriptions/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    put:
+      summary: Update an owned subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionInput"
+      responses:
+        "200":
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+        "404":
+          description: Subscription not found
+        "422":
+          description: Invalid subscription fields or account ownership
+    delete:
+      summary: Delete an owned subscription and reminder state
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Subscription not found
+  /v1/subscriptions/{id}/mark-paid:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Mark a subscription paid and advance its next due date
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paid_date:
+                  type: string
+                  format: date
+      responses:
+        "200":
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+        "404":
+          description: Subscription not found
+        "422":
+          description: Invalid paid date
   /v1/split/friends:
     post:
       summary: Create a bill-splitting friend
@@ -873,6 +1050,127 @@ components:
           multipleOf: 0.01
         is_default:
           type: boolean
+    BudgetInput:
+      type: object
+      required: [name, limit_amount]
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        period:
+          type: string
+          enum: [monthly]
+          default: monthly
+        category:
+          type: string
+          description: Empty means all expense categories.
+          maxLength: 80
+        limit_amount:
+          oneOf:
+            - type: number
+              exclusiveMinimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        currency:
+          type: string
+          const: INR
+          default: INR
+        alert_threshold_percent:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 80
+        active:
+          type: boolean
+          default: true
+    Budget:
+      allOf:
+        - $ref: "#/components/schemas/BudgetInput"
+        - type: object
+          required: [id, user_id, name, period, category, limit_amount, currency, alert_threshold_percent, active, created_at, updated_at]
+          properties:
+            id:
+              type: integer
+            user_id:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+    SubscriptionInput:
+      type: object
+      required: [name, amount, next_due_date]
+      properties:
+        account_id:
+          type: [integer, "null"]
+          minimum: 1
+        name:
+          type: string
+          maxLength: 120
+        merchant:
+          type: string
+          maxLength: 120
+        category:
+          type: string
+          maxLength: 80
+        amount:
+          oneOf:
+            - type: number
+              exclusiveMinimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        currency:
+          type: string
+          const: INR
+          default: INR
+        billing_interval:
+          type: string
+          enum: [weekly, monthly, yearly]
+          default: monthly
+        next_due_date:
+          type: string
+          format: date
+        last_charged_date:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [active, paused, cancelled]
+          default: active
+        reminder_days:
+          type: integer
+          minimum: 0
+          maximum: 30
+          default: 3
+        notes:
+          type: string
+    Subscription:
+      allOf:
+        - $ref: "#/components/schemas/SubscriptionInput"
+        - type: object
+          required: [id, user_id, name, amount, currency, billing_interval, next_due_date, status, reminder_days, days_until_due, due_state, created_at, updated_at]
+          properties:
+            id:
+              type: integer
+            user_id:
+              type: integer
+            account:
+              $ref: "#/components/schemas/Account"
+            days_until_due:
+              type: integer
+            due_state:
+              type: string
+              enum: [scheduled, due_soon, overdue, paused, cancelled, unknown]
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
     Notification:
       type: object
       required: [id, user_id, type, title, body, created_at, updated_at]

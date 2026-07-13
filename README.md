@@ -85,9 +85,10 @@ set `OTP_DEV_CODE=123456`; this static code is ignored unless
 ## Account deletion
 
 `DELETE /v1/user` permanently deletes the authenticated user's profile and owned
-data: entries, accounts, quick prompts, notifications, auth sessions, and
-matching OTP/claim verification rows. Legacy local upload files referenced by
-entries are removed only when they resolve safely under `uploads/`.
+data: entries, accounts, budgets, subscriptions, split ledger records, quick
+prompts, notifications, auth sessions, and matching OTP/claim verification rows.
+Legacy local upload files referenced by entries are removed only when they
+resolve safely under `uploads/`.
 
 ## Test
 ```bash

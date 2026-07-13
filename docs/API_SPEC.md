@@ -19,6 +19,16 @@
 - PATCH /v1/notifications/:id/read
 - PATCH /v1/notifications/read-all
 - DELETE /v1/notifications/:id
+- GET /v1/budgets
+- POST /v1/budgets
+- PUT /v1/budgets/:id
+- DELETE /v1/budgets/:id
+- GET /v1/subscriptions
+- POST /v1/subscriptions
+- PUT /v1/subscriptions/:id
+- DELETE /v1/subscriptions/:id
+- POST /v1/subscriptions/:id/mark-paid
+- POST /v1/subscriptions/reminders
 - POST /v1/split/friends
 - GET /v1/split/friends
 - PUT /v1/split/friends/:id
@@ -56,10 +66,10 @@ hash and must be treated as revocable.
 
 ## Account/Data Deletion
 `DELETE /v1/user` permanently deletes the authenticated user's transactions,
-accounts, split ledger records, quick prompts, notifications, sessions, profile
-record, and matching OTP/claim verification records. Legacy local upload files
-referenced by the user's entries are removed only when they resolve safely under
-`uploads/`.
+accounts, budgets, subscriptions, split ledger records, quick prompts,
+notifications, sessions, profile record, and matching OTP/claim verification
+records. Legacy local upload files referenced by the user's entries are removed
+only when they resolve safely under `uploads/`.
 
 ## OTP Verification
 `POST /v1/auth/otp/send` creates a random, expiring OTP challenge for an email
@@ -79,10 +89,29 @@ Transaction create and update payloads require `account_id`. The account must be
 
 ## Notifications
 Notifications are authenticated, user-owned records exposed through `/v1/notifications`.
-The MVP notification source is transaction create, update, and delete events. Clients
-can list by `status=all|unread|read`, fetch an unread count, mark one notification
-read, mark all read, or delete one notification. Push delivery is not part of this
-contract yet; these are in-app notifications.
+Notification sources include transaction create, update, and delete events plus
+budget warning/exceeded alerts. Clients can list by `status=all|unread|read`,
+fetch an unread count, mark one notification read, mark all read, or delete one
+notification. Push delivery is not part of this contract yet; these are in-app
+notifications.
+
+## Budgets
+Budgets are authenticated, user-owned records exposed through `/v1/budgets`.
+Budgets are monthly INR limits and may target either all expenses or one category.
+When a new or updated expense causes current-month spending to reach the configured
+warning threshold or the full limit, the backend creates one in-app notification
+per budget, threshold, and month.
+
+## Subscriptions
+Subscriptions are authenticated, user-owned records exposed through
+`/v1/subscriptions`. Records track merchant/category, INR amount, optional owned
+account, billing interval (`weekly`, `monthly`, or `yearly`), next due date,
+status, reminder window, and notes. List responses include `days_until_due` and
+`due_state` (`scheduled`, `due_soon`, `overdue`, `paused`, or `cancelled`).
+`POST /v1/subscriptions/:id/mark-paid` records a paid date and advances the next
+due date by the billing interval without creating a transaction. `POST
+/v1/subscriptions/reminders` creates deduplicated in-app due/overdue notifications
+for active subscriptions inside their reminder window.
 
 ## Split Ledger
 Split endpoints are authenticated and user-owned. Friends are local contacts for
