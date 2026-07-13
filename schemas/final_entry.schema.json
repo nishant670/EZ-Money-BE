@@ -23,7 +23,46 @@
     "notes": { "type": ["string", "null"] },
     "date": { "type": "string", "format": "date" },
     "time": { "type": ["string", "null"], "pattern": "^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$" },
-    "source_text": { "type": "string" }
+    "source_text": { "type": "string" },
+    "split": {
+      "type": "object",
+      "required": ["participants"],
+      "properties": {
+        "group_id": { "type": ["integer", "null"], "minimum": 1 },
+        "group_name": { "type": "string" },
+        "notes": { "type": "string" },
+        "participants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["share_amount"],
+            "properties": {
+              "friend_id": { "type": "integer", "minimum": 1 },
+              "friend": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "email": { "type": "string" },
+                  "phone": { "type": "string" }
+                },
+                "additionalProperties": false
+              },
+              "share_amount": {
+                "oneOf": [
+                  { "type": "number", "exclusiveMinimum": 0, "multipleOf": 0.01 },
+                  { "type": "string", "pattern": "^[0-9]+(\\.[0-9]{1,2})?$" }
+                ]
+              },
+              "direction": { "type": "string", "enum": ["friend_owes_user", "user_owes_friend"] }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

@@ -47,7 +47,32 @@ Deferred for MVP to minimize sensitive raw financial text storage. Do not persis
 id, user_id, type, title, body, severity, related_entity_id, dismissed_at, created_at
 
 ### RecurringCandidate
-id, user_id, merchant, amount_pattern, interval_guess, confidence, status, created_at
+Computed dashboard payload for now, not persisted: label, merchant, category,
+average_amount, interval_guess, confidence, occurrences, last_seen_date,
+next_expected_date, review_due. Persist only if dismissal/history or a fuller
+subscription review workflow is added later.
 
-### SplitMetadata
-id, transaction_id, participant_name, total_amount, user_share, receivable_amount, status, note
+### SplitFriend
+id, user_id, name, email, phone, archived, timestamps
+
+### SplitGroup
+id, user_id, name, archived, timestamps
+
+### SplitGroupMember
+id, user_id, group_id, friend_id, timestamps
+
+### SplitBill
+id, user_id, entry_id optional, group_id optional, title, total_amount fixed-point money,
+currency, date, notes, timestamps
+
+### SplitParticipant
+id, user_id, bill_id, friend_id, share_amount fixed-point money, direction,
+timestamps. Direction is `friend_owes_user` or `user_owes_friend`.
+
+### SplitSettlement
+id, user_id, friend_id, amount fixed-point money, direction, date, notes,
+timestamps. Direction is `friend_paid_user` or `user_paid_friend`.
+
+Friend balances are computed from participant shares minus settlements. Positive
+net balance means the friend owes the user; negative net balance means the user
+owes the friend.

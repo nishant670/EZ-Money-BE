@@ -19,6 +19,20 @@
 - PATCH /v1/notifications/:id/read
 - PATCH /v1/notifications/read-all
 - DELETE /v1/notifications/:id
+- POST /v1/split/friends
+- GET /v1/split/friends
+- PUT /v1/split/friends/:id
+- DELETE /v1/split/friends/:id
+- POST /v1/split/groups
+- GET /v1/split/groups
+- PUT /v1/split/groups/:id
+- DELETE /v1/split/groups/:id
+- POST /v1/split/bills
+- GET /v1/split/bills
+- POST /v1/split/settlements
+- GET /v1/split/settlements
+- GET /v1/split/balances
+- POST /v1/tools/emi/calculate
 - DELETE /v1/user
 
 ## Dashboard
@@ -26,7 +40,11 @@
 deterministic values calculated from the authenticated user's transactions:
 period totals, daily average, top categories, top merchants, account-wise
 spending, five recent transactions, and insight cards. Date ranges are capped
-at 366 days. `/v1/insights` remains a temporary compatibility alias.
+at 366 days. The payload also includes lightweight `recurring_candidates`
+computed from stable weekly or monthly merchant/category repeats, with
+`review_due` set when the next expected occurrence falls inside the selected
+period or the following seven-day review window. `/v1/insights` remains a
+temporary compatibility alias.
 
 ## Important Rule
 `POST /v1/parse` returns a draft only. It must not save a transaction.
@@ -38,9 +56,10 @@ hash and must be treated as revocable.
 
 ## Account/Data Deletion
 `DELETE /v1/user` permanently deletes the authenticated user's transactions,
-accounts, quick prompts, notifications, sessions, profile record, and matching
-OTP/claim verification records. Legacy local upload files referenced by the
-user's entries are removed only when they resolve safely under `uploads/`.
+accounts, split ledger records, quick prompts, notifications, sessions, profile
+record, and matching OTP/claim verification records. Legacy local upload files
+referenced by the user's entries are removed only when they resolve safely under
+`uploads/`.
 
 ## OTP Verification
 `POST /v1/auth/otp/send` creates a random, expiring OTP challenge for an email
@@ -64,6 +83,29 @@ The MVP notification source is transaction create, update, and delete events. Cl
 can list by `status=all|unread|read`, fetch an unread count, mark one notification
 read, mark all read, or delete one notification. Push delivery is not part of this
 contract yet; these are in-app notifications.
+
+## Split Ledger
+Split endpoints are authenticated and user-owned. Friends are local contacts for
+bill splitting. Groups are named friend collections for common trips,
+households, or recurring crews. Split bills contain one or more participant shares where
+`friend_owes_user` increases the friend's balance and `user_owes_friend`
+increases what the user owes. Settlements use `friend_paid_user` or
+`user_paid_friend` to reduce outstanding balances. `GET /v1/split/balances`
+returns positive `net_balance` when the friend owes the user, and negative when
+the user owes the friend.
+
+`POST /v1/entries` may include an optional `split` object. When present, the
+transaction and linked split bill are created atomically. Participants can
+reference existing `friend_id` values or include a new `friend.name`; `group_id`
+can attach the bill to an existing group, while `group_name` creates a new group
+from the transaction's participants.
+
+## EMI Tools
+`POST /v1/tools/emi/calculate` is an authenticated, stateless INR calculator. It
+accepts `principal_amount`, `annual_interest_rate_percent`, `tenure_months`, and
+optional `currency`, then returns `monthly_emi`, `total_payment`,
+`total_interest`, and a month-by-month amortization `schedule`. Tenure is capped
+at 360 months and annual interest is capped at 100%.
 
 ## Parse Response Should Include
 amount, currency, type, merchant, category, account_hint, date, note, tags, recurring_candidate, split_candidate, confidence, missing_fields.

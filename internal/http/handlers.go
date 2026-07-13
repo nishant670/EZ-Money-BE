@@ -112,6 +112,24 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.PATCH("/notifications/read-all", s.markAllNotificationsRead)
 		authorized.PATCH("/notifications/:id/read", s.markNotificationRead)
 		authorized.DELETE("/notifications/:id", s.deleteNotification)
+
+		// Split ledger
+		authorized.POST("/split/friends", s.createSplitFriend)
+		authorized.GET("/split/friends", s.listSplitFriends)
+		authorized.PUT("/split/friends/:id", s.updateSplitFriend)
+		authorized.DELETE("/split/friends/:id", s.archiveSplitFriend)
+		authorized.POST("/split/groups", s.createSplitGroup)
+		authorized.GET("/split/groups", s.listSplitGroups)
+		authorized.PUT("/split/groups/:id", s.updateSplitGroup)
+		authorized.DELETE("/split/groups/:id", s.archiveSplitGroup)
+		authorized.POST("/split/bills", s.createSplitBill)
+		authorized.GET("/split/bills", s.listSplitBills)
+		authorized.POST("/split/settlements", s.createSplitSettlement)
+		authorized.GET("/split/settlements", s.listSplitSettlements)
+		authorized.GET("/split/balances", s.listSplitBalances)
+
+		// Financial tools
+		authorized.POST("/tools/emi/calculate", s.calculateEMI)
 	}
 
 	r.Static("/uploads", "./uploads")
@@ -129,6 +147,8 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/dashboard") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/notifications") ||
+		strings.HasPrefix(path, "/v1/split") ||
+		strings.HasPrefix(path, "/v1/tools") ||
 		strings.HasPrefix(path, "/v1/parse")
 }
 
@@ -249,6 +269,13 @@ func (s *Server) saveEntry(c *gin.Context) {
 			return
 		}
 	}
+	if fields, err := validateEntrySplitReferences(userID, input.Split); err != nil {
+		c.JSON(500, gin.H{"error": "split_lookup_failed"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
+		return
+	}
 
 	idempotencyKey, idempotencyFields := parseIdempotencyKey(c.GetHeader("Idempotency-Key"))
 	if len(idempotencyFields) > 0 {
@@ -273,7 +300,12 @@ func (s *Server) saveEntry(c *gin.Context) {
 	if idempotencyKey != "" {
 		entry.IdempotencyKey = &idempotencyKey
 	}
-	if err := database.DB.Create(&entry).Error; err != nil {
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&entry).Error; err != nil {
+			return err
+		}
+		return createEntrySplitBill(tx, userID, entry, input.Split)
+	}); err != nil {
 		if idempotencyKey != "" {
 			var existing models.Entry
 			if lookupErr := database.DB.Preload("Account").
@@ -840,6 +872,12 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			model any
 			name  string
 		}{
+			{&models.SplitSettlement{}, "split settlements"},
+			{&models.SplitParticipant{}, "split participants"},
+			{&models.SplitBill{}, "split bills"},
+			{&models.SplitGroupMember{}, "split group members"},
+			{&models.SplitGroup{}, "split groups"},
+			{&models.SplitFriend{}, "split friends"},
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.Entry{}, "entries"},

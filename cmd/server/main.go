@@ -14,7 +14,21 @@ import (
 func main() {
 	_ = godotenv.Load(".env")
 	database.Connect()
-	if err := database.DB.AutoMigrate(&models.User{}, &models.AuthSession{}, &models.AuthVerification{}, &models.Account{}, &models.Entry{}, &models.QuickPrompt{}, &models.Notification{}); err != nil {
+	if err := database.DB.AutoMigrate(
+		&models.User{},
+		&models.AuthSession{},
+		&models.AuthVerification{},
+		&models.Account{},
+		&models.Entry{},
+		&models.QuickPrompt{},
+		&models.Notification{},
+		&models.SplitFriend{},
+		&models.SplitGroup{},
+		&models.SplitGroupMember{},
+		&models.SplitBill{},
+		&models.SplitParticipant{},
+		&models.SplitSettlement{},
+	); err != nil {
 		log.Fatalf("database schema migration failed: %v", err)
 	}
 	if err := database.EnsureRuntimeSchema(); err != nil {

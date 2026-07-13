@@ -145,6 +145,16 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.GET("/accounts", server.listAccounts)
 	authorized.POST("/entries", server.saveEntry)
 	authorized.GET("/dashboard", server.getDashboard)
+	authorized.POST("/split/friends", server.createSplitFriend)
+	authorized.GET("/split/friends", server.listSplitFriends)
+	authorized.POST("/split/groups", server.createSplitGroup)
+	authorized.GET("/split/groups", server.listSplitGroups)
+	authorized.POST("/split/bills", server.createSplitBill)
+	authorized.GET("/split/bills", server.listSplitBills)
+	authorized.POST("/split/settlements", server.createSplitSettlement)
+	authorized.GET("/split/settlements", server.listSplitSettlements)
+	authorized.GET("/split/balances", server.listSplitBalances)
+	authorized.POST("/tools/emi/calculate", server.calculateEMI)
 	return router
 }
 
@@ -170,6 +180,12 @@ func useSmokeDatabase(t *testing.T) {
 		&models.Entry{},
 		&models.QuickPrompt{},
 		&models.Notification{},
+		&models.SplitFriend{},
+		&models.SplitGroup{},
+		&models.SplitGroupMember{},
+		&models.SplitBill{},
+		&models.SplitParticipant{},
+		&models.SplitSettlement{},
 	); err != nil {
 		t.Fatalf("failed to migrate smoke database: %v", err)
 	}

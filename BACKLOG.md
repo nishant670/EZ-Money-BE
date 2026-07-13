@@ -116,11 +116,11 @@ Legend:
 
 ## P2 - Deferred / Later Phases
 
-- [ ] Improve recurring candidate detection and weekly review.
+- [x] Improve recurring candidate detection and weekly review.
 - [ ] Add budget alerts after the core habit loop is reliable.
 - [ ] Add optional login/sync after secure sessions are implemented.
-- [ ] Add full bill splitting, friend balances, and settlements later; not MVP.
-- [ ] Add EMI tools later; not MVP.
+- [x] Add full bill splitting, friend balances, and settlements later; not MVP.
+- [x] Add EMI tools later; not MVP.
 - [ ] Add full subscription manager later; not MVP.
 - [ ] Resume active web dashboard feature work later; not MVP.
 - [ ] Add exports, advanced reports, and bulk editing later.
