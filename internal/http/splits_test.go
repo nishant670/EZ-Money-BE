@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -157,5 +158,37 @@ func TestEntryCreateCanCreateLinkedSplitWithInlineFriend(t *testing.T) {
 	)
 	if len(balances) != 1 || balances[0].NetBalance.String() != "1000.00" {
 		t.Fatalf("expected friend to owe 1000.00, got %#v", balances)
+	}
+
+	updatedBill := performJSONRequest[models.SplitBill](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/bills/%d", bills[0].ID), authResponse.Token,
+		map[string]any{
+			"entry_id":     entry.ID,
+			"group_id":     *bills[0].GroupID,
+			"title":        "Trip dinner",
+			"total_amount": "2000.00",
+			"currency":     "INR",
+			"date":         "2026-07-13",
+			"participants": []map[string]any{
+				{
+					"friend_id":    balances[0].Friend.ID,
+					"share_amount": "750.00",
+					"direction":    splitDirectionFriendOwesUser,
+				},
+			},
+		}, http.StatusOK,
+	)
+	if len(updatedBill.Participants) != 1 || updatedBill.Participants[0].ShareAmount.String() != "750.00" {
+		t.Fatalf("expected updated participant share, got %#v", updatedBill.Participants)
+	}
+
+	performJSONRequest[map[string]string](
+		t, router, http.MethodDelete, fmt.Sprintf("/v1/split/bills/%d", bills[0].ID), authResponse.Token, nil, http.StatusOK,
+	)
+	bills = performJSONRequest[[]models.SplitBill](
+		t, router, http.MethodGet, "/v1/split/bills", authResponse.Token, nil, http.StatusOK,
+	)
+	if len(bills) != 0 {
+		t.Fatalf("expected linked split bill to be deleted, got %#v", bills)
 	}
 }

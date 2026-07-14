@@ -157,6 +157,8 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.GET("/split/groups", server.listSplitGroups)
 	authorized.POST("/split/bills", server.createSplitBill)
 	authorized.GET("/split/bills", server.listSplitBills)
+	authorized.PUT("/split/bills/:id", server.updateSplitBill)
+	authorized.DELETE("/split/bills/:id", server.deleteSplitBill)
 	authorized.POST("/split/settlements", server.createSplitSettlement)
 	authorized.GET("/split/settlements", server.listSplitSettlements)
 	authorized.GET("/split/balances", server.listSplitBalances)

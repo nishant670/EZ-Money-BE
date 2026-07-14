@@ -39,6 +39,8 @@
 - DELETE /v1/split/groups/:id
 - POST /v1/split/bills
 - GET /v1/split/bills
+- PUT /v1/split/bills/:id
+- DELETE /v1/split/bills/:id
 - POST /v1/split/settlements
 - GET /v1/split/settlements
 - GET /v1/split/balances

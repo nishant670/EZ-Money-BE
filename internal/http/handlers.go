@@ -138,6 +138,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/split/groups/:id", s.archiveSplitGroup)
 		authorized.POST("/split/bills", s.createSplitBill)
 		authorized.GET("/split/bills", s.listSplitBills)
+		authorized.PUT("/split/bills/:id", s.updateSplitBill)
+		authorized.DELETE("/split/bills/:id", s.deleteSplitBill)
 		authorized.POST("/split/settlements", s.createSplitSettlement)
 		authorized.GET("/split/settlements", s.listSplitSettlements)
 		authorized.GET("/split/balances", s.listSplitBalances)
