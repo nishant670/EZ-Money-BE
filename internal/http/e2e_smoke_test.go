@@ -143,7 +143,13 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.Use(AuthMiddleware())
 	authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), server.handleParse)
 	authorized.GET("/accounts", server.listAccounts)
+	authorized.POST("/budgets", server.createBudget)
+	authorized.GET("/budgets", server.listBudgets)
+	authorized.POST("/subscriptions", server.createSubscription)
+	authorized.GET("/subscriptions", server.listSubscriptions)
+	authorized.POST("/subscriptions/reminders", server.createSubscriptionReminders)
 	authorized.POST("/entries", server.saveEntry)
+	authorized.GET("/notifications", server.listNotifications)
 	authorized.GET("/dashboard", server.getDashboard)
 	authorized.POST("/split/friends", server.createSplitFriend)
 	authorized.GET("/split/friends", server.listSplitFriends)
@@ -151,6 +157,8 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.GET("/split/groups", server.listSplitGroups)
 	authorized.POST("/split/bills", server.createSplitBill)
 	authorized.GET("/split/bills", server.listSplitBills)
+	authorized.PUT("/split/bills/:id", server.updateSplitBill)
+	authorized.DELETE("/split/bills/:id", server.deleteSplitBill)
 	authorized.POST("/split/settlements", server.createSplitSettlement)
 	authorized.GET("/split/settlements", server.listSplitSettlements)
 	authorized.GET("/split/balances", server.listSplitBalances)
@@ -180,6 +188,10 @@ func useSmokeDatabase(t *testing.T) {
 		&models.Entry{},
 		&models.QuickPrompt{},
 		&models.Notification{},
+		&models.Budget{},
+		&models.BudgetAlert{},
+		&models.Subscription{},
+		&models.SubscriptionReminder{},
 		&models.SplitFriend{},
 		&models.SplitGroup{},
 		&models.SplitGroupMember{},

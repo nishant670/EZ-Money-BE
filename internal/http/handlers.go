@@ -113,6 +113,20 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.PATCH("/notifications/:id/read", s.markNotificationRead)
 		authorized.DELETE("/notifications/:id", s.deleteNotification)
 
+		// Budgets
+		authorized.POST("/budgets", s.createBudget)
+		authorized.GET("/budgets", s.listBudgets)
+		authorized.PUT("/budgets/:id", s.updateBudget)
+		authorized.DELETE("/budgets/:id", s.deleteBudget)
+
+		// Subscriptions
+		authorized.POST("/subscriptions", s.createSubscription)
+		authorized.GET("/subscriptions", s.listSubscriptions)
+		authorized.POST("/subscriptions/reminders", s.createSubscriptionReminders)
+		authorized.PUT("/subscriptions/:id", s.updateSubscription)
+		authorized.DELETE("/subscriptions/:id", s.deleteSubscription)
+		authorized.POST("/subscriptions/:id/mark-paid", s.markSubscriptionPaid)
+
 		// Split ledger
 		authorized.POST("/split/friends", s.createSplitFriend)
 		authorized.GET("/split/friends", s.listSplitFriends)
@@ -124,6 +138,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/split/groups/:id", s.archiveSplitGroup)
 		authorized.POST("/split/bills", s.createSplitBill)
 		authorized.GET("/split/bills", s.listSplitBills)
+		authorized.PUT("/split/bills/:id", s.updateSplitBill)
+		authorized.DELETE("/split/bills/:id", s.deleteSplitBill)
 		authorized.POST("/split/settlements", s.createSplitSettlement)
 		authorized.GET("/split/settlements", s.listSplitSettlements)
 		authorized.GET("/split/balances", s.listSplitBalances)
@@ -147,6 +163,8 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/dashboard") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/notifications") ||
+		strings.HasPrefix(path, "/v1/budgets") ||
+		strings.HasPrefix(path, "/v1/subscriptions") ||
 		strings.HasPrefix(path, "/v1/split") ||
 		strings.HasPrefix(path, "/v1/tools") ||
 		strings.HasPrefix(path, "/v1/parse")
@@ -321,6 +339,7 @@ func (s *Server) saveEntry(c *gin.Context) {
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 	_ = createEntryNotification(userID, "transaction.created", "Transaction added", entryNotificationBody("Added", entry), entry.ID)
+	_ = maybeCreateBudgetAlertsForEntry(entry)
 
 	c.JSON(201, entry)
 }
@@ -606,6 +625,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 	_ = createEntryNotification(userID, "transaction.updated", "Transaction updated", entryNotificationBody("Updated", entry), entry.ID)
+	_ = maybeCreateBudgetAlertsForEntry(entry)
 
 	c.JSON(200, entry)
 }
@@ -878,6 +898,10 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.SplitGroupMember{}, "split group members"},
 			{&models.SplitGroup{}, "split groups"},
 			{&models.SplitFriend{}, "split friends"},
+			{&models.BudgetAlert{}, "budget alerts"},
+			{&models.Budget{}, "budgets"},
+			{&models.SubscriptionReminder{}, "subscription reminders"},
+			{&models.Subscription{}, "subscriptions"},
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.Entry{}, "entries"},

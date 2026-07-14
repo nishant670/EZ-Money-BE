@@ -49,8 +49,23 @@ id, user_id, type, title, body, severity, related_entity_id, dismissed_at, creat
 ### RecurringCandidate
 Computed dashboard payload for now, not persisted: label, merchant, category,
 average_amount, interval_guess, confidence, occurrences, last_seen_date,
-next_expected_date, review_due. Persist only if dismissal/history or a fuller
-subscription review workflow is added later.
+next_expected_date, review_due. Users can convert recurring behavior into
+explicit subscription records when they want reminders and lifecycle management.
+
+### Subscription
+id, user_id, optional account_id, name, merchant, category, amount fixed-point
+money, currency, billing_interval (`weekly`, `monthly`, `yearly`),
+next_due_date, last_charged_date, status (`active`, `paused`, `cancelled`),
+reminder_days, notes, timestamps.
+
+Subscriptions are user-owned and may reference an owned account. They do not
+auto-create transaction entries; marking a subscription paid advances
+`next_due_date` and stores `last_charged_date`.
+
+### SubscriptionReminder
+id, user_id, subscription_id, due_date, kind (`due`, `overdue`), optional
+notification_id, created_at. A unique key on user, subscription, due date, and
+kind prevents duplicate in-app reminders.
 
 ### SplitFriend
 id, user_id, name, email, phone, archived, timestamps

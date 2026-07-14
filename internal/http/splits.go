@@ -348,6 +348,117 @@ func (s *Server) listSplitBills(c *gin.Context) {
 	c.JSON(http.StatusOK, bills)
 }
 
+func (s *Server) updateSplitBill(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var input splitBillInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	if fields := input.validate(); len(fields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": fields})
+		return
+	}
+	if input.EntryID != nil {
+		if ok, err := userOwnsEntry(userID, *input.EntryID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "entry_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": gin.H{"entry_id": "must belong to the current user"}})
+			return
+		}
+	}
+	if fields, err := validateSplitParticipantFriends(userID, input.Participants); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": fields})
+		return
+	}
+	if input.GroupID != nil {
+		if ok, err := userOwnsActiveSplitGroup(userID, *input.GroupID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "split_group_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": gin.H{"group_id": "must belong to the current user"}})
+			return
+		}
+	}
+
+	var bill models.SplitBill
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND id = ?", userID, id).First(&bill).Error; err != nil {
+			return err
+		}
+		bill.EntryID = input.EntryID
+		bill.GroupID = input.GroupID
+		bill.Title = strings.TrimSpace(input.Title)
+		bill.TotalAmount = input.TotalAmount
+		bill.Currency = normalizedSplitCurrency(input.Currency)
+		bill.Date = input.Date
+		bill.Notes = strings.TrimSpace(input.Notes)
+		if err := tx.Save(&bill).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ? AND bill_id = ?", userID, bill.ID).Delete(&models.SplitParticipant{}).Error; err != nil {
+			return err
+		}
+		participants := make([]models.SplitParticipant, 0, len(input.Participants))
+		for _, participant := range input.Participants {
+			participants = append(participants, participant.toModel(userID, bill.ID))
+		}
+		if err := tx.Create(&participants).Error; err != nil {
+			return err
+		}
+		return tx.Preload("Group").Preload("Participants.Friend").First(&bill, bill.ID).Error
+	}); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "split_bill_not_found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_bill"})
+		return
+	}
+
+	c.JSON(http.StatusOK, bill)
+}
+
+func (s *Server) deleteSplitBill(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND bill_id = ?", userID, id).Delete(&models.SplitParticipant{}).Error; err != nil {
+			return err
+		}
+		result := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&models.SplitBill{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	}); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "split_bill_not_found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_delete_split_bill"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "split bill deleted"})
+}
+
 func (s *Server) createSplitSettlement(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 

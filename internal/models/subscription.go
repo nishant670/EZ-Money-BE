@@ -1,0 +1,37 @@
+package models
+
+import "time"
+
+type Subscription struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	UserID          uint      `gorm:"index;not null" json:"user_id"`
+	User            User      `json:"-" gorm:"foreignKey:UserID"`
+	AccountID       *uint     `gorm:"index" json:"account_id"`
+	Account         *Account  `json:"account,omitempty" gorm:"foreignKey:AccountID"`
+	Name            string    `gorm:"type:varchar(120);not null" json:"name"`
+	Merchant        string    `gorm:"type:varchar(120);index" json:"merchant"`
+	Category        string    `gorm:"type:varchar(80);index" json:"category"`
+	Amount          Money     `gorm:"type:numeric(19,2);not null" json:"amount"`
+	Currency        string    `gorm:"type:char(3);not null;default:INR" json:"currency"`
+	BillingInterval string    `gorm:"type:varchar(16);not null;default:monthly" json:"billing_interval"`
+	NextDueDate     string    `gorm:"type:date;index;not null" json:"next_due_date"`
+	LastChargedDate string    `gorm:"type:varchar(10)" json:"last_charged_date"`
+	Status          string    `gorm:"type:varchar(16);not null;default:active;index" json:"status"`
+	ReminderDays    int       `gorm:"not null;default:3" json:"reminder_days"`
+	Notes           string    `gorm:"type:text" json:"notes"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type SubscriptionReminder struct {
+	ID             uint         `gorm:"primaryKey" json:"id"`
+	UserID         uint         `gorm:"uniqueIndex:idx_subscription_reminder_once_due;index;not null" json:"user_id"`
+	User           User         `json:"-" gorm:"foreignKey:UserID"`
+	SubscriptionID uint         `gorm:"uniqueIndex:idx_subscription_reminder_once_due;index;not null" json:"subscription_id"`
+	Subscription   Subscription `json:"-" gorm:"foreignKey:SubscriptionID"`
+	DueDate        string       `gorm:"type:date;uniqueIndex:idx_subscription_reminder_once_due;not null" json:"due_date"`
+	Kind           string       `gorm:"type:varchar(24);uniqueIndex:idx_subscription_reminder_once_due;not null" json:"kind"`
+	NotificationID *uint        `gorm:"index" json:"notification_id"`
+	Notification   Notification `json:"-" gorm:"foreignKey:NotificationID"`
+	CreatedAt      time.Time    `json:"created_at"`
+}

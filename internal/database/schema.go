@@ -27,6 +27,134 @@ func runtimeSchemaStatements() []string {
 			ON notifications (user_id, read_at, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_notifications_user_created
 			ON notifications (user_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS budgets (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name VARCHAR(120) NOT NULL,
+			period VARCHAR(16) NOT NULL DEFAULT 'monthly',
+			category VARCHAR(80) NOT NULL DEFAULT '',
+			limit_amount NUMERIC(19,2) NOT NULL,
+			currency CHAR(3) NOT NULL DEFAULT 'INR',
+			alert_threshold_percent INTEGER NOT NULL DEFAULT 80,
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_budgets_user_active
+			ON budgets (user_id, active, period)`,
+		`CREATE INDEX IF NOT EXISTS idx_budgets_user_category
+			ON budgets (user_id, category)`,
+		`ALTER TABLE budgets
+			DROP CONSTRAINT IF EXISTS budgets_period_check`,
+		`ALTER TABLE budgets
+			ADD CONSTRAINT budgets_period_check CHECK (period = 'monthly')`,
+		`ALTER TABLE budgets
+			DROP CONSTRAINT IF EXISTS budgets_limit_amount_positive_check`,
+		`ALTER TABLE budgets
+			ADD CONSTRAINT budgets_limit_amount_positive_check CHECK (limit_amount > 0)`,
+		`ALTER TABLE budgets
+			DROP CONSTRAINT IF EXISTS budgets_currency_check`,
+		`ALTER TABLE budgets
+			ADD CONSTRAINT budgets_currency_check CHECK (currency = 'INR')`,
+		`ALTER TABLE budgets
+			DROP CONSTRAINT IF EXISTS budgets_alert_threshold_percent_check`,
+		`ALTER TABLE budgets
+			ADD CONSTRAINT budgets_alert_threshold_percent_check
+			CHECK (alert_threshold_percent BETWEEN 1 AND 100)`,
+		`CREATE TABLE IF NOT EXISTS budget_alerts (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			budget_id BIGINT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+			period_start DATE NOT NULL,
+			kind VARCHAR(24) NOT NULL,
+			spend_amount NUMERIC(19,2) NOT NULL,
+			limit_amount NUMERIC(19,2) NOT NULL,
+			notification_id BIGINT REFERENCES notifications(id) ON DELETE SET NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_alert_once_period
+			ON budget_alerts (user_id, budget_id, period_start, kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_budget_alerts_user_budget
+			ON budget_alerts (user_id, budget_id)`,
+		`ALTER TABLE budget_alerts
+			DROP CONSTRAINT IF EXISTS budget_alerts_kind_check`,
+		`ALTER TABLE budget_alerts
+			ADD CONSTRAINT budget_alerts_kind_check CHECK (kind IN ('warning', 'exceeded'))`,
+		`ALTER TABLE budget_alerts
+			DROP CONSTRAINT IF EXISTS budget_alerts_spend_amount_non_negative_check`,
+		`ALTER TABLE budget_alerts
+			ADD CONSTRAINT budget_alerts_spend_amount_non_negative_check CHECK (spend_amount >= 0)`,
+		`ALTER TABLE budget_alerts
+			DROP CONSTRAINT IF EXISTS budget_alerts_limit_amount_positive_check`,
+		`ALTER TABLE budget_alerts
+			ADD CONSTRAINT budget_alerts_limit_amount_positive_check CHECK (limit_amount > 0)`,
+		`CREATE TABLE IF NOT EXISTS subscriptions (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			account_id BIGINT,
+			name VARCHAR(120) NOT NULL,
+			merchant VARCHAR(120) NOT NULL DEFAULT '',
+			category VARCHAR(80) NOT NULL DEFAULT '',
+			amount NUMERIC(19,2) NOT NULL,
+			currency CHAR(3) NOT NULL DEFAULT 'INR',
+			billing_interval VARCHAR(16) NOT NULL DEFAULT 'monthly',
+			next_due_date DATE NOT NULL,
+			last_charged_date VARCHAR(10) NOT NULL DEFAULT '',
+			status VARCHAR(16) NOT NULL DEFAULT 'active',
+			reminder_days INTEGER NOT NULL DEFAULT 3,
+			notes TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status_due
+			ON subscriptions (user_id, status, next_due_date)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_user_merchant
+			ON subscriptions (user_id, merchant)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_user_category
+			ON subscriptions (user_id, category)`,
+		`ALTER TABLE subscriptions
+			DROP CONSTRAINT IF EXISTS subscriptions_amount_positive_check`,
+		`ALTER TABLE subscriptions
+			ADD CONSTRAINT subscriptions_amount_positive_check CHECK (amount > 0)`,
+		`ALTER TABLE subscriptions
+			DROP CONSTRAINT IF EXISTS subscriptions_currency_check`,
+		`ALTER TABLE subscriptions
+			ADD CONSTRAINT subscriptions_currency_check CHECK (currency = 'INR')`,
+		`ALTER TABLE subscriptions
+			DROP CONSTRAINT IF EXISTS subscriptions_billing_interval_check`,
+		`ALTER TABLE subscriptions
+			ADD CONSTRAINT subscriptions_billing_interval_check
+			CHECK (billing_interval IN ('weekly', 'monthly', 'yearly'))`,
+		`ALTER TABLE subscriptions
+			DROP CONSTRAINT IF EXISTS subscriptions_status_check`,
+		`ALTER TABLE subscriptions
+			ADD CONSTRAINT subscriptions_status_check CHECK (status IN ('active', 'paused', 'cancelled'))`,
+		`ALTER TABLE subscriptions
+			DROP CONSTRAINT IF EXISTS subscriptions_reminder_days_check`,
+		`ALTER TABLE subscriptions
+			ADD CONSTRAINT subscriptions_reminder_days_check CHECK (reminder_days BETWEEN 0 AND 30)`,
+		`ALTER TABLE subscriptions
+			DROP CONSTRAINT IF EXISTS fk_subscriptions_owned_account`,
+		`ALTER TABLE subscriptions
+			ADD CONSTRAINT fk_subscriptions_owned_account
+			FOREIGN KEY (user_id, account_id) REFERENCES accounts(user_id, id)`,
+		`CREATE TABLE IF NOT EXISTS subscription_reminders (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			subscription_id BIGINT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+			due_date DATE NOT NULL,
+			kind VARCHAR(24) NOT NULL,
+			notification_id BIGINT REFERENCES notifications(id) ON DELETE SET NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_reminder_once_due
+			ON subscription_reminders (user_id, subscription_id, due_date, kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscription_reminders_user_subscription
+			ON subscription_reminders (user_id, subscription_id)`,
+		`ALTER TABLE subscription_reminders
+			DROP CONSTRAINT IF EXISTS subscription_reminders_kind_check`,
+		`ALTER TABLE subscription_reminders
+			ADD CONSTRAINT subscription_reminders_kind_check CHECK (kind IN ('due', 'overdue'))`,
 		`UPDATE accounts
 			SET type = 'credit_card'
 			WHERE LOWER(type) = 'credit'`,
