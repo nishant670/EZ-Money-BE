@@ -124,6 +124,7 @@ Legend:
 - [x] Add full subscription manager later; not MVP.
 - [ ] Resume active web dashboard feature work later; not MVP.
 - [ ] Add exports, advanced reports, and bulk editing later.
+- [ ] Add merchant history-backed autocomplete later: remember past merchants with category associations and suggest merchants when users create or edit transactions.
 - [ ] Add hardened receipt/document uploads later with private storage, MIME/size validation, and retention controls.
 - [ ] Add statement imports/reconciliation later.
 - [ ] Add bank/UPI/Account Aggregator integrations later.
