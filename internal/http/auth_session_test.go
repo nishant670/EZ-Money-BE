@@ -116,3 +116,19 @@ func TestValidOTPCode(t *testing.T) {
 		}
 	}
 }
+
+func TestValidPINRejectsDefaultRepeatedDigits(t *testing.T) {
+	validPINs := []string{"1234", "9081", "1200"}
+	for _, pin := range validPINs {
+		if !validPIN(pin) {
+			t.Fatalf("expected %q to be valid", pin)
+		}
+	}
+
+	invalidPINs := []string{"", "123", "12345", "12a4", "0000", "1111", "9999"}
+	for _, pin := range invalidPINs {
+		if validPIN(pin) {
+			t.Fatalf("expected %q to be invalid", pin)
+		}
+	}
+}

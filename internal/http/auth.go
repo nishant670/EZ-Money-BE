@@ -77,6 +77,22 @@ func validOTPCode(otp string) bool {
 	return true
 }
 
+func validPIN(pin string) bool {
+	if len(pin) != 4 {
+		return false
+	}
+	allSame := true
+	for i, char := range pin {
+		if char < '0' || char > '9' {
+			return false
+		}
+		if i > 0 && byte(char) != pin[0] {
+			allSame = false
+		}
+	}
+	return !allSame
+}
+
 func hashOTP(otp string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
 	if err != nil {
@@ -491,6 +507,10 @@ func (s *Server) authRegister(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	if !validPIN(input.PIN) {
+		c.JSON(400, gin.H{"error": "weak_pin"})
+		return
+	}
 
 	claim, err := consumeClaimToken(input.ClaimToken)
 	if err != nil {
@@ -608,6 +628,10 @@ func (s *Server) authPinReset(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	if !validPIN(input.PIN) {
+		c.JSON(400, gin.H{"error": "weak_pin"})
+		return
+	}
 
 	claim, err := consumeClaimToken(input.ClaimToken)
 	if err != nil {
@@ -671,6 +695,10 @@ func (s *Server) authLogin(c *gin.Context) {
 			return
 		}
 		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if !validPIN(input.PIN) {
+		c.JSON(400, gin.H{"error": "weak_pin"})
 		return
 	}
 
