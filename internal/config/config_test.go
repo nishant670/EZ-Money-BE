@@ -19,6 +19,15 @@ func TestLoadDoesNotDefaultCORSWildcard(t *testing.T) {
 	if cfg.MaxJSONKB != 64 {
 		t.Fatalf("expected default MAX_JSON_KB 64, got %d", cfg.MaxJSONKB)
 	}
+	if cfg.AIFreeCostPerUserAlertUSDMicros != 100000 {
+		t.Fatalf("expected default free cost alert 100000 micros, got %d", cfg.AIFreeCostPerUserAlertUSDMicros)
+	}
+	if cfg.AIParseDisabled {
+		t.Fatal("AI_PARSE_DISABLED must default to false")
+	}
+	if cfg.AIProviderFailureThreshold != 5 || cfg.AIProviderCircuitBreakerSeconds != 120 {
+		t.Fatalf("unexpected provider circuit breaker defaults: %#v", cfg)
+	}
 }
 
 func TestEnvExampleContainsRequiredRedactedVariables(t *testing.T) {
@@ -37,6 +46,16 @@ func TestEnvExampleContainsRequiredRedactedVariables(t *testing.T) {
 		"OPENAI_LLM_MODEL",
 		"OPENAI_WHISPER_MODEL",
 		"OPENAI_MAX_OUTPUT_TOKENS",
+		"AI_PARSE_DISABLED",
+		"AI_UNPAID_MAX_VOICE_BYTES",
+		"AI_FAILED_PARSE_COOLDOWN_THRESHOLD",
+		"AI_FAILED_PARSE_COOLDOWN_WINDOW_MINUTES",
+		"AI_FAILED_PARSE_COOLDOWN_MINUTES",
+		"AI_PROVIDER_FAILURE_THRESHOLD",
+		"AI_PROVIDER_CIRCUIT_BREAKER_SECONDS",
+		"AI_DAILY_COST_ALERT_USD_MICROS",
+		"AI_ABUSE_DAILY_CREDITS_THRESHOLD",
+		"AI_FREE_COST_PER_USER_ALERT_USD_MICROS",
 		"REQUEST_TIMEOUT_SECONDS",
 		"RATE_LIMIT_RPS",
 		"RATE_LIMIT_BURST",

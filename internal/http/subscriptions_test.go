@@ -40,8 +40,11 @@ func TestAdvanceSubscriptionDueDate(t *testing.T) {
 		want     string
 	}{
 		{"monthly after due", "2026-07-10", "monthly", "2026-08-10"},
+		{"daily catches up", "2026-07-10", "daily", "2026-07-14"},
 		{"weekly catches up", "2026-06-20", "weekly", "2026-07-18"},
+		{"biweekly catches up", "2026-06-20", "biweekly", "2026-07-18"},
 		{"early payment advances one cycle", "2026-07-20", "monthly", "2026-08-20"},
+		{"quarterly", "2026-07-01", "quarterly", "2026-10-01"},
 		{"yearly", "2026-07-01", "yearly", "2027-07-01"},
 	}
 	for _, test := range tests {
@@ -84,6 +87,16 @@ func TestSubscriptionRemindersDeduplicateByDueDateAndKind(t *testing.T) {
 	}
 
 	assertBudgetNotificationCount(t, user.ID, "subscription.due", 1)
+}
+
+func TestSubscriptionCancelBeforeDueReminderCopy(t *testing.T) {
+	subscription := models.Subscription{
+		Name: "Streamly", Amount: testMoney("499"), CancelBeforeDue: true,
+	}
+	title, body := subscriptionReminderCopy(subscription, "2026-07-20", subscriptionReminderDueKind)
+	if title != "Cancel before renewal" || body == "" {
+		t.Fatalf("copy = %q %q", title, body)
+	}
 }
 
 func mustDate(t *testing.T, value string) time.Time {

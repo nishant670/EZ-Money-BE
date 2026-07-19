@@ -3,6 +3,7 @@ package http
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -63,6 +64,24 @@ type splitBalance struct {
 	TotalOwedByFriend models.Money       `json:"total_owed_by_friend"`
 	TotalOwedToFriend models.Money       `json:"total_owed_to_friend"`
 	NetBalance        models.Money       `json:"net_balance"`
+}
+
+type splitActivityItem struct {
+	ID               string                    `json:"id"`
+	Type             string                    `json:"type"`
+	RecordID         uint                      `json:"record_id"`
+	Title            string                    `json:"title"`
+	Date             string                    `json:"date"`
+	Amount           *models.Money             `json:"amount,omitempty"`
+	GroupID          *uint                     `json:"group_id,omitempty"`
+	Group            *models.SplitGroup        `json:"group,omitempty"`
+	FriendID         *uint                     `json:"friend_id,omitempty"`
+	Friend           *models.SplitFriend       `json:"friend,omitempty"`
+	Direction        string                    `json:"direction,omitempty"`
+	ParticipantCount int                       `json:"participant_count,omitempty"`
+	Participants     []models.SplitParticipant `json:"participants,omitempty"`
+	Notes            string                    `json:"notes,omitempty"`
+	CreatedAt        time.Time                 `json:"created_at"`
 }
 
 func (s *Server) createSplitFriend(c *gin.Context) {
@@ -502,6 +521,140 @@ func (s *Server) listSplitSettlements(c *gin.Context) {
 	c.JSON(http.StatusOK, settlements)
 }
 
+func (s *Server) listSplitActivity(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	page, pageSize := parseBillingPagination(c.Query("page"), c.Query("page_size"))
+
+	var bills []models.SplitBill
+	if err := database.DB.Preload("Group").Preload("Participants.Friend").
+		Where("user_id = ?", userID).
+		Find(&bills).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
+	var settlements []models.SplitSettlement
+	if err := database.DB.Preload("Friend").
+		Where("user_id = ?", userID).
+		Find(&settlements).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
+	var groups []models.SplitGroup
+	if err := database.DB.Preload("Members.Friend").
+		Where("user_id = ?", userID).
+		Find(&groups).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
+	var friends []models.SplitFriend
+	if err := database.DB.
+		Where("user_id = ?", userID).
+		Find(&friends).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
+
+	items := make([]splitActivityItem, 0, len(bills)+len(settlements)+len(groups)+len(friends))
+	for _, group := range groups {
+		groupCopy := group
+		items = append(items, splitActivityItem{
+			ID:               fmt.Sprintf("group-%d", group.ID),
+			Type:             "group_created",
+			RecordID:         group.ID,
+			Title:            fmt.Sprintf("%s created", group.Name),
+			Date:             group.CreatedAt.Format("2006-01-02"),
+			GroupID:          &group.ID,
+			Group:            &groupCopy,
+			ParticipantCount: len(group.Members),
+			CreatedAt:        group.CreatedAt,
+		})
+	}
+	for _, friend := range friends {
+		friendID := friend.ID
+		friendCopy := friend
+		items = append(items, splitActivityItem{
+			ID:        fmt.Sprintf("friend-%d", friend.ID),
+			Type:      "friend_created",
+			RecordID:  friend.ID,
+			Title:     fmt.Sprintf("%s added", fallbackSplitFriendName(friend)),
+			Date:      friend.CreatedAt.Format("2006-01-02"),
+			FriendID:  &friendID,
+			Friend:    &friendCopy,
+			CreatedAt: friend.CreatedAt,
+		})
+	}
+	for _, bill := range bills {
+		amount := bill.TotalAmount
+		item := splitActivityItem{
+			ID:               fmt.Sprintf("bill-%d", bill.ID),
+			Type:             "bill",
+			RecordID:         bill.ID,
+			Title:            bill.Title,
+			Date:             bill.Date,
+			Amount:           &amount,
+			GroupID:          bill.GroupID,
+			ParticipantCount: len(bill.Participants),
+			Participants:     bill.Participants,
+			Notes:            bill.Notes,
+			CreatedAt:        bill.CreatedAt,
+		}
+		if bill.Group != nil && bill.Group.ID != 0 {
+			item.Group = bill.Group
+		}
+		items = append(items, item)
+	}
+	for _, settlement := range settlements {
+		friendID := settlement.FriendID
+		amount := settlement.Amount
+		title := "Settlement"
+		if settlement.Direction == settlementDirectionFriendPaidUser {
+			title = fmt.Sprintf("%s paid you", fallbackSplitFriendName(settlement.Friend))
+		} else if settlement.Direction == settlementDirectionUserPaidFriend {
+			title = fmt.Sprintf("You paid %s", fallbackSplitFriendName(settlement.Friend))
+		}
+		item := splitActivityItem{
+			ID:        fmt.Sprintf("settlement-%d", settlement.ID),
+			Type:      "settlement",
+			RecordID:  settlement.ID,
+			Title:     title,
+			Date:      settlement.Date,
+			Amount:    &amount,
+			FriendID:  &friendID,
+			Direction: settlement.Direction,
+			Notes:     settlement.Notes,
+			CreatedAt: settlement.CreatedAt,
+		}
+		if settlement.Friend.ID != 0 {
+			friend := settlement.Friend
+			item.Friend = &friend
+		}
+		items = append(items, item)
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Date != items[j].Date {
+			return items[i].Date > items[j].Date
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+
+	total := len(items)
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"items":     items[start:end],
+		"page":      page,
+		"page_size": pageSize,
+		"total":     total,
+	})
+}
+
 func (s *Server) listSplitBalances(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
@@ -511,6 +664,13 @@ func (s *Server) listSplitBalances(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, balances)
+}
+
+func fallbackSplitFriendName(friend models.SplitFriend) string {
+	if strings.TrimSpace(friend.Name) == "" {
+		return "Friend"
+	}
+	return friend.Name
 }
 
 func (input splitFriendInput) validate() map[string]string {
@@ -552,9 +712,6 @@ func (input splitGroupInput) validate() map[string]string {
 	}
 	if len(strings.TrimSpace(input.Name)) > 120 {
 		fields["name"] = "must not exceed 120 characters"
-	}
-	if len(input.FriendIDs) == 0 {
-		fields["friend_ids"] = "must include at least one friend"
 	}
 	seen := map[uint]bool{}
 	for index, friendID := range input.FriendIDs {

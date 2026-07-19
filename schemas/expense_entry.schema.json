@@ -196,6 +196,9 @@
     "needs_confirmation": {
       "type": "object",
       "properties": {
+        "title": {
+          "type": "boolean"
+        },
         "amount": {
           "type": "boolean"
         },
@@ -237,8 +240,105 @@
     "recurring_candidate": {
       "type": ["boolean", "null"]
     },
+    "subscription_candidate": {
+      "type": ["object", "null"],
+      "properties": {
+        "name": {
+          "type": ["string", "null"]
+        },
+        "merchant": {
+          "type": ["string", "null"]
+        },
+        "category": {
+          "type": ["string", "null"]
+        },
+        "amount": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "billing_interval": {
+          "type": ["string", "null"],
+          "enum": ["daily", "weekly", "biweekly", "monthly", "quarterly", "yearly", null]
+        },
+        "next_due_date": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "last_charged_date": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "reminder_days": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 30
+        },
+        "cancel_before_due": {
+          "type": ["boolean", "null"]
+        },
+        "notes": {
+          "type": ["string", "null"]
+        },
+        "missing_fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "name",
+              "merchant",
+              "category",
+              "amount",
+              "billing_interval",
+              "next_due_date",
+              "last_charged_date",
+              "reminder_days",
+              "cancel_before_due",
+              "notes"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "split_candidate": {
       "type": ["boolean", "null"]
+    },
+    "split_candidate_details": {
+      "type": ["object", "null"],
+      "properties": {
+        "group_name": {
+          "type": ["string", "null"]
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["friend_name", "share_amount", "direction"],
+            "properties": {
+              "friend_name": {
+                "type": ["string", "null"]
+              },
+              "share_amount": {
+                "type": ["number", "null"],
+                "minimum": 0
+              },
+              "direction": {
+                "type": "string",
+                "enum": ["friend_owes_user", "user_owes_friend"]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "missing_fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["group_name", "participants", "friend_name", "share_amount", "direction"]
+          }
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

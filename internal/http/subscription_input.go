@@ -8,9 +8,12 @@ import (
 )
 
 const (
-	subscriptionIntervalWeekly  = "weekly"
-	subscriptionIntervalMonthly = "monthly"
-	subscriptionIntervalYearly  = "yearly"
+	subscriptionIntervalDaily     = "daily"
+	subscriptionIntervalWeekly    = "weekly"
+	subscriptionIntervalBiweekly  = "biweekly"
+	subscriptionIntervalMonthly   = "monthly"
+	subscriptionIntervalQuarterly = "quarterly"
+	subscriptionIntervalYearly    = "yearly"
 
 	subscriptionStatusActive    = "active"
 	subscriptionStatusPaused    = "paused"
@@ -33,6 +36,7 @@ type subscriptionInput struct {
 	LastChargedDate string       `json:"last_charged_date"`
 	Status          string       `json:"status"`
 	ReminderDays    *int         `json:"reminder_days"`
+	CancelBeforeDue bool         `json:"cancel_before_due"`
 	Notes           string       `json:"notes"`
 }
 
@@ -54,7 +58,7 @@ func (input subscriptionInput) validate() map[string]string {
 		fields["currency"] = "must be INR"
 	}
 	if normalizeSubscriptionInterval(input.BillingInterval) == "" {
-		fields["billing_interval"] = "must be weekly, monthly, or yearly"
+		fields["billing_interval"] = "must be daily, weekly, biweekly, monthly, quarterly, or yearly"
 	}
 	if _, err := parseStrictAPIDate(input.NextDueDate); err != nil {
 		fields["next_due_date"] = "must use YYYY-MM-DD"
@@ -100,6 +104,7 @@ func (input subscriptionInput) apply(subscription *models.Subscription) {
 	if input.ReminderDays != nil {
 		subscription.ReminderDays = *input.ReminderDays
 	}
+	subscription.CancelBeforeDue = input.CancelBeforeDue
 	subscription.Notes = strings.TrimSpace(input.Notes)
 }
 
@@ -107,8 +112,14 @@ func normalizeSubscriptionInterval(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", subscriptionIntervalMonthly:
 		return subscriptionIntervalMonthly
+	case subscriptionIntervalDaily:
+		return subscriptionIntervalDaily
 	case subscriptionIntervalWeekly:
 		return subscriptionIntervalWeekly
+	case subscriptionIntervalBiweekly:
+		return subscriptionIntervalBiweekly
+	case subscriptionIntervalQuarterly:
+		return subscriptionIntervalQuarterly
 	case subscriptionIntervalYearly:
 		return subscriptionIntervalYearly
 	default:

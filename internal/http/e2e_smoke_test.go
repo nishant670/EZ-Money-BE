@@ -15,6 +15,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/config"
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/models"
@@ -112,6 +113,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 
 	cfg := &config.Config{
 		TZDefault:          "Asia/Kolkata",
+		AuthBearer:         "admin-test-token",
 		ReqTimeoutSec:      2,
 		RateLimitRPS:       1000,
 		RateLimitBurst:     1000,
@@ -139,29 +141,60 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	auth.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))
 	auth.POST("/guest", server.authGuest)
 
+	billingPublic := router.Group("/v1/billing")
+	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
+	billingPublic.GET("/plans", server.listBillingPlans)
+	billingPublic.POST("/webhook", server.handleBillingWebhook)
+
+	admin := router.Group("/v1/admin")
+	admin.Use(jsonRequestLimits(cfg), rateLimit(cfg, "admin"), server.requireAdminBearer())
+	admin.GET("/ai/metrics", server.getAIMetrics)
+	admin.GET("/ai/model-pricing", server.listAIModelPricing)
+	admin.PUT("/ai/model-pricing", server.upsertAIModelPricing)
+	admin.POST("/credits/adjustments", server.createCreditAdjustment)
+	admin.GET("/billing/lifetime-quotes", server.listLifetimeQuoteRequests)
+	admin.GET("/ai/abuse-blocks", server.listAIAbuseBlocks)
+	admin.POST("/ai/abuse-blocks", server.createAIAbuseBlock)
+	admin.PATCH("/ai/abuse-blocks/:id", server.updateAIAbuseBlock)
+
 	authorized := router.Group("/v1")
 	authorized.Use(AuthMiddleware())
 	authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), server.handleParse)
+	authorized.GET("/billing/status", server.getBillingStatus)
+	authorized.POST("/billing/checkout", server.createBillingCheckout)
+	authorized.POST("/billing/lifetime-quote/request", server.requestLifetimeQuote)
+	authorized.GET("/ai/usage", server.listAIUsage)
+	authorized.GET("/ai/credits", server.getAICredits)
 	authorized.GET("/accounts", server.listAccounts)
-	authorized.POST("/budgets", server.createBudget)
-	authorized.GET("/budgets", server.listBudgets)
+	budgets := authorized.Group("/budgets", server.requireEntitlement(billing.FeatureBudgets))
+	budgets.POST("", server.createBudget)
+	budgets.GET("", server.listBudgets)
+	budgets.PUT("/:id", server.updateBudget)
+	budgets.DELETE("/:id", server.deleteBudget)
 	authorized.POST("/subscriptions", server.createSubscription)
 	authorized.GET("/subscriptions", server.listSubscriptions)
-	authorized.POST("/subscriptions/reminders", server.createSubscriptionReminders)
+	authorized.POST("/subscriptions/reminders", server.requireEntitlement(billing.FeatureSubscriptionReminders), server.createSubscriptionReminders)
 	authorized.POST("/entries", server.saveEntry)
 	authorized.GET("/notifications", server.listNotifications)
 	authorized.GET("/dashboard", server.getDashboard)
-	authorized.POST("/split/friends", server.createSplitFriend)
-	authorized.GET("/split/friends", server.listSplitFriends)
-	authorized.POST("/split/groups", server.createSplitGroup)
-	authorized.GET("/split/groups", server.listSplitGroups)
-	authorized.POST("/split/bills", server.createSplitBill)
-	authorized.GET("/split/bills", server.listSplitBills)
-	authorized.PUT("/split/bills/:id", server.updateSplitBill)
-	authorized.DELETE("/split/bills/:id", server.deleteSplitBill)
-	authorized.POST("/split/settlements", server.createSplitSettlement)
-	authorized.GET("/split/settlements", server.listSplitSettlements)
-	authorized.GET("/split/balances", server.listSplitBalances)
+	authorized.GET("/insights", server.requireEntitlement(billing.FeatureAdvancedInsights), server.getInsights)
+	split := authorized.Group("/split", server.requireEntitlement(billing.FeatureSplitLedger))
+	split.POST("/friends", server.createSplitFriend)
+	split.GET("/friends", server.listSplitFriends)
+	split.PUT("/friends/:id", server.updateSplitFriend)
+	split.DELETE("/friends/:id", server.archiveSplitFriend)
+	split.POST("/groups", server.createSplitGroup)
+	split.GET("/groups", server.listSplitGroups)
+	split.PUT("/groups/:id", server.updateSplitGroup)
+	split.DELETE("/groups/:id", server.archiveSplitGroup)
+	split.POST("/bills", server.createSplitBill)
+	split.GET("/bills", server.listSplitBills)
+	split.PUT("/bills/:id", server.updateSplitBill)
+	split.DELETE("/bills/:id", server.deleteSplitBill)
+	split.POST("/settlements", server.createSplitSettlement)
+	split.GET("/settlements", server.listSplitSettlements)
+	split.GET("/activity", server.listSplitActivity)
+	split.GET("/balances", server.listSplitBalances)
 	authorized.POST("/tools/emi/calculate", server.calculateEMI)
 	return router
 }
@@ -184,6 +217,17 @@ func useSmokeDatabase(t *testing.T) {
 		&models.User{},
 		&models.AuthSession{},
 		&models.AuthVerification{},
+		&models.Plan{},
+		&models.UserSubscription{},
+		&models.CreditGrant{},
+		&models.AIUsageEvent{},
+		&models.CreditLedger{},
+		&models.DailyCreditUsage{},
+		&models.GuestUsageKey{},
+		&models.LifetimeQuoteRequest{},
+		&models.AIUsageLimitEvent{},
+		&models.AIModelPricing{},
+		&models.AIAbuseBlock{},
 		&models.Account{},
 		&models.Entry{},
 		&models.QuickPrompt{},

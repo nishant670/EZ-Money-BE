@@ -298,6 +298,9 @@ func subscriptionReminderCopy(subscription models.Subscription, dueDate, kind st
 	if kind == subscriptionReminderOverdueKind {
 		return "Subscription overdue", fmt.Sprintf("%s was due on %s for ₹%s.", name, dueDate, subscription.Amount.String())
 	}
+	if subscription.CancelBeforeDue {
+		return "Cancel before renewal", fmt.Sprintf("%s renews on %s for ₹%s. Cancel before payment if you no longer need it.", name, dueDate, subscription.Amount.String())
+	}
 	return "Subscription due soon", fmt.Sprintf("%s is due on %s for ₹%s.", name, dueDate, subscription.Amount.String())
 }
 
@@ -316,8 +319,14 @@ func advanceSubscriptionDueDate(currentDueDate, interval string, paidDate time.T
 
 func addSubscriptionInterval(date time.Time, interval string) time.Time {
 	switch interval {
+	case subscriptionIntervalDaily:
+		return date.AddDate(0, 0, 1)
 	case subscriptionIntervalWeekly:
 		return date.AddDate(0, 0, 7)
+	case subscriptionIntervalBiweekly:
+		return date.AddDate(0, 0, 14)
+	case subscriptionIntervalQuarterly:
+		return date.AddDate(0, 3, 0)
 	case subscriptionIntervalYearly:
 		return date.AddDate(1, 0, 0)
 	default:

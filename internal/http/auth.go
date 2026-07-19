@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/models"
 )
@@ -272,6 +273,10 @@ func (s *Server) authGuest(c *gin.Context) {
 				c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
 				return
 			}
+			if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+				c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
+				return
+			}
 			user.HasPin = user.PinHash != ""
 			response, err := authResponse(&user)
 			if err != nil {
@@ -311,6 +316,10 @@ func (s *Server) authGuest(c *gin.Context) {
 					c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
 					return
 				}
+				if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+					c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
+					return
+				}
 				existingGuest.HasPin = existingGuest.PinHash != ""
 				response, err := authResponse(&existingGuest)
 				if err != nil {
@@ -326,6 +335,10 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 	if err := ensureDefaultCashAccount(user.ID); err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_default_account"})
+		return
+	}
+	if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+		c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
 		return
 	}
 
@@ -600,6 +613,10 @@ func (s *Server) authRegister(c *gin.Context) {
 	}
 	if err := ensureDefaultCashAccount(user.ID); err != nil {
 		c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
+		return
+	}
+	if _, _, err := billing.NewCreditService(database.DB).EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		c.JSON(500, gin.H{"error": "failed_ensure_trial_credits"})
 		return
 	}
 
