@@ -4,6 +4,103 @@
 ### User
 id, guest_id, phone/email optional, display_name, locale, currency, created_at
 
+### Plan
+id, code, name, billing_interval (`weekly`, `monthly`, `quarterly`, `yearly`,
+`lifetime_quote`), price_minor, currency, included_credits, daily_credit_limit,
+is_public, requires_login, requires_prior_paid_months, timestamps.
+
+Plans describe what a user can buy or request. Lifetime is represented as a
+quote-only interval and must not be directly purchasable.
+
+### UserSubscription
+id, user_id, plan_id, status (`trialing`, `active`, `past_due`, `cancelled`,
+`expired`), current_period_start, current_period_end, provider,
+provider_customer_id, provider_subscription_id, cancel_at_period_end,
+timestamps.
+
+Subscription rows mirror verified payment-provider state. Credits are not
+implied by status alone; subscription activation or renewal must create an
+explicit `CreditGrant`.
+
+### CreditGrant
+id, nullable user_id, nullable guest_device_id_hash, source (`free_trial`,
+`subscription_period`, `manual_adjustment`, `refund`, `promo`,
+`lifetime_quote`), credits_granted, credits_remaining, valid_from, expires_at,
+nullable subscription_id, timestamps.
+
+Credit grants are spendable buckets. Debits consume the soonest-expiring
+available grants first. Database constraints keep `credits_remaining`
+non-negative and no larger than `credits_granted`.
+
+### CreditLedger
+id, nullable user_id, nullable guest_device_id_hash, nullable grant_id,
+direction (`grant`, `debit`, `refund`, `adjustment`, `expiry`), credits,
+balance_after, reason_code, idempotency_key, nullable ai_usage_event_id,
+created_at.
+
+Every credit movement must create a ledger row. Ledger idempotency keys prevent
+double charging when a client retries or a webhook is delivered more than once.
+
+### AIUsageEvent
+id, nullable user_id, nullable guest_device_id_hash, session_id, request_id,
+idempotency_key, action_code, input_kind, status, provider/model metadata,
+estimated_credits, reserved_credits, final_credits, estimated and actual cost in
+USD micros, token counts, audio duration/bytes, input and response sizes,
+error_code, started/provider/finished timestamps.
+
+Every AI provider attempt must create one usage event. Raw prompts, transcripts,
+audio, and provider responses are not stored here.
+
+### AIUsageLimitEvent
+id, nullable user_id, nullable guest_device_id_hash, action_code, reason,
+required_credits, available_credits, daily_limit, used_today, reset_at,
+created_at.
+
+Limit events are written when an AI action is denied before provider execution.
+They support dashboard metrics for users hitting daily caps, users hitting total
+credit caps, and feature-lock failures without depending only on request logs.
+
+### AIModelPricing
+id, provider, model, operation (`llm`, `transcription`, `credit_fallback`),
+input_token_usd_micros, output_token_usd_micros, audio_minute_usd_micros,
+request_usd_micros, credit_usd_micros, active, timestamps.
+
+Pricing rows allow operations to update cost estimates without a code deploy.
+The active `(provider, model, operation)` row is used first; when no provider
+pricing matches, accounting falls back to a credit-based estimate.
+
+### AIAbuseBlock
+id, nullable user_id, nullable guest_device_id_hash, scope (`ai_parse`,
+`all_ai`), reason_code, notes, active, expires_at, created_by, timestamps.
+
+Abuse blocks are an admin support control for stopping AI usage by user or
+guest-device hash without deleting the account or credit history. Expired or
+inactive blocks are ignored by AI parse enforcement.
+
+### DailyCreditUsage
+id, nullable user_id, nullable guest_device_id_hash, usage_date, credits_used,
+timestamps.
+
+This table enforces per-day credit caps for free, guest, and paid users. Unique
+indexes are split by user and guest identity so nullable IDs cannot bypass daily
+limits.
+
+### GuestUsageKey
+id, guest_device_id_hash, ip_hash, first_seen_at, last_seen_at, nullable
+trial_grant_id, abuse_score, timestamps.
+
+Guest usage keys reduce repeated free-trial grants across reinstall/session
+loops. Device IDs and IPs are stored only as hashes.
+
+### LifetimeQuoteRequest
+id, user_id, status (`requested`, `reviewed`, `quoted`, `declined`,
+`cancelled`), paid_months_completed, usage_window_start, usage_window_end,
+usage_event_count, credits_used, average_monthly_credits,
+estimated_cost_usd_micros, average_monthly_cost_usd_micros, notes, timestamps.
+
+Lifetime quote requests preserve the user's actual 90-day AI usage summary for
+admin review. They do not grant credits or activate access by themselves.
+
 ### Account
 id, user_id, name, type, institution_name, last_four_optional,
 credit_limit fixed-point money, balance fixed-point money, is_default,

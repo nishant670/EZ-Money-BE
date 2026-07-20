@@ -30,7 +30,11 @@ type Parser interface {
 }
 
 func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
-	return &OpenAIClient{cfg: cfg, http: &http.Client{}}
+	client := &http.Client{}
+	if cfg.ReqTimeoutSec > 0 {
+		client.Timeout = time.Duration(cfg.ReqTimeoutSec) * time.Second
+	}
+	return &OpenAIClient{cfg: cfg, http: client}
 }
 
 func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []byte) (string, error) {

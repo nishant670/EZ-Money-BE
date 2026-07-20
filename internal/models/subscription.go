@@ -18,6 +18,7 @@ type Subscription struct {
 	LastChargedDate string    `gorm:"type:varchar(10)" json:"last_charged_date"`
 	Status          string    `gorm:"type:varchar(16);not null;default:active;index" json:"status"`
 	ReminderDays    int       `gorm:"not null;default:3" json:"reminder_days"`
+	CancelBeforeDue bool      `gorm:"not null;default:false" json:"cancel_before_due"`
 	Notes           string    `gorm:"type:text" json:"notes"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`

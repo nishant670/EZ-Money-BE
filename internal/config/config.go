@@ -7,25 +7,35 @@ import (
 )
 
 type Config struct {
-	Port               string
-	AllowOrigins       string
-	AuthBearer         string
-	TZDefault          string
-	OpenAIKey          string
-	OpenAIBaseURL      string
-	OpenAILlmModel     string
-	OpenAIWhisper      string
-	OpenAIMaxTokens    int
-	ReqTimeoutSec      int
-	RateLimitRPS       float64
-	RateLimitBurst     int
-	MaxJSONKB          int64
-	MaxUploadMB        int64
-	MaxTranscriptChars int
-	OTPDebugResponse   bool
-	OTPDevCode         string
-	OTPExpiresMinutes  int
-	ClaimTokenMinutes  int
+	Port                            string
+	AllowOrigins                    string
+	AuthBearer                      string
+	TZDefault                       string
+	OpenAIKey                       string
+	OpenAIBaseURL                   string
+	OpenAILlmModel                  string
+	OpenAIWhisper                   string
+	OpenAIMaxTokens                 int
+	ReqTimeoutSec                   int
+	RateLimitRPS                    float64
+	RateLimitBurst                  int
+	MaxJSONKB                       int64
+	MaxUploadMB                     int64
+	MaxTranscriptChars              int
+	AIParseDisabled                 bool
+	AIUnpaidMaxVoiceBytes           int64
+	AIFailedParseCooldownThreshold  int
+	AIFailedParseCooldownWindowMin  int
+	AIFailedParseCooldownMinutes    int
+	AIProviderFailureThreshold      int
+	AIProviderCircuitBreakerSeconds int
+	OTPDebugResponse                bool
+	OTPDevCode                      string
+	OTPExpiresMinutes               int
+	ClaimTokenMinutes               int
+	AIDailyCostAlertUSDMicros       int64
+	AIAbuseDailyCreditsThreshold    int
+	AIFreeCostPerUserAlertUSDMicros int64
 }
 
 func getenv(key, def string) string {
@@ -38,6 +48,15 @@ func getenv(key, def string) string {
 func atoi(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+	}
+	return def
+}
+
+func atoi64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return i
 		}
 	}
@@ -67,24 +86,34 @@ func atob(key string, def bool) bool {
 
 func Load() *Config {
 	return &Config{
-		Port:               getenv("PORT", "8080"),
-		AllowOrigins:       getenv("ALLOW_ORIGINS", ""),
-		AuthBearer:         getenv("AUTH_BEARER", ""),
-		TZDefault:          getenv("TZ_DEFAULT", "Asia/Kolkata"),
-		OpenAIKey:          getenv("OPENAI_API_KEY", ""),
-		OpenAIBaseURL:      getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-		OpenAILlmModel:     getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
-		OpenAIWhisper:      getenv("OPENAI_WHISPER_MODEL", "gpt-4o-mini-transcribe"),
-		OpenAIMaxTokens:    atoi("OPENAI_MAX_OUTPUT_TOKENS", 600),
-		ReqTimeoutSec:      atoi("REQUEST_TIMEOUT_SECONDS", 30),
-		RateLimitRPS:       atof("RATE_LIMIT_RPS", 5),
-		RateLimitBurst:     atoi("RATE_LIMIT_BURST", 10),
-		MaxJSONKB:          int64(atoi("MAX_JSON_KB", 64)),
-		MaxUploadMB:        int64(atoi("MAX_UPLOAD_MB", 15)),
-		MaxTranscriptChars: atoi("MAX_TRANSCRIPT_CHARS", 1000),
-		OTPDebugResponse:   atob("OTP_DEBUG_RESPONSE", false),
-		OTPDevCode:         getenv("OTP_DEV_CODE", ""),
-		OTPExpiresMinutes:  atoi("OTP_EXPIRES_MINUTES", 10),
-		ClaimTokenMinutes:  atoi("CLAIM_TOKEN_EXPIRES_MINUTES", 15),
+		Port:                            getenv("PORT", "8080"),
+		AllowOrigins:                    getenv("ALLOW_ORIGINS", ""),
+		AuthBearer:                      getenv("AUTH_BEARER", ""),
+		TZDefault:                       getenv("TZ_DEFAULT", "Asia/Kolkata"),
+		OpenAIKey:                       getenv("OPENAI_API_KEY", ""),
+		OpenAIBaseURL:                   getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		OpenAILlmModel:                  getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
+		OpenAIWhisper:                   getenv("OPENAI_WHISPER_MODEL", "gpt-4o-mini-transcribe"),
+		OpenAIMaxTokens:                 atoi("OPENAI_MAX_OUTPUT_TOKENS", 600),
+		ReqTimeoutSec:                   atoi("REQUEST_TIMEOUT_SECONDS", 30),
+		RateLimitRPS:                    atof("RATE_LIMIT_RPS", 5),
+		RateLimitBurst:                  atoi("RATE_LIMIT_BURST", 10),
+		MaxJSONKB:                       int64(atoi("MAX_JSON_KB", 64)),
+		MaxUploadMB:                     int64(atoi("MAX_UPLOAD_MB", 15)),
+		MaxTranscriptChars:              atoi("MAX_TRANSCRIPT_CHARS", 1000),
+		AIParseDisabled:                 atob("AI_PARSE_DISABLED", false),
+		AIUnpaidMaxVoiceBytes:           int64(atoi("AI_UNPAID_MAX_VOICE_BYTES", 512*1024)),
+		AIFailedParseCooldownThreshold:  atoi("AI_FAILED_PARSE_COOLDOWN_THRESHOLD", 5),
+		AIFailedParseCooldownWindowMin:  atoi("AI_FAILED_PARSE_COOLDOWN_WINDOW_MINUTES", 15),
+		AIFailedParseCooldownMinutes:    atoi("AI_FAILED_PARSE_COOLDOWN_MINUTES", 10),
+		AIProviderFailureThreshold:      atoi("AI_PROVIDER_FAILURE_THRESHOLD", 5),
+		AIProviderCircuitBreakerSeconds: atoi("AI_PROVIDER_CIRCUIT_BREAKER_SECONDS", 120),
+		OTPDebugResponse:                atob("OTP_DEBUG_RESPONSE", false),
+		OTPDevCode:                      getenv("OTP_DEV_CODE", ""),
+		OTPExpiresMinutes:               atoi("OTP_EXPIRES_MINUTES", 10),
+		ClaimTokenMinutes:               atoi("CLAIM_TOKEN_EXPIRES_MINUTES", 15),
+		AIDailyCostAlertUSDMicros:       atoi64("AI_DAILY_COST_ALERT_USD_MICROS", 0),
+		AIAbuseDailyCreditsThreshold:    atoi("AI_ABUSE_DAILY_CREDITS_THRESHOLD", 500),
+		AIFreeCostPerUserAlertUSDMicros: atoi64("AI_FREE_COST_PER_USER_ALERT_USD_MICROS", 100000),
 	}
 }

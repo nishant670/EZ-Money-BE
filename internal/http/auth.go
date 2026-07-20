@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/models"
 )
@@ -75,6 +76,22 @@ func validOTPCode(otp string) bool {
 		}
 	}
 	return true
+}
+
+func validPIN(pin string) bool {
+	if len(pin) != 4 {
+		return false
+	}
+	allSame := true
+	for i, char := range pin {
+		if char < '0' || char > '9' {
+			return false
+		}
+		if i > 0 && byte(char) != pin[0] {
+			allSame = false
+		}
+	}
+	return !allSame
 }
 
 func hashOTP(otp string) (string, error) {
@@ -256,6 +273,10 @@ func (s *Server) authGuest(c *gin.Context) {
 				c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
 				return
 			}
+			if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+				c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
+				return
+			}
 			user.HasPin = user.PinHash != ""
 			response, err := authResponse(&user)
 			if err != nil {
@@ -295,6 +316,10 @@ func (s *Server) authGuest(c *gin.Context) {
 					c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
 					return
 				}
+				if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+					c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
+					return
+				}
 				existingGuest.HasPin = existingGuest.PinHash != ""
 				response, err := authResponse(&existingGuest)
 				if err != nil {
@@ -310,6 +335,10 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 	if err := ensureDefaultCashAccount(user.ID); err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_default_account"})
+		return
+	}
+	if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+		c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
 		return
 	}
 
@@ -491,6 +520,10 @@ func (s *Server) authRegister(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	if !validPIN(input.PIN) {
+		c.JSON(400, gin.H{"error": "weak_pin"})
+		return
+	}
 
 	claim, err := consumeClaimToken(input.ClaimToken)
 	if err != nil {
@@ -582,6 +615,10 @@ func (s *Server) authRegister(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
 		return
 	}
+	if _, _, err := billing.NewCreditService(database.DB).EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		c.JSON(500, gin.H{"error": "failed_ensure_trial_credits"})
+		return
+	}
 
 	user.HasPin = user.PinHash != ""
 	response, err := authResponse(&user)
@@ -606,6 +643,10 @@ func (s *Server) authPinReset(c *gin.Context) {
 			return
 		}
 		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if !validPIN(input.PIN) {
+		c.JSON(400, gin.H{"error": "weak_pin"})
 		return
 	}
 
@@ -671,6 +712,10 @@ func (s *Server) authLogin(c *gin.Context) {
 			return
 		}
 		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if !validPIN(input.PIN) {
+		c.JSON(400, gin.H{"error": "weak_pin"})
 		return
 	}
 

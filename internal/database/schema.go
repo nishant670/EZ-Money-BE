@@ -102,6 +102,7 @@ func runtimeSchemaStatements() []string {
 			last_charged_date VARCHAR(10) NOT NULL DEFAULT '',
 			status VARCHAR(16) NOT NULL DEFAULT 'active',
 			reminder_days INTEGER NOT NULL DEFAULT 3,
+			cancel_before_due BOOLEAN NOT NULL DEFAULT FALSE,
 			notes TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -112,6 +113,8 @@ func runtimeSchemaStatements() []string {
 			ON subscriptions (user_id, merchant)`,
 		`CREATE INDEX IF NOT EXISTS idx_subscriptions_user_category
 			ON subscriptions (user_id, category)`,
+		`ALTER TABLE subscriptions
+			ADD COLUMN IF NOT EXISTS cancel_before_due BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE subscriptions
 			DROP CONSTRAINT IF EXISTS subscriptions_amount_positive_check`,
 		`ALTER TABLE subscriptions
@@ -124,7 +127,7 @@ func runtimeSchemaStatements() []string {
 			DROP CONSTRAINT IF EXISTS subscriptions_billing_interval_check`,
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_billing_interval_check
-			CHECK (billing_interval IN ('weekly', 'monthly', 'yearly'))`,
+			CHECK (billing_interval IN ('daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'yearly'))`,
 		`ALTER TABLE subscriptions
 			DROP CONSTRAINT IF EXISTS subscriptions_status_check`,
 		`ALTER TABLE subscriptions
@@ -155,6 +158,444 @@ func runtimeSchemaStatements() []string {
 			DROP CONSTRAINT IF EXISTS subscription_reminders_kind_check`,
 		`ALTER TABLE subscription_reminders
 			ADD CONSTRAINT subscription_reminders_kind_check CHECK (kind IN ('due', 'overdue'))`,
+		`CREATE TABLE IF NOT EXISTS plans (
+			id BIGSERIAL PRIMARY KEY,
+			code VARCHAR(64) NOT NULL UNIQUE,
+			name VARCHAR(120) NOT NULL,
+			billing_interval VARCHAR(24) NOT NULL,
+			price_minor BIGINT NOT NULL DEFAULT 0,
+			currency CHAR(3) NOT NULL DEFAULT 'INR',
+			included_credits INTEGER NOT NULL DEFAULT 0,
+			daily_credit_limit INTEGER NOT NULL DEFAULT 0,
+			is_public BOOLEAN NOT NULL DEFAULT FALSE,
+			requires_login BOOLEAN NOT NULL DEFAULT TRUE,
+			requires_prior_paid_months INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE plans
+			DROP CONSTRAINT IF EXISTS plans_billing_interval_check`,
+		`ALTER TABLE plans
+			ADD CONSTRAINT plans_billing_interval_check
+			CHECK (billing_interval IN ('weekly', 'monthly', 'quarterly', 'yearly', 'lifetime_quote'))`,
+		`ALTER TABLE plans
+			DROP CONSTRAINT IF EXISTS plans_price_minor_non_negative_check`,
+		`ALTER TABLE plans
+			ADD CONSTRAINT plans_price_minor_non_negative_check CHECK (price_minor >= 0)`,
+		`ALTER TABLE plans
+			DROP CONSTRAINT IF EXISTS plans_currency_check`,
+		`ALTER TABLE plans
+			ADD CONSTRAINT plans_currency_check CHECK (currency = 'INR')`,
+		`ALTER TABLE plans
+			DROP CONSTRAINT IF EXISTS plans_credit_limits_non_negative_check`,
+		`ALTER TABLE plans
+			ADD CONSTRAINT plans_credit_limits_non_negative_check
+			CHECK (included_credits >= 0 AND daily_credit_limit >= 0 AND requires_prior_paid_months >= 0)`,
+		`CREATE TABLE IF NOT EXISTS user_subscriptions (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			plan_id BIGINT NOT NULL REFERENCES plans(id),
+			status VARCHAR(24) NOT NULL,
+			current_period_start TIMESTAMPTZ NOT NULL,
+			current_period_end TIMESTAMPTZ NOT NULL,
+			provider VARCHAR(40) NOT NULL DEFAULT '',
+			provider_customer_id VARCHAR(120) NOT NULL DEFAULT '',
+			provider_subscription_id VARCHAR(120) NOT NULL DEFAULT '',
+			cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_status_period
+			ON user_subscriptions (user_id, status, current_period_end DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_plan
+			ON user_subscriptions (plan_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_provider_customer
+			ON user_subscriptions (provider, provider_customer_id)
+			WHERE provider_customer_id <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_subscriptions_provider_subscription
+			ON user_subscriptions (provider, provider_subscription_id)
+			WHERE provider_subscription_id <> ''`,
+		`ALTER TABLE user_subscriptions
+			DROP CONSTRAINT IF EXISTS user_subscriptions_status_check`,
+		`ALTER TABLE user_subscriptions
+			ADD CONSTRAINT user_subscriptions_status_check
+			CHECK (status IN ('trialing', 'active', 'past_due', 'cancelled', 'expired'))`,
+		`ALTER TABLE user_subscriptions
+			DROP CONSTRAINT IF EXISTS user_subscriptions_period_check`,
+		`ALTER TABLE user_subscriptions
+			ADD CONSTRAINT user_subscriptions_period_check CHECK (current_period_end > current_period_start)`,
+		`CREATE TABLE IF NOT EXISTS credit_grants (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+			guest_device_id_hash CHAR(64) NOT NULL DEFAULT '',
+			source VARCHAR(40) NOT NULL,
+			credits_granted INTEGER NOT NULL,
+			credits_remaining INTEGER NOT NULL,
+			valid_from TIMESTAMPTZ NOT NULL,
+			expires_at TIMESTAMPTZ,
+			subscription_id BIGINT REFERENCES user_subscriptions(id) ON DELETE SET NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_grants_user_available
+			ON credit_grants (user_id, expires_at, valid_from)
+			WHERE user_id IS NOT NULL AND credits_remaining > 0`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_grants_guest_available
+			ON credit_grants (guest_device_id_hash, expires_at, valid_from)
+			WHERE guest_device_id_hash <> '' AND credits_remaining > 0`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_grants_subscription
+			ON credit_grants (subscription_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_grants_once_user_free_trial
+			ON credit_grants (user_id, source)
+			WHERE user_id IS NOT NULL AND source = 'free_trial'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_grants_once_guest_free_trial
+			ON credit_grants (guest_device_id_hash, source)
+			WHERE guest_device_id_hash <> '' AND source = 'free_trial'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_grants_subscription_period
+			ON credit_grants (subscription_id, valid_from, source)
+			WHERE subscription_id IS NOT NULL AND source = 'subscription_period'`,
+		`ALTER TABLE credit_grants
+			DROP CONSTRAINT IF EXISTS credit_grants_identity_check`,
+		`ALTER TABLE credit_grants
+			ADD CONSTRAINT credit_grants_identity_check
+			CHECK (user_id IS NOT NULL OR guest_device_id_hash <> '')`,
+		`ALTER TABLE credit_grants
+			DROP CONSTRAINT IF EXISTS credit_grants_source_check`,
+		`ALTER TABLE credit_grants
+			ADD CONSTRAINT credit_grants_source_check
+			CHECK (source IN ('free_trial', 'subscription_period', 'manual_adjustment', 'refund', 'promo', 'lifetime_quote'))`,
+		`ALTER TABLE credit_grants
+			DROP CONSTRAINT IF EXISTS credit_grants_amount_check`,
+		`ALTER TABLE credit_grants
+			ADD CONSTRAINT credit_grants_amount_check
+			CHECK (credits_granted > 0 AND credits_remaining >= 0 AND credits_remaining <= credits_granted)`,
+		`ALTER TABLE credit_grants
+			DROP CONSTRAINT IF EXISTS credit_grants_expiry_check`,
+		`ALTER TABLE credit_grants
+			ADD CONSTRAINT credit_grants_expiry_check
+			CHECK (expires_at IS NULL OR expires_at > valid_from)`,
+		`CREATE TABLE IF NOT EXISTS ai_usage_events (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+			guest_device_id_hash CHAR(64) NOT NULL DEFAULT '',
+			session_id VARCHAR(120) NOT NULL DEFAULT '',
+			request_id VARCHAR(120) NOT NULL UNIQUE,
+			idempotency_key VARCHAR(120) NOT NULL DEFAULT '',
+			action_code VARCHAR(80) NOT NULL,
+			input_kind VARCHAR(20) NOT NULL,
+			status VARCHAR(32) NOT NULL,
+			provider VARCHAR(40) NOT NULL DEFAULT '',
+			model VARCHAR(80) NOT NULL DEFAULT '',
+			secondary_provider VARCHAR(40) NOT NULL DEFAULT '',
+			secondary_model VARCHAR(80) NOT NULL DEFAULT '',
+			estimated_credits INTEGER NOT NULL,
+			reserved_credits INTEGER NOT NULL DEFAULT 0,
+			final_credits INTEGER NOT NULL DEFAULT 0,
+			estimated_cost_usd_micros BIGINT NOT NULL DEFAULT 0,
+			actual_cost_usd_micros BIGINT,
+			prompt_tokens INTEGER,
+			completion_tokens INTEGER,
+			total_tokens INTEGER,
+			audio_duration_ms INTEGER,
+			audio_bytes BIGINT,
+			input_chars INTEGER,
+			response_bytes INTEGER,
+			error_code VARCHAR(80) NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ NOT NULL,
+			provider_started_at TIMESTAMPTZ,
+			finished_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_user_started
+			ON ai_usage_events (user_id, started_at DESC)
+			WHERE user_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_guest_started
+			ON ai_usage_events (guest_device_id_hash, started_at DESC)
+			WHERE guest_device_id_hash <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_action_status
+			ON ai_usage_events (action_code, status, started_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_usage_events_user_idempotency
+			ON ai_usage_events (user_id, idempotency_key)
+			WHERE user_id IS NOT NULL AND idempotency_key <> ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_usage_events_guest_idempotency
+			ON ai_usage_events (guest_device_id_hash, idempotency_key)
+			WHERE guest_device_id_hash <> '' AND idempotency_key <> ''`,
+		`ALTER TABLE ai_usage_events
+			DROP CONSTRAINT IF EXISTS ai_usage_events_identity_check`,
+		`ALTER TABLE ai_usage_events
+			ADD CONSTRAINT ai_usage_events_identity_check
+			CHECK (user_id IS NOT NULL OR guest_device_id_hash <> '')`,
+		`ALTER TABLE ai_usage_events
+			DROP CONSTRAINT IF EXISTS ai_usage_events_input_kind_check`,
+		`ALTER TABLE ai_usage_events
+			ADD CONSTRAINT ai_usage_events_input_kind_check
+			CHECK (input_kind IN ('text', 'voice', 'image', 'file', 'chat'))`,
+		`ALTER TABLE ai_usage_events
+			DROP CONSTRAINT IF EXISTS ai_usage_events_status_check`,
+		`ALTER TABLE ai_usage_events
+			ADD CONSTRAINT ai_usage_events_status_check
+			CHECK (status IN ('reserved', 'succeeded', 'failed_before_provider', 'failed_after_provider', 'refunded', 'cancelled'))`,
+		`ALTER TABLE ai_usage_events
+			DROP CONSTRAINT IF EXISTS ai_usage_events_credit_non_negative_check`,
+		`ALTER TABLE ai_usage_events
+			ADD CONSTRAINT ai_usage_events_credit_non_negative_check
+			CHECK (estimated_credits >= 0 AND reserved_credits >= 0 AND final_credits >= 0)`,
+		`ALTER TABLE ai_usage_events
+			DROP CONSTRAINT IF EXISTS ai_usage_events_cost_non_negative_check`,
+		`ALTER TABLE ai_usage_events
+			ADD CONSTRAINT ai_usage_events_cost_non_negative_check
+			CHECK (estimated_cost_usd_micros >= 0 AND (actual_cost_usd_micros IS NULL OR actual_cost_usd_micros >= 0))`,
+		`ALTER TABLE ai_usage_events
+			DROP CONSTRAINT IF EXISTS ai_usage_events_usage_non_negative_check`,
+		`ALTER TABLE ai_usage_events
+			ADD CONSTRAINT ai_usage_events_usage_non_negative_check
+			CHECK (
+				(prompt_tokens IS NULL OR prompt_tokens >= 0)
+				AND (completion_tokens IS NULL OR completion_tokens >= 0)
+				AND (total_tokens IS NULL OR total_tokens >= 0)
+				AND (audio_duration_ms IS NULL OR audio_duration_ms >= 0)
+				AND (audio_bytes IS NULL OR audio_bytes >= 0)
+				AND (input_chars IS NULL OR input_chars >= 0)
+				AND (response_bytes IS NULL OR response_bytes >= 0)
+			)`,
+		`CREATE TABLE IF NOT EXISTS credit_ledger (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+			guest_device_id_hash CHAR(64) NOT NULL DEFAULT '',
+			grant_id BIGINT REFERENCES credit_grants(id) ON DELETE SET NULL,
+			direction VARCHAR(20) NOT NULL,
+			credits INTEGER NOT NULL,
+			balance_after INTEGER NOT NULL,
+			reason_code VARCHAR(64) NOT NULL,
+			idempotency_key VARCHAR(120) NOT NULL DEFAULT '',
+			ai_usage_event_id BIGINT REFERENCES ai_usage_events(id) ON DELETE SET NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_ledger_user_created
+			ON credit_ledger (user_id, created_at DESC)
+			WHERE user_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_ledger_guest_created
+			ON credit_ledger (guest_device_id_hash, created_at DESC)
+			WHERE guest_device_id_hash <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_ledger_grant
+			ON credit_ledger (grant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_ledger_ai_usage_event
+			ON credit_ledger (ai_usage_event_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_grant_idempotency
+			ON credit_ledger (grant_id, idempotency_key, direction)
+			WHERE grant_id IS NOT NULL AND idempotency_key <> ''`,
+		`ALTER TABLE credit_ledger
+			DROP CONSTRAINT IF EXISTS credit_ledger_identity_check`,
+		`ALTER TABLE credit_ledger
+			ADD CONSTRAINT credit_ledger_identity_check
+			CHECK (user_id IS NOT NULL OR guest_device_id_hash <> '')`,
+		`ALTER TABLE credit_ledger
+			DROP CONSTRAINT IF EXISTS credit_ledger_direction_check`,
+		`ALTER TABLE credit_ledger
+			ADD CONSTRAINT credit_ledger_direction_check
+			CHECK (direction IN ('grant', 'debit', 'refund', 'adjustment', 'expiry'))`,
+		`ALTER TABLE credit_ledger
+			DROP CONSTRAINT IF EXISTS credit_ledger_amount_check`,
+		`ALTER TABLE credit_ledger
+			ADD CONSTRAINT credit_ledger_amount_check
+			CHECK (credits > 0 AND balance_after >= 0)`,
+		`CREATE TABLE IF NOT EXISTS daily_credit_usage (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+			guest_device_id_hash CHAR(64) NOT NULL DEFAULT '',
+			usage_date DATE NOT NULL,
+			credits_used INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_credit_usage_user_date
+			ON daily_credit_usage (user_id, usage_date)
+			WHERE user_id IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_credit_usage_guest_date
+			ON daily_credit_usage (guest_device_id_hash, usage_date)
+			WHERE guest_device_id_hash <> ''`,
+		`ALTER TABLE daily_credit_usage
+			DROP CONSTRAINT IF EXISTS daily_credit_usage_identity_check`,
+		`ALTER TABLE daily_credit_usage
+			ADD CONSTRAINT daily_credit_usage_identity_check
+			CHECK (user_id IS NOT NULL OR guest_device_id_hash <> '')`,
+		`ALTER TABLE daily_credit_usage
+			DROP CONSTRAINT IF EXISTS daily_credit_usage_amount_check`,
+		`ALTER TABLE daily_credit_usage
+			ADD CONSTRAINT daily_credit_usage_amount_check CHECK (credits_used >= 0)`,
+		`CREATE TABLE IF NOT EXISTS guest_usage_keys (
+			id BIGSERIAL PRIMARY KEY,
+			guest_device_id_hash CHAR(64) NOT NULL UNIQUE,
+			ip_hash CHAR(64) NOT NULL,
+			first_seen_at TIMESTAMPTZ NOT NULL,
+			last_seen_at TIMESTAMPTZ NOT NULL,
+			trial_grant_id BIGINT REFERENCES credit_grants(id) ON DELETE SET NULL,
+			abuse_score INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_guest_usage_keys_ip_hash
+			ON guest_usage_keys (ip_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_guest_usage_keys_last_seen
+			ON guest_usage_keys (last_seen_at DESC)`,
+		`ALTER TABLE guest_usage_keys
+			DROP CONSTRAINT IF EXISTS guest_usage_keys_abuse_score_check`,
+		`ALTER TABLE guest_usage_keys
+			ADD CONSTRAINT guest_usage_keys_abuse_score_check CHECK (abuse_score >= 0)`,
+		`ALTER TABLE guest_usage_keys
+			DROP CONSTRAINT IF EXISTS guest_usage_keys_seen_order_check`,
+		`ALTER TABLE guest_usage_keys
+			ADD CONSTRAINT guest_usage_keys_seen_order_check CHECK (last_seen_at >= first_seen_at)`,
+		`CREATE TABLE IF NOT EXISTS lifetime_quote_requests (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			status VARCHAR(24) NOT NULL DEFAULT 'requested',
+			paid_months_completed INTEGER NOT NULL DEFAULT 0,
+			usage_window_start TIMESTAMPTZ NOT NULL,
+			usage_window_end TIMESTAMPTZ NOT NULL,
+			usage_event_count INTEGER NOT NULL DEFAULT 0,
+			credits_used INTEGER NOT NULL DEFAULT 0,
+			average_monthly_credits INTEGER NOT NULL DEFAULT 0,
+			estimated_cost_usd_micros BIGINT NOT NULL DEFAULT 0,
+			average_monthly_cost_usd_micros BIGINT NOT NULL DEFAULT 0,
+			notes TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_lifetime_quote_requests_user_created
+			ON lifetime_quote_requests (user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_lifetime_quote_requests_status_created
+			ON lifetime_quote_requests (status, created_at DESC)`,
+		`ALTER TABLE lifetime_quote_requests
+			DROP CONSTRAINT IF EXISTS lifetime_quote_requests_status_check`,
+		`ALTER TABLE lifetime_quote_requests
+			ADD CONSTRAINT lifetime_quote_requests_status_check
+			CHECK (status IN ('requested', 'reviewed', 'quoted', 'declined', 'cancelled'))`,
+		`ALTER TABLE lifetime_quote_requests
+			DROP CONSTRAINT IF EXISTS lifetime_quote_requests_non_negative_check`,
+		`ALTER TABLE lifetime_quote_requests
+			ADD CONSTRAINT lifetime_quote_requests_non_negative_check
+			CHECK (
+				paid_months_completed >= 0
+				AND usage_event_count >= 0
+				AND credits_used >= 0
+				AND average_monthly_credits >= 0
+				AND estimated_cost_usd_micros >= 0
+				AND average_monthly_cost_usd_micros >= 0
+			)`,
+		`ALTER TABLE lifetime_quote_requests
+			DROP CONSTRAINT IF EXISTS lifetime_quote_requests_window_check`,
+		`ALTER TABLE lifetime_quote_requests
+			ADD CONSTRAINT lifetime_quote_requests_window_check CHECK (usage_window_end > usage_window_start)`,
+		`CREATE TABLE IF NOT EXISTS ai_usage_limit_events (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+			guest_device_id_hash CHAR(64) NOT NULL DEFAULT '',
+			action_code VARCHAR(80) NOT NULL,
+			reason VARCHAR(64) NOT NULL,
+			required_credits INTEGER NOT NULL DEFAULT 0,
+			available_credits INTEGER NOT NULL DEFAULT 0,
+			daily_limit INTEGER NOT NULL DEFAULT 0,
+			used_today INTEGER NOT NULL DEFAULT 0,
+			daily_remaining INTEGER NOT NULL DEFAULT 0,
+			plan_code VARCHAR(64) NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_limit_events_user_created
+			ON ai_usage_limit_events (user_id, created_at DESC)
+			WHERE user_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_limit_events_guest_created
+			ON ai_usage_limit_events (guest_device_id_hash, created_at DESC)
+			WHERE guest_device_id_hash <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_limit_events_reason_created
+			ON ai_usage_limit_events (reason, created_at DESC)`,
+		`ALTER TABLE ai_usage_limit_events
+			DROP CONSTRAINT IF EXISTS ai_usage_limit_events_identity_check`,
+		`ALTER TABLE ai_usage_limit_events
+			ADD CONSTRAINT ai_usage_limit_events_identity_check
+			CHECK (user_id IS NOT NULL OR guest_device_id_hash <> '')`,
+		`ALTER TABLE ai_usage_limit_events
+			DROP CONSTRAINT IF EXISTS ai_usage_limit_events_reason_check`,
+		`ALTER TABLE ai_usage_limit_events
+			ADD CONSTRAINT ai_usage_limit_events_reason_check
+			CHECK (reason IN ('insufficient_ai_credits', 'daily_ai_limit_reached', 'feature_locked', 'guest_not_allowed', 'subject_required'))`,
+		`ALTER TABLE ai_usage_limit_events
+			DROP CONSTRAINT IF EXISTS ai_usage_limit_events_non_negative_check`,
+		`ALTER TABLE ai_usage_limit_events
+			ADD CONSTRAINT ai_usage_limit_events_non_negative_check
+			CHECK (
+				required_credits >= 0
+				AND available_credits >= 0
+				AND daily_limit >= 0
+				AND used_today >= 0
+				AND daily_remaining >= 0
+			)`,
+		`CREATE TABLE IF NOT EXISTS ai_model_pricings (
+			id BIGSERIAL PRIMARY KEY,
+			provider VARCHAR(40) NOT NULL,
+			model VARCHAR(80) NOT NULL,
+			operation VARCHAR(32) NOT NULL,
+			input_token_usd_micros BIGINT NOT NULL DEFAULT 0,
+			output_token_usd_micros BIGINT NOT NULL DEFAULT 0,
+			audio_minute_usd_micros BIGINT NOT NULL DEFAULT 0,
+			request_usd_micros BIGINT NOT NULL DEFAULT 0,
+			credit_usd_micros BIGINT NOT NULL DEFAULT 100,
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_model_pricings_provider_model_operation
+			ON ai_model_pricings (provider, model, operation)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_model_pricings_active
+			ON ai_model_pricings (active, provider, model)`,
+		`ALTER TABLE ai_model_pricings
+			DROP CONSTRAINT IF EXISTS ai_model_pricings_operation_check`,
+		`ALTER TABLE ai_model_pricings
+			ADD CONSTRAINT ai_model_pricings_operation_check
+			CHECK (operation IN ('llm', 'transcription', 'credit_fallback'))`,
+		`ALTER TABLE ai_model_pricings
+			DROP CONSTRAINT IF EXISTS ai_model_pricings_non_negative_check`,
+		`ALTER TABLE ai_model_pricings
+			ADD CONSTRAINT ai_model_pricings_non_negative_check
+			CHECK (
+				input_token_usd_micros >= 0
+				AND output_token_usd_micros >= 0
+				AND audio_minute_usd_micros >= 0
+				AND request_usd_micros >= 0
+				AND credit_usd_micros >= 0
+			)`,
+		`CREATE TABLE IF NOT EXISTS ai_abuse_blocks (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+			guest_device_id_hash CHAR(64) NOT NULL DEFAULT '',
+			scope VARCHAR(32) NOT NULL DEFAULT 'ai_parse',
+			reason_code VARCHAR(80) NOT NULL,
+			notes TEXT NOT NULL DEFAULT '',
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			expires_at TIMESTAMPTZ,
+			created_by VARCHAR(120) NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_abuse_blocks_user_active
+			ON ai_abuse_blocks (user_id, active, expires_at)
+			WHERE user_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_abuse_blocks_guest_active
+			ON ai_abuse_blocks (guest_device_id_hash, active, expires_at)
+			WHERE guest_device_id_hash <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_abuse_blocks_scope_active
+			ON ai_abuse_blocks (scope, active, created_at DESC)`,
+		`ALTER TABLE ai_abuse_blocks
+			DROP CONSTRAINT IF EXISTS ai_abuse_blocks_identity_check`,
+		`ALTER TABLE ai_abuse_blocks
+			ADD CONSTRAINT ai_abuse_blocks_identity_check
+			CHECK (user_id IS NOT NULL OR guest_device_id_hash <> '')`,
+		`ALTER TABLE ai_abuse_blocks
+			DROP CONSTRAINT IF EXISTS ai_abuse_blocks_scope_check`,
+		`ALTER TABLE ai_abuse_blocks
+			ADD CONSTRAINT ai_abuse_blocks_scope_check
+			CHECK (scope IN ('ai_parse', 'all_ai'))`,
 		`UPDATE accounts
 			SET type = 'credit_card'
 			WHERE LOWER(type) = 'credit'`,

@@ -44,6 +44,40 @@ func TestNormalizeParsedDraftPreservesValidValues(t *testing.T) {
 	}
 }
 
+func TestNormalizeParsedDraftDefaultsMissingPaymentMode(t *testing.T) {
+	entry := map[string]any{
+		"title": "Uber", "amount": float64(500), "type": "expense",
+		"category": "Travel", "date": "2026-07-17",
+		"missing_fields":     []any{"mode"},
+		"needs_confirmation": map[string]any{"mode": true},
+	}
+
+	normalizeParsedDraft(entry, "Today I paid 500 rupees for the Uber cab for Ria")
+
+	if entry["mode"] != defaultParseMode {
+		t.Fatalf("mode = %#v, want %s", entry["mode"], defaultParseMode)
+	}
+	if missing := entry["missing_fields"].([]string); len(missing) != 0 {
+		t.Fatalf("mode should not be a missing field: %v", missing)
+	}
+	if _, ok := entry["needs_confirmation"].(map[string]any)["mode"]; ok {
+		t.Fatalf("mode should not need confirmation: %#v", entry["needs_confirmation"])
+	}
+}
+
+func TestNormalizeParsedDraftDefaultsInvalidPaymentMode(t *testing.T) {
+	entry := map[string]any{
+		"title": "Uber", "amount": float64(500), "type": "expense",
+		"mode": "unknown", "category": "Travel", "date": "2026-07-17",
+	}
+
+	normalizeParsedDraft(entry, "Today I paid 500 rupees for the Uber cab")
+
+	if entry["mode"] != defaultParseMode {
+		t.Fatalf("mode = %#v, want %s", entry["mode"], defaultParseMode)
+	}
+}
+
 func TestNormalizeIndianPaymentFixtures(t *testing.T) {
 	fixtures := []struct {
 		name  string
@@ -60,5 +94,60 @@ func TestNormalizeIndianPaymentFixtures(t *testing.T) {
 				t.Fatalf("unexpected missing fields: %v", missing)
 			}
 		})
+	}
+}
+
+func TestNormalizeSubscriptionCandidateLabelsDraft(t *testing.T) {
+	entry := map[string]any{
+		"title":    "Sub",
+		"amount":   float64(1500),
+		"type":     "expense",
+		"mode":     "Cash",
+		"category": "Bills",
+		"date":     "2026-07-17",
+		"subscription_candidate": map[string]any{
+			"name":             nil,
+			"amount":           float64(1500),
+			"billing_interval": nil,
+			"next_due_date":    nil,
+		},
+	}
+
+	normalizeParsedDraft(entry, "paid 1500 rupees for my subscription by cash")
+
+	if entry["recurring_candidate"] != true || entry["tag"] != "Subscription" {
+		t.Fatalf("subscription label was not normalized: %#v", entry)
+	}
+	candidate := entry["subscription_candidate"].(map[string]any)
+	missing := candidate["missing_fields"].([]any)
+	if !reflect.DeepEqual(missing, []any{"name", "billing_interval", "next_due_date"}) {
+		t.Fatalf("subscription missing_fields = %#v", missing)
+	}
+}
+
+func TestNormalizeSplitCandidateDetailsSetsLegacyFlag(t *testing.T) {
+	entry := map[string]any{
+		"title":    "Dinner",
+		"amount":   float64(2500),
+		"type":     "expense",
+		"mode":     "UPI",
+		"category": "Food",
+		"date":     "2026-07-17",
+		"split_candidate_details": map[string]any{
+			"participants": []any{
+				map[string]any{
+					"friend_name":  "Ria",
+					"share_amount": float64(1250),
+					"direction":    "friend_owes_user",
+				},
+			},
+			"missing_fields": []any{},
+		},
+	}
+
+	normalizeParsedDraft(entry, "paid 2500 rupees for dinner split with Ria")
+
+	if entry["split_candidate"] != true {
+		t.Fatalf("split candidate flag was not normalized: %#v", entry)
 	}
 }

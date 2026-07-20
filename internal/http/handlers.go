@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	timepkg "time"
 	"unicode/utf8"
@@ -23,15 +24,18 @@ import (
 	"gorm.io/gorm"
 
 	"finance-parser-go/internal/ai"
+	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/config"
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/models"
 )
 
 type Server struct {
-	cfg       *config.Config
-	validator *gojsonschema.Schema
-	parser    ai.Parser
+	cfg               *config.Config
+	validator         *gojsonschema.Schema
+	parser            ai.Parser
+	providerCircuit   *providerCircuitBreaker
+	providerCircuitMu sync.Mutex
 }
 
 func NewServer(cfg *config.Config) *gin.Engine {
@@ -78,6 +82,26 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authLimited.POST("/pin/reset", s.authPinReset)
 	}
 
+	billingPublic := r.Group("/v1/billing")
+	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
+	{
+		billingPublic.GET("/plans", s.listBillingPlans)
+		billingPublic.POST("/webhook", s.handleBillingWebhook)
+	}
+
+	admin := r.Group("/v1/admin")
+	admin.Use(jsonRequestLimits(cfg), rateLimit(cfg, "admin"), s.requireAdminBearer())
+	{
+		admin.GET("/ai/metrics", s.getAIMetrics)
+		admin.GET("/ai/model-pricing", s.listAIModelPricing)
+		admin.PUT("/ai/model-pricing", s.upsertAIModelPricing)
+		admin.POST("/credits/adjustments", s.createCreditAdjustment)
+		admin.GET("/billing/lifetime-quotes", s.listLifetimeQuoteRequests)
+		admin.GET("/ai/abuse-blocks", s.listAIAbuseBlocks)
+		admin.POST("/ai/abuse-blocks", s.createAIAbuseBlock)
+		admin.PATCH("/ai/abuse-blocks/:id", s.updateAIAbuseBlock)
+	}
+
 	// Protected Routes (User Token)
 	authorized := r.Group("/v1")
 	authorized.Use(AuthMiddleware())
@@ -96,6 +120,13 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/user", s.deleteUser)
 		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
 
+		// Billing and AI credit visibility
+		authorized.GET("/billing/status", s.getBillingStatus)
+		authorized.POST("/billing/checkout", s.createBillingCheckout)
+		authorized.POST("/billing/lifetime-quote/request", s.requestLifetimeQuote)
+		authorized.GET("/ai/usage", s.listAIUsage)
+		authorized.GET("/ai/credits", s.getAICredits)
+
 		// Accounts
 		authorized.POST("/accounts", s.saveAccount)
 		authorized.GET("/accounts", s.listAccounts)
@@ -104,7 +135,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 		// Insights
 		authorized.GET("/dashboard", s.getDashboard)
-		authorized.GET("/insights", s.getInsights)
+		authorized.GET("/insights", s.requireEntitlement(billing.FeatureAdvancedInsights), s.getInsights)
 
 		// Notifications
 		authorized.GET("/notifications", s.listNotifications)
@@ -114,35 +145,42 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/notifications/:id", s.deleteNotification)
 
 		// Budgets
-		authorized.POST("/budgets", s.createBudget)
-		authorized.GET("/budgets", s.listBudgets)
-		authorized.PUT("/budgets/:id", s.updateBudget)
-		authorized.DELETE("/budgets/:id", s.deleteBudget)
+		budgets := authorized.Group("/budgets", s.requireEntitlement(billing.FeatureBudgets))
+		{
+			budgets.POST("", s.createBudget)
+			budgets.GET("", s.listBudgets)
+			budgets.PUT("/:id", s.updateBudget)
+			budgets.DELETE("/:id", s.deleteBudget)
+		}
 
 		// Subscriptions
 		authorized.POST("/subscriptions", s.createSubscription)
 		authorized.GET("/subscriptions", s.listSubscriptions)
-		authorized.POST("/subscriptions/reminders", s.createSubscriptionReminders)
+		authorized.POST("/subscriptions/reminders", s.requireEntitlement(billing.FeatureSubscriptionReminders), s.createSubscriptionReminders)
 		authorized.PUT("/subscriptions/:id", s.updateSubscription)
 		authorized.DELETE("/subscriptions/:id", s.deleteSubscription)
 		authorized.POST("/subscriptions/:id/mark-paid", s.markSubscriptionPaid)
 
 		// Split ledger
-		authorized.POST("/split/friends", s.createSplitFriend)
-		authorized.GET("/split/friends", s.listSplitFriends)
-		authorized.PUT("/split/friends/:id", s.updateSplitFriend)
-		authorized.DELETE("/split/friends/:id", s.archiveSplitFriend)
-		authorized.POST("/split/groups", s.createSplitGroup)
-		authorized.GET("/split/groups", s.listSplitGroups)
-		authorized.PUT("/split/groups/:id", s.updateSplitGroup)
-		authorized.DELETE("/split/groups/:id", s.archiveSplitGroup)
-		authorized.POST("/split/bills", s.createSplitBill)
-		authorized.GET("/split/bills", s.listSplitBills)
-		authorized.PUT("/split/bills/:id", s.updateSplitBill)
-		authorized.DELETE("/split/bills/:id", s.deleteSplitBill)
-		authorized.POST("/split/settlements", s.createSplitSettlement)
-		authorized.GET("/split/settlements", s.listSplitSettlements)
-		authorized.GET("/split/balances", s.listSplitBalances)
+		split := authorized.Group("/split", s.requireEntitlement(billing.FeatureSplitLedger))
+		{
+			split.POST("/friends", s.createSplitFriend)
+			split.GET("/friends", s.listSplitFriends)
+			split.PUT("/friends/:id", s.updateSplitFriend)
+			split.DELETE("/friends/:id", s.archiveSplitFriend)
+			split.POST("/groups", s.createSplitGroup)
+			split.GET("/groups", s.listSplitGroups)
+			split.PUT("/groups/:id", s.updateSplitGroup)
+			split.DELETE("/groups/:id", s.archiveSplitGroup)
+			split.POST("/bills", s.createSplitBill)
+			split.GET("/bills", s.listSplitBills)
+			split.PUT("/bills/:id", s.updateSplitBill)
+			split.DELETE("/bills/:id", s.deleteSplitBill)
+			split.POST("/settlements", s.createSplitSettlement)
+			split.GET("/settlements", s.listSplitSettlements)
+			split.GET("/activity", s.listSplitActivity)
+			split.GET("/balances", s.listSplitBalances)
+		}
 
 		// Financial tools
 		authorized.POST("/tools/emi/calculate", s.calculateEMI)
@@ -167,13 +205,27 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/subscriptions") ||
 		strings.HasPrefix(path, "/v1/split") ||
 		strings.HasPrefix(path, "/v1/tools") ||
+		strings.HasPrefix(path, "/v1/billing") ||
+		strings.HasPrefix(path, "/v1/ai") ||
 		strings.HasPrefix(path, "/v1/parse")
 }
 
 func (s *Server) handleParse(c *gin.Context) {
-	// ... (no changes to handleParse logic yet)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timepkg.Duration(s.cfg.ReqTimeoutSec)*timepkg.Second)
 	defer cancel()
+
+	if s.rejectIfAIParseDisabled(c) || s.rejectIfProviderCircuitOpen(c) {
+		return
+	}
+
+	subject, subjectOK := parseCreditSubject(c)
+	if !subjectOK {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credit_subject"})
+		return
+	}
+	if s.rejectIfAIAbuseBlocked(c, subject) || s.rejectIfAIFailureCooldown(c, subject) {
+		return
+	}
 
 	if err := c.Request.ParseMultipartForm(s.cfg.MaxUploadMB * 1024 * 1024); err != nil && requestBodyTooLarge(err) {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
@@ -186,6 +238,11 @@ func (s *Server) handleParse(c *gin.Context) {
 	}
 
 	var transcript string
+	var audioBytes []byte
+	var audioSize int64
+	actionCode := ai.ActionTransactionParseText
+	var usageEvent *models.AIUsageEvent
+	var creditService *billing.CreditService
 	file, header, err := c.Request.FormFile("audio")
 	if err == nil {
 		defer file.Close()
@@ -202,10 +259,41 @@ func (s *Server) handleParse(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "failed to read file"})
 			return
 		}
-		if t, err := s.parser.Transcribe(ctx, header.Filename, buf.Bytes()); err == nil {
+		audioBytes = buf.Bytes()
+		audioSize = int64(len(audioBytes))
+		if audioSize == 0 {
+			c.JSON(400, gin.H{"error": "empty_audio"})
+			return
+		}
+		var tooLong bool
+		actionCode, tooLong = classifyVoiceParseAction(audioSize)
+		if tooLong {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "audio_too_long_for_ai"})
+			return
+		}
+		creditService = billing.NewCreditService(database.DB)
+		if s.rejectIfUnpaidVoiceTooLong(c, creditService, subject, actionCode, audioSize) {
+			return
+		}
+		event, allowance, reserveErr := creditService.ReserveCredits(subject, actionCode, parseIdempotencyHeader(c))
+		if reserveErr != nil {
+			writeCreditReservationError(c, allowance, reserveErr)
+			return
+		}
+		usageEvent = &event
+
+		if t, err := s.parser.Transcribe(ctx, header.Filename, audioBytes); err == nil {
 			transcript = t
 		} else {
+			s.recordAIProviderFailure()
 			log.Printf("stt error: %v", err)
+			_, _ = creditService.FinalizeUsage(event.ID, billing.ProviderUsage{
+				Status:            billing.UsageStatusFailedAfterProvider,
+				ErrorCode:         "transcription_failed",
+				AudioBytes:        &audioSize,
+				SecondaryModel:    s.cfg.OpenAIWhisper,
+				SecondaryProvider: "openai",
+			})
 			c.JSON(http.StatusBadGateway, gin.H{"error": "transcription_failed"})
 			return
 		}
@@ -215,38 +303,109 @@ func (s *Server) handleParse(c *gin.Context) {
 		transcript = c.PostForm("hint_text")
 	}
 	if strings.TrimSpace(transcript) == "" {
+		if usageEvent != nil {
+			_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+				Status:    billing.UsageStatusFailedAfterProvider,
+				ErrorCode: "empty_transcript",
+			})
+		}
 		c.JSON(400, gin.H{"error": "no audio or hint_text provided"})
 		return
 	}
 	if s.cfg.MaxTranscriptChars > 0 && utf8.RuneCountInString(transcript) > s.cfg.MaxTranscriptChars {
+		if usageEvent != nil {
+			_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+				Status:    billing.UsageStatusFailedAfterProvider,
+				ErrorCode: "transcript_too_long",
+			})
+		}
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
 			"error":          "transcript_too_long",
 			"max_characters": s.cfg.MaxTranscriptChars,
 		})
 		return
 	}
+	if usageEvent == nil {
+		creditService = billing.NewCreditService(database.DB)
+		event, allowance, reserveErr := creditService.ReserveCredits(subject, actionCode, parseIdempotencyHeader(c))
+		if reserveErr != nil {
+			writeCreditReservationError(c, allowance, reserveErr)
+			return
+		}
+		usageEvent = &event
+	}
 
 	parsed, err := s.parser.ParseText(ctx, transcript, tz)
 	if err != nil {
+		s.recordAIProviderFailure()
+		inputChars := utf8.RuneCountInString(transcript)
+		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+			Status:     billing.UsageStatusFailedAfterProvider,
+			ErrorCode:  "could_not_parse",
+			InputChars: &inputChars,
+			AudioBytes: optionalInt64(audioSize),
+		})
 		c.JSON(422, gin.H{"error": "could_not_parse", "transcript": transcript})
 		return
 	}
 
 	var parsedObj map[string]any
 	if err := json.Unmarshal(parsed, &parsedObj); err != nil {
+		inputChars := utf8.RuneCountInString(transcript)
+		responseBytes := len(parsed)
+		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+			Status:        billing.UsageStatusFailedAfterProvider,
+			ErrorCode:     "invalid_parse_response",
+			InputChars:    &inputChars,
+			ResponseBytes: &responseBytes,
+			AudioBytes:    optionalInt64(audioSize),
+		})
 		c.JSON(500, gin.H{"error": "invalid_parse_response"})
 		return
 	}
 
 	normalizeParsedDraft(parsedObj, transcript)
+	if !parsedDraftHasTransactionSignal(parsedObj) {
+		inputChars := utf8.RuneCountInString(transcript)
+		responseBytes := len(parsed)
+		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+			Status:        billing.UsageStatusFailedAfterProvider,
+			ErrorCode:     "non_transactional_prompt",
+			InputChars:    &inputChars,
+			ResponseBytes: &responseBytes,
+			AudioBytes:    optionalInt64(audioSize),
+		})
+		c.JSON(422, gin.H{
+			"error":      "non_transactional_prompt",
+			"message":    "Please describe an expense, income, bill, subscription, split, or payment to add.",
+			"transcript": transcript,
+		})
+		return
+	}
 	parsed, err = json.Marshal(parsedObj)
 	if err != nil {
+		inputChars := utf8.RuneCountInString(transcript)
+		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+			Status:     billing.UsageStatusFailedAfterProvider,
+			ErrorCode:  "serialization_failed",
+			InputChars: &inputChars,
+			AudioBytes: optionalInt64(audioSize),
+		})
 		c.JSON(500, gin.H{"error": "serialization_failed"})
 		return
 	}
 
 	res, err := s.validator.Validate(gojsonschema.NewBytesLoader(parsed))
 	if err != nil {
+		inputChars := utf8.RuneCountInString(transcript)
+		responseBytes := len(parsed)
+		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+			Status:        billing.UsageStatusFailedAfterProvider,
+			ErrorCode:     "validation_failed",
+			InputChars:    &inputChars,
+			ResponseBytes: &responseBytes,
+			AudioBytes:    optionalInt64(audioSize),
+		})
 		c.JSON(500, gin.H{"error": "validation_failed"})
 		return
 	}
@@ -255,10 +414,127 @@ func (s *Server) handleParse(c *gin.Context) {
 		for _, e := range res.Errors() {
 			d = append(d, e.String())
 		}
+		inputChars := utf8.RuneCountInString(transcript)
+		responseBytes := len(parsed)
+		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+			Status:        billing.UsageStatusFailedAfterProvider,
+			ErrorCode:     "schema_invalid",
+			InputChars:    &inputChars,
+			ResponseBytes: &responseBytes,
+			AudioBytes:    optionalInt64(audioSize),
+		})
 		c.JSON(422, gin.H{"error": "schema_invalid", "details": d, "transcript": transcript})
 		return
 	}
-	c.Data(200, "application/json", parsed)
+
+	inputChars := utf8.RuneCountInString(transcript)
+	responseBytes := len(parsed)
+	providerUsage := billing.ProviderUsage{
+		Status:        billing.UsageStatusSucceeded,
+		Provider:      "openai",
+		Model:         s.cfg.OpenAILlmModel,
+		InputChars:    &inputChars,
+		ResponseBytes: &responseBytes,
+		AudioBytes:    optionalInt64(audioSize),
+	}
+	if audioSize > 0 {
+		providerUsage.SecondaryProvider = "openai"
+		providerUsage.SecondaryModel = s.cfg.OpenAIWhisper
+	}
+	finalized, err := creditService.FinalizeUsage(usageEvent.ID, providerUsage)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "credit_finalization_failed"})
+		return
+	}
+	s.recordAIProviderSuccess()
+	s.logCostControlAlerts()
+	status, _ := creditService.CheckAllowance(subject, actionCode)
+	parsedObj["credits_charged"] = finalized.FinalCredits
+	parsedObj["credits_remaining_today"] = status.DailyRemaining
+	parsedObj["credits_remaining_total"] = status.AvailableCredits
+	parsedObj["plan_code"] = status.PlanCode
+	c.JSON(200, parsedObj)
+}
+
+func parseCreditSubject(c *gin.Context) (billing.CreditSubject, bool) {
+	value, exists := c.Get("user")
+	if !exists {
+		return billing.CreditSubject{}, false
+	}
+	user, ok := value.(*models.User)
+	if !ok || user == nil || user.ID == 0 {
+		return billing.CreditSubject{}, false
+	}
+	if user.IsGuest {
+		if user.DeviceID == nil || !validGuestDeviceFingerprint(*user.DeviceID) {
+			return billing.CreditSubject{}, false
+		}
+		return billing.SubjectForGuestDeviceID(*user.DeviceID), true
+	}
+	return billing.SubjectForUser(user.ID), true
+}
+
+func classifyVoiceParseAction(audioBytes int64) (ai.ActionCode, bool) {
+	switch {
+	case audioBytes <= 512*1024:
+		return ai.ActionTransactionParseVoiceShort, false
+	case audioBytes <= 1536*1024:
+		return ai.ActionTransactionParseVoiceMedium, false
+	default:
+		return "", true
+	}
+}
+
+func parseIdempotencyHeader(c *gin.Context) string {
+	return strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+}
+
+func writeCreditReservationError(c *gin.Context, allowance billing.AllowanceResult, err error) {
+	if errors.Is(err, billing.ErrInvalidCreditSubject) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credit_subject"})
+		return
+	}
+	if !errors.Is(err, billing.ErrAllowanceDenied) {
+		c.JSON(500, gin.H{"error": "credit_reservation_failed"})
+		return
+	}
+
+	switch allowance.Reason {
+	case billing.AllowanceDailyLimitReached:
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":       billing.AllowanceDailyLimitReached,
+			"daily_limit": allowance.DailyLimit,
+			"used_today":  allowance.UsedToday,
+			"reset_at":    nextCreditResetAt(time.Now().UTC()),
+		})
+	case billing.AllowanceInsufficientCredits, billing.AllowanceFeatureLocked, billing.AllowanceGuestNotAllowed:
+		c.JSON(http.StatusPaymentRequired, gin.H{
+			"error":                 allowance.Reason,
+			"required_credits":      allowance.RequiredCredits,
+			"available_credits":     allowance.AvailableCredits,
+			"daily_limit_remaining": allowance.DailyRemaining,
+			"upgrade_required":      allowance.Reason != billing.AllowanceDailyLimitReached,
+		})
+	default:
+		c.JSON(http.StatusPaymentRequired, gin.H{
+			"error":                 allowance.Reason,
+			"required_credits":      allowance.RequiredCredits,
+			"available_credits":     allowance.AvailableCredits,
+			"daily_limit_remaining": allowance.DailyRemaining,
+			"upgrade_required":      true,
+		})
+	}
+}
+
+func nextCreditResetAt(now time.Time) time.Time {
+	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+}
+
+func optionalInt64(value int64) *int64 {
+	if value <= 0 {
+		return nil
+	}
+	return &value
 }
 
 func (s *Server) saveEntry(c *gin.Context) {
@@ -272,6 +548,9 @@ func (s *Server) saveEntry(c *gin.Context) {
 	var input entryInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(400, gin.H{"error": "invalid_json"})
+		return
+	}
+	if input.Split != nil && !s.ensureEntitlement(c, billing.FeatureSplitLedger) {
 		return
 	}
 	if fields := input.validate(); len(fields) > 0 {
