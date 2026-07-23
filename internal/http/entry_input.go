@@ -65,11 +65,17 @@ type updateEntryInput struct {
 	SourceText  *string             `json:"source_text"`
 	Attachment  *string             `json:"attachment"`
 	AccountID   optionalAccountID   `json:"account_id"`
+	Split       optionalEntrySplit  `json:"split"`
 }
 
 type optionalAccountID struct {
 	Set   bool
 	Value *uint
+}
+
+type optionalEntrySplit struct {
+	Set   bool
+	Value *entrySplitInput
 }
 
 func (field *optionalAccountID) UnmarshalJSON(data []byte) error {
@@ -80,6 +86,21 @@ func (field *optionalAccountID) UnmarshalJSON(data []byte) error {
 	}
 
 	var value uint
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	field.Value = &value
+	return nil
+}
+
+func (field *optionalEntrySplit) UnmarshalJSON(data []byte) error {
+	field.Set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		field.Value = nil
+		return nil
+	}
+
+	var value entrySplitInput
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
@@ -136,6 +157,9 @@ func (input entryInput) validate() map[string]string {
 		fields[field] = message
 	}
 	if input.Split != nil {
+		if !strings.EqualFold(input.Type, "expense") {
+			fields["split"] = "can be added only to expenses"
+		}
 		totalShares := models.Money(0)
 		for _, participant := range input.Split.Participants {
 			totalShares += participant.ShareAmount

@@ -222,3 +222,87 @@ func TestEntryCreateCanCreateLinkedSplitWithInlineFriend(t *testing.T) {
 		t.Fatalf("expected linked split bill to be deleted, got %#v", bills)
 	}
 }
+
+func TestEntryUpdateAndDeleteManageLinkedSplitAtomically(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	_, token := createPaidBillingTestUserSession(t)
+	accounts := performJSONRequest[[]models.Account](
+		t, router, http.MethodGet, "/v1/accounts", token, nil, http.StatusOK,
+	)
+	if len(accounts) == 0 {
+		t.Fatal("guest account was not created")
+	}
+
+	entryPayload := map[string]any{
+		"title":      "Dinner",
+		"type":       "expense",
+		"amount":     "1800.00",
+		"currency":   "INR",
+		"source":     "manual",
+		"mode":       "UPI",
+		"category":   "Food",
+		"merchant":   "Cafe",
+		"date":       "2026-07-14",
+		"time":       "20:00",
+		"account_id": accounts[0].ID,
+	}
+	entry := performJSONRequest[models.Entry](
+		t, router, http.MethodPost, "/v1/entries", token, entryPayload, http.StatusCreated,
+	)
+
+	entryPayload["split"] = map[string]any{
+		"group_name": "Dinner crew",
+		"participants": []map[string]any{
+			{
+				"friend":       map[string]any{"name": "Kabir"},
+				"share_amount": "900.00",
+				"direction":    splitDirectionFriendOwesUser,
+			},
+		},
+	}
+	performJSONRequest[models.Entry](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/entries/%d", entry.ID), token, entryPayload, http.StatusOK,
+	)
+	bills := performJSONRequest[[]models.SplitBill](
+		t, router, http.MethodGet, "/v1/split/bills", token, nil, http.StatusOK,
+	)
+	if len(bills) != 1 || bills[0].EntryID == nil || *bills[0].EntryID != entry.ID {
+		t.Fatalf("expected update to create linked split bill, got %#v", bills)
+	}
+
+	entryPayload["split"] = nil
+	performJSONRequest[models.Entry](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/entries/%d", entry.ID), token, entryPayload, http.StatusOK,
+	)
+	bills = performJSONRequest[[]models.SplitBill](
+		t, router, http.MethodGet, "/v1/split/bills", token, nil, http.StatusOK,
+	)
+	if len(bills) != 0 {
+		t.Fatalf("expected split:null to remove linked split bill, got %#v", bills)
+	}
+
+	entryPayload["split"] = map[string]any{
+		"participants": []map[string]any{
+			{
+				"friend":       map[string]any{"name": "Kabir"},
+				"share_amount": "600.00",
+				"direction":    splitDirectionFriendOwesUser,
+			},
+		},
+	}
+	performJSONRequest[models.Entry](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/entries/%d", entry.ID), token, entryPayload, http.StatusOK,
+	)
+	performJSONRequest[map[string]string](
+		t, router, http.MethodDelete, fmt.Sprintf("/v1/entries/%d", entry.ID), token, nil, http.StatusOK,
+	)
+	bills = performJSONRequest[[]models.SplitBill](
+		t, router, http.MethodGet, "/v1/split/bills", token, nil, http.StatusOK,
+	)
+	if len(bills) != 0 {
+		t.Fatalf("expected deleting entry to remove linked split bill, got %#v", bills)
+	}
+}
