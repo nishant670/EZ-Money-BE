@@ -843,6 +843,38 @@ func (s *Server) updateEntry(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
 		return
 	}
+	if input.Split.Set {
+		if input.Split.Value != nil && !s.ensureEntitlement(c, billing.FeatureSplitLedger) {
+			return
+		}
+		splitFields := map[string]string{}
+		for field, message := range input.Split.Value.validate() {
+			splitFields[field] = message
+		}
+		if input.Split.Value != nil {
+			if !strings.EqualFold(entryType, "expense") {
+				splitFields["split"] = "can be added only to expenses"
+			}
+			totalShares := models.Money(0)
+			for _, participant := range input.Split.Value.Participants {
+				totalShares += participant.ShareAmount
+			}
+			if totalShares > amount {
+				splitFields["split.participants"] = "shares must not exceed transaction amount"
+			}
+		}
+		if len(splitFields) > 0 {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": splitFields})
+			return
+		}
+		if fields, err := validateEntrySplitReferences(userID, input.Split.Value); err != nil {
+			c.JSON(500, gin.H{"error": "split_lookup_failed"})
+			return
+		} else if len(fields) > 0 {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
+			return
+		}
+	}
 	if input.Title != nil {
 		entry.Title = *input.Title
 	}
@@ -898,7 +930,15 @@ func (s *Server) updateEntry(c *gin.Context) {
 		entry.AccountID = input.AccountID.Value
 	}
 
-	if err := database.DB.Save(&entry).Error; err != nil {
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&entry).Error; err != nil {
+			return err
+		}
+		if input.Split.Set {
+			return replaceEntrySplitBill(tx, userID, entry, input.Split.Value)
+		}
+		return nil
+	}); err != nil {
 		c.JSON(500, gin.H{"error": "failed_update_entry"})
 		return
 	}
@@ -939,13 +979,24 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		return
 	}
 
-	result := ownedEntries(database.DB, userID).Where("id = ?", id).Delete(&models.Entry{})
-	if result.Error != nil {
-		c.JSON(500, gin.H{"error": result.Error.Error()})
-		return
-	}
-	if result.RowsAffected == 0 {
-		c.JSON(404, gin.H{"error": "entry not found"})
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := deleteEntrySplitBills(tx, userID, uint(id)); err != nil {
+			return err
+		}
+		result := ownedEntries(tx, userID).Where("id = ?", id).Delete(&models.Entry{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	}); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(404, gin.H{"error": "entry not found"})
+			return
+		}
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	_ = createNotification(userID, "transaction.deleted", "Transaction deleted", entryNotificationBody("Deleted", entry), "")

@@ -1019,6 +1019,31 @@ func createEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *e
 	return tx.Create(&participants).Error
 }
 
+func replaceEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *entrySplitInput) error {
+	if err := deleteEntrySplitBills(tx, userID, entry.ID); err != nil {
+		return err
+	}
+	return createEntrySplitBill(tx, userID, entry, input)
+}
+
+func deleteEntrySplitBills(tx *gorm.DB, userID, entryID uint) error {
+	var billIDs []uint
+	if err := tx.Model(&models.SplitBill{}).
+		Where("user_id = ? AND entry_id = ?", userID, entryID).
+		Pluck("id", &billIDs).Error; err != nil {
+		return err
+	}
+	if len(billIDs) == 0 {
+		return nil
+	}
+	if err := tx.Where("user_id = ? AND bill_id IN ?", userID, billIDs).
+		Delete(&models.SplitParticipant{}).Error; err != nil {
+		return err
+	}
+	return tx.Where("user_id = ? AND id IN ?", userID, billIDs).
+		Delete(&models.SplitBill{}).Error
+}
+
 func createSplitGroupMembers(tx *gorm.DB, userID, groupID uint, friendIDs []uint) error {
 	seen := map[uint]bool{}
 	members := make([]models.SplitGroupMember, 0, len(friendIDs))

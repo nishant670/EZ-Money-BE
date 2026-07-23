@@ -334,7 +334,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["group_name", "participants", "friend_name", "share_amount", "direction"]
+            "enum": ["group_name", "participants", "friend_name", "friend_or_group", "share_amount", "direction"]
           }
         }
       },

@@ -998,6 +998,55 @@ components:
           type: string
         tag:
           type: string
+        split:
+          description: Omit to leave the linked split unchanged, send null to remove it, or send an object to replace it atomically with the entry update.
+          oneOf:
+            - $ref: "#/components/schemas/EntryLinkedSplitInput"
+            - type: "null"
+    EntryLinkedSplitInput:
+      type: object
+      required: [participants]
+      additionalProperties: false
+      properties:
+        group_id:
+          type: [integer, "null"]
+          minimum: 1
+        group_name:
+          type: string
+        notes:
+          type: string
+        participants:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [share_amount]
+            additionalProperties: false
+            properties:
+              friend_id:
+                type: integer
+                minimum: 1
+              friend:
+                type: object
+                required: [name]
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                  email:
+                    type: string
+                  phone:
+                    type: string
+              share_amount:
+                oneOf:
+                  - type: number
+                    exclusiveMinimum: 0
+                    multipleOf: 0.01
+                  - type: string
+                    pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+              direction:
+                type: string
+                enum: [friend_owes_user, user_owes_friend]
     SavedEntry:
       allOf:
         - $ref: "#/components/schemas/FinalEntry"
