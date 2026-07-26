@@ -437,10 +437,10 @@ func buildCreditSummary(subject billing.CreditSubject, includeGrants bool) (cred
 	var dailyUsage models.DailyCreditUsage
 	usedToday := 0
 	dailyQuery := scopeSubject(database.DB.Where("usage_date = ?", now.Format("2006-01-02")), subject)
-	if err := dailyQuery.First(&dailyUsage).Error; err == nil {
+	if result := dailyQuery.Limit(1).Find(&dailyUsage); result.Error != nil {
+		return creditSummaryResponse{}, result.Error
+	} else if result.RowsAffected > 0 {
 		usedToday = dailyUsage.CreditsUsed
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return creditSummaryResponse{}, err
 	}
 
 	dailyLimit := billing.LoggedInFreeDailyLimit
@@ -459,10 +459,10 @@ func buildCreditSummary(subject billing.CreditSubject, includeGrants bool) (cred
 	var trialExpiresAt *time.Time
 	var trialGrant models.CreditGrant
 	trialQuery := scopeSubject(database.DB.Where("source = ?", billing.GrantSourceFreeTrial), subject)
-	if err := trialQuery.Order("expires_at DESC").First(&trialGrant).Error; err == nil {
+	if result := trialQuery.Order("expires_at DESC").Limit(1).Find(&trialGrant); result.Error != nil {
+		return creditSummaryResponse{}, result.Error
+	} else if result.RowsAffected > 0 {
 		trialExpiresAt = trialGrant.ExpiresAt
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return creditSummaryResponse{}, err
 	}
 
 	summary := creditSummaryResponse{
@@ -498,17 +498,18 @@ func buildCreditSummary(subject billing.CreditSubject, includeGrants bool) (cred
 func currentUserSubscription(userID uint) (models.UserSubscription, bool, error) {
 	now := time.Now().UTC()
 	var subscription models.UserSubscription
-	err := database.DB.Preload("Plan").
+	result := database.DB.Preload("Plan").
 		Where("user_id = ? AND status IN ? AND current_period_start <= ? AND current_period_end > ?", userID, []string{"trialing", "active"}, now, now).
 		Order("current_period_end DESC").
-		First(&subscription).Error
-	if err == nil {
-		return subscription, true, nil
+		Limit(1).
+		Find(&subscription)
+	if result.Error != nil {
+		return models.UserSubscription{}, false, result.Error
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	if result.RowsAffected == 0 {
 		return models.UserSubscription{}, false, nil
 	}
-	return models.UserSubscription{}, false, err
+	return subscription, true, nil
 }
 
 func paidMonthsCompleted(userID uint) (int, error) {
