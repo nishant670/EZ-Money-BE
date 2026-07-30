@@ -378,9 +378,18 @@ func (s *Server) authIdentify(c *gin.Context) {
 		return
 	}
 
+	identifierType, identifier, err := normalizeIdentifier(input.Identifier)
+	if err != nil {
+		c.JSON(422, gin.H{"error": err.Error()})
+		return
+	}
+
 	var user models.User
-	// Check both Email and Phone
-	err := database.DB.Where("email = ? OR phone = ?", input.Identifier, input.Identifier).First(&user).Error
+	query := "email = ?"
+	if identifierType == "phone" {
+		query = "phone = ?"
+	}
+	err = database.DB.Where(query, identifier).First(&user).Error
 	if err == gorm.ErrRecordNotFound {
 		c.JSON(200, gin.H{"exists": false})
 		return

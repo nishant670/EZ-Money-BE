@@ -1324,7 +1324,7 @@ func cors(cfg *config.Config) gin.HandlerFunc {
 				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 				c.Writer.Header().Set("Vary", "Origin")
 				c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
-				c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			} else if c.Request.Method == http.MethodOptions {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cors_origin_not_allowed"})
 				return

@@ -14,10 +14,12 @@ Legend:
 
 - Mobile app is the active MVP surface: `EZ-Money/`.
 - Backend API is active and tested: `EZ-Money-BE/`.
-- Web dashboard exists in `finnri-web/`, but product docs defer web feature work until a later phase.
+- Web dashboard is active in `finnri-web/` with live overview, insights,
+  transactions, accounts, notifications, budgets, recurring payments, and EMI
+  API integrations documented in `docs/WEB_DASHBOARD.md`.
 - Backend tests pass with `GOCACHE=/private/tmp/finnri-go-build-cache go test ./...` when local `httptest` networking is allowed.
 - Mobile lint currently fails: 10 errors and 65 warnings.
-- Web lint currently fails: 15 errors and 20 warnings. Treat this as deferred maintenance unless it breaks the mobile MVP or security.
+- Web lint, TypeScript checking, and the production build pass.
 
 ## Docs And Planning
 
@@ -122,7 +124,8 @@ Legend:
 - [x] Add full bill splitting, friend balances, and settlements later; not MVP.
 - [x] Add EMI tools later; not MVP.
 - [x] Add full subscription manager later; not MVP.
-- [ ] Resume active web dashboard feature work later; not MVP.
+- [x] Resume active web dashboard feature work with live API-backed insights,
+  transactions, accounts, notifications, budgets, recurring payments, and EMI.
 - [ ] Add exports, advanced reports, and bulk editing later.
 - [ ] Add merchant history-backed autocomplete later: remember past merchants with category associations and suggest merchants when users create or edit transactions.
 - [ ] Add hardened receipt/document uploads later with private storage, MIME/size validation, and retention controls.
@@ -132,7 +135,8 @@ Legend:
 
 ## Maintenance Notes
 
-- [ ] Keep `finnri-web/` isolated during Phase 1 except for security or low-cost compatibility fixes.
-- [ ] Fix web lint as maintenance, not before mobile MVP blockers unless it blocks deployment.
+- [x] End the Phase 1 web freeze and document the active web surface in
+  `docs/WEB_DASHBOARD.md`.
+- [x] Fix web lint and TypeScript/build compatibility for the resumed dashboard.
 - [ ] Avoid adding new deferred features until P0 and P1 MVP items are done.
 - [ ] After every completed task, update the relevant code, tests, docs, and this checklist together.

@@ -334,7 +334,9 @@ The following are not Phase 1 deliverables:
 - Full Splitwise-style groups with friend-to-friend ledgers beyond the current user-owned split ledger API.
 - EMI planning workflow beyond the stateless calculator API.
 - Full subscription manager.
-- New web dashboard features, advanced reports, exports, and bulk editing.
+- Web dashboard parity was not a Phase 1 deliverable. The later-phase API-backed
+  dashboard foundation is now active; advanced reports, full-history exports,
+  and bulk editing remain deferred. See `WEB_DASHBOARD.md`.
 - Bank/UPI/Account Aggregator integrations.
 - Statement import, OCR ingestion, reconciliation, or automated transaction creation.
 - Open-ended conversational financial advisor.

@@ -13,7 +13,10 @@ Recurring detection, weekly review, budget alerts, improved insights, optional l
 Full bill splitting, friend balances, credit card due reminders, EMI planning beyond the calculator API.
 
 ## Phase 4 - Power User/Web
-Web dashboard, exports, advanced filters, bulk editing, statement imports.
+Web dashboard foundation is active with API-backed insights, transaction
+review, accounts, budgets, recurring payments, notifications, and EMI tools.
+Full-history exports, advanced reporting, bulk editing, and statement imports
+remain later Phase 4 work. See `WEB_DASHBOARD.md`.
 
 ## Phase 5 - Automation
 Bank integrations, Account Aggregator, reconciliation, automated imports.

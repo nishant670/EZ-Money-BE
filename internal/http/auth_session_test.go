@@ -117,6 +117,19 @@ func TestValidOTPCode(t *testing.T) {
 	}
 }
 
+func TestNormalizeIdentifierTrimsAndNormalizesEmail(t *testing.T) {
+	identifierType, identifier, err := normalizeIdentifier("  User.Name@Example.COM  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identifierType != "email" {
+		t.Fatalf("identifier type = %q, want email", identifierType)
+	}
+	if identifier != "user.name@example.com" {
+		t.Fatalf("identifier = %q, want normalized email", identifier)
+	}
+}
+
 func TestValidPINRejectsDefaultRepeatedDigits(t *testing.T) {
 	validPINs := []string{"1234", "9081", "1200"}
 	for _, pin := range validPINs {
