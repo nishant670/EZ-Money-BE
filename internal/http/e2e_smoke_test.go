@@ -140,6 +140,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	auth := router.Group("/v1/auth")
 	auth.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))
 	auth.POST("/guest", server.authGuest)
+	auth.POST("/login", server.authLogin)
 
 	billingPublic := router.Group("/v1/billing")
 	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))

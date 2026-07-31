@@ -78,15 +78,24 @@ func validOTPCode(otp string) bool {
 	return true
 }
 
-func validPIN(pin string) bool {
+func validPINFormat(pin string) bool {
 	if len(pin) != 4 {
+		return false
+	}
+	for _, char := range pin {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validPIN(pin string) bool {
+	if !validPINFormat(pin) {
 		return false
 	}
 	allSame := true
 	for i, char := range pin {
-		if char < '0' || char > '9' {
-			return false
-		}
 		if i > 0 && byte(char) != pin[0] {
 			allSame = false
 		}
@@ -723,8 +732,8 @@ func (s *Server) authLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if !validPIN(input.PIN) {
-		c.JSON(400, gin.H{"error": "weak_pin"})
+	if !validPINFormat(input.PIN) {
+		c.JSON(401, gin.H{"error": "invalid_credentials"})
 		return
 	}
 
