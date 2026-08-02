@@ -172,6 +172,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 			split.GET("/groups", s.listSplitGroups)
 			split.PUT("/groups/:id", s.updateSplitGroup)
 			split.DELETE("/groups/:id", s.archiveSplitGroup)
+			split.POST("/groups/:id/invite-link", s.createSplitGroupInvite)
+			split.GET("/groups/:id/invites", s.listSplitGroupDirectInvites)
+			split.POST("/groups/:id/invites", s.createSplitGroupDirectInvite)
+			split.DELETE("/groups/:id/invites/:invite_id", s.revokeSplitGroupDirectInvite)
+			split.POST("/groups/:id/leave", s.leaveSplitGroup)
 			split.POST("/bills", s.createSplitBill)
 			split.GET("/bills", s.listSplitBills)
 			split.PUT("/bills/:id", s.updateSplitBill)
@@ -180,6 +185,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 			split.GET("/settlements", s.listSplitSettlements)
 			split.GET("/activity", s.listSplitActivity)
 			split.GET("/balances", s.listSplitBalances)
+			split.GET("/invites/:token", s.getSplitGroupInvite)
+			split.POST("/invites/:token/accept", s.acceptSplitGroupInvite)
 		}
 
 		// Financial tools
@@ -1225,7 +1232,10 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.SplitSettlement{}, "split settlements"},
 			{&models.SplitParticipant{}, "split participants"},
 			{&models.SplitBill{}, "split bills"},
+			{&models.SplitGroupUserMember{}, "split group user members"},
 			{&models.SplitGroupMember{}, "split group members"},
+			{&models.SplitGroupDirectInvite{}, "split group direct invites"},
+			{&models.SplitGroupInvite{}, "split group invites"},
 			{&models.SplitGroup{}, "split groups"},
 			{&models.SplitFriend{}, "split friends"},
 			{&models.BudgetAlert{}, "budget alerts"},

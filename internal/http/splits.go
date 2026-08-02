@@ -1,8 +1,11 @@
 package http
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +41,11 @@ type splitParticipantInput struct {
 type splitGroupInput struct {
 	Name      string `json:"name"`
 	FriendIDs []uint `json:"friend_ids"`
+}
+
+type splitGroupDirectInviteInput struct {
+	Email string `json:"email"`
+	Phone string `json:"phone"`
 }
 
 type splitBillInput struct {
@@ -84,6 +92,43 @@ type splitActivityItem struct {
 	CreatedAt        time.Time                 `json:"created_at"`
 }
 
+type splitGroupInviteResponse struct {
+	Token     string            `json:"token"`
+	URL       string            `json:"url"`
+	DeepLink  string            `json:"deep_link"`
+	Group     models.SplitGroup `json:"group"`
+	ExpiresAt *time.Time        `json:"expires_at"`
+}
+
+type splitGroupDirectInviteResponse struct {
+	ID               uint              `json:"id"`
+	TargetEmail      string            `json:"target_email"`
+	TargetPhone      string            `json:"target_phone"`
+	MatchedUser      bool              `json:"matched_user"`
+	NotificationSent bool              `json:"notification_sent"`
+	URL              string            `json:"url"`
+	DeepLink         string            `json:"deep_link"`
+	Message          string            `json:"message"`
+	Status           string            `json:"status"`
+	Group            models.SplitGroup `json:"group"`
+	CreatedAt        time.Time         `json:"created_at"`
+}
+
+type splitGroupInviteDetailsResponse struct {
+	Token       string            `json:"token"`
+	Group       models.SplitGroup `json:"group"`
+	OwnerName   string            `json:"owner_name"`
+	MemberCount int               `json:"member_count"`
+	Status      string            `json:"status"`
+	ExpiresAt   *time.Time        `json:"expires_at"`
+}
+
+type splitGroupInviteAcceptResponse struct {
+	Group  models.SplitGroup       `json:"group"`
+	Friend models.SplitFriend      `json:"friend"`
+	Member models.SplitGroupMember `json:"member"`
+}
+
 func (s *Server) createSplitFriend(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
@@ -103,6 +148,371 @@ func (s *Server) createSplitFriend(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, friend)
+}
+
+func (s *Server) getSplitGroupInvite(c *gin.Context) {
+	invite, group, owner, ok := loadActiveSplitGroupInvite(c)
+	if !ok {
+		return
+	}
+
+	c.JSON(http.StatusOK, splitGroupInviteDetailsResponse{
+		Token:       invite.Token,
+		Group:       group,
+		OwnerName:   displayNameForUser(owner),
+		MemberCount: len(group.Members) + 1,
+		Status:      invite.Status,
+		ExpiresAt:   invite.ExpiresAt,
+	})
+}
+
+func (s *Server) acceptSplitGroupInvite(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	_, group, owner, ok := loadActiveSplitGroupInvite(c)
+	if !ok {
+		return
+	}
+	if owner.ID == userID {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cannot_accept_own_split_group_invite"})
+		return
+	}
+
+	var user models.User
+	if err := database.DB.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user_not_found"})
+		return
+	}
+
+	var friend models.SplitFriend
+	var member models.SplitGroupMember
+	var userMember models.SplitGroupUserMember
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		query := tx.Where("user_id = ? AND archived = ?", owner.ID, false)
+		identityQuery, identityArgs := splitInviteUserIdentityQuery(user)
+		if identityQuery != "" {
+			query = query.Where(identityQuery, identityArgs...)
+		} else {
+			query = query.Where("name = ?", displayNameForUser(user))
+		}
+		err := query.First(&friend).Error
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return err
+		}
+		if err == gorm.ErrRecordNotFound {
+			friend = models.SplitFriend{
+				UserID: owner.ID,
+				Name:   displayNameForUser(user),
+				Email:  stringFromPointer(user.Email),
+				Phone:  stringFromPointer(user.Phone),
+			}
+			if err := tx.Create(&friend).Error; err != nil {
+				return err
+			}
+		}
+
+		err = tx.Where("user_id = ? AND group_id = ? AND friend_id = ?", owner.ID, group.ID, friend.ID).
+			First(&member).Error
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return err
+		}
+		if err == gorm.ErrRecordNotFound {
+			member = models.SplitGroupMember{
+				UserID:   owner.ID,
+				GroupID:  group.ID,
+				FriendID: friend.ID,
+			}
+			if err := tx.Create(&member).Error; err != nil {
+				return err
+			}
+		}
+		err = tx.Where("group_id = ? AND user_id = ?", group.ID, user.ID).
+			First(&userMember).Error
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return err
+		}
+		if err == gorm.ErrRecordNotFound {
+			userMember = models.SplitGroupUserMember{
+				GroupID: group.ID,
+				UserID:  user.ID,
+				Role:    "member",
+				Status:  "active",
+			}
+			if err := tx.Create(&userMember).Error; err != nil {
+				return err
+			}
+		} else if userMember.Status != "active" || userMember.Role != "member" {
+			userMember.Status = "active"
+			userMember.Role = "member"
+			if err := tx.Save(&userMember).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_accept_split_group_invite"})
+		return
+	}
+
+	_ = createNotification(
+		owner.ID,
+		"split.group_invite.accepted",
+		fmt.Sprintf("%s joined %s", displayNameForUser(user), group.Name),
+		fmt.Sprintf("%s accepted your Finnri split group invite.", displayNameForUser(user)),
+		fmt.Sprintf("/split/groups/%d", group.ID),
+	)
+
+	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
+	applySplitGroupViewerPermissions(&group, userID)
+	c.JSON(http.StatusOK, splitGroupInviteAcceptResponse{
+		Group:  group,
+		Friend: friend,
+		Member: member,
+	})
+}
+
+func loadActiveSplitGroupInvite(c *gin.Context) (models.SplitGroupInvite, models.SplitGroup, models.User, bool) {
+	token := strings.TrimSpace(c.Param("token"))
+	if token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_invite_token"})
+		return models.SplitGroupInvite{}, models.SplitGroup{}, models.User{}, false
+	}
+
+	var invite models.SplitGroupInvite
+	if err := database.DB.Where("token = ? AND status = ?", token, "active").First(&invite).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_invite_not_found"})
+		return models.SplitGroupInvite{}, models.SplitGroup{}, models.User{}, false
+	}
+	if invite.ExpiresAt != nil && invite.ExpiresAt.Before(time.Now()) {
+		c.JSON(http.StatusGone, gin.H{"error": "split_group_invite_expired"})
+		return models.SplitGroupInvite{}, models.SplitGroup{}, models.User{}, false
+	}
+
+	var group models.SplitGroup
+	if err := database.DB.Preload("Members.Friend").
+		Where("id = ? AND archived = ?", invite.GroupID, false).
+		First(&group).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return models.SplitGroupInvite{}, models.SplitGroup{}, models.User{}, false
+	}
+
+	var owner models.User
+	if err := database.DB.First(&owner, invite.UserID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_owner_not_found"})
+		return models.SplitGroupInvite{}, models.SplitGroup{}, models.User{}, false
+	}
+
+	return invite, group, owner, true
+}
+
+func (s *Server) createSplitGroupInvite(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	groupID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var group models.SplitGroup
+	if err := ownedSplitGroups(database.DB.Preload("Members.Friend"), userID).
+		Where("id = ?", groupID).
+		First(&group).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return
+	}
+
+	invite, err := getOrCreateActiveSplitGroupInvite(database.DB, userID, group.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_group_invite"})
+		return
+	}
+
+	applySplitGroupViewerPermissions(&group, userID)
+	c.JSON(http.StatusOK, splitGroupInviteResponse{
+		Token:     invite.Token,
+		URL:       splitInviteURL(invite.Token),
+		DeepLink:  splitInviteDeepLink(invite.Token),
+		Group:     group,
+		ExpiresAt: invite.ExpiresAt,
+	})
+}
+
+func (s *Server) createSplitGroupDirectInvite(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	groupID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var input splitGroupDirectInviteInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	targetEmail := strings.TrimSpace(input.Email)
+	targetPhone := strings.TrimSpace(input.Phone)
+	if targetEmail == "" && targetPhone == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group_invite", "fields": gin.H{"email": "email or phone is required"}})
+		return
+	}
+	if targetEmail != "" {
+		identifierType, normalized, err := normalizeIdentifier(targetEmail)
+		if err != nil || identifierType != "email" || len(normalized) > 254 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group_invite", "fields": gin.H{"email": "must be a valid email"}})
+			return
+		}
+		targetEmail = normalized
+	}
+	if targetPhone != "" {
+		identifierType, normalized, err := normalizeIdentifier(targetPhone)
+		if err != nil || identifierType != "phone" || len(normalized) > 32 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group_invite", "fields": gin.H{"phone": "must be a valid phone"}})
+			return
+		}
+		targetPhone = normalized
+	}
+
+	var group models.SplitGroup
+	if err := ownedSplitGroups(database.DB.Preload("Members.Friend"), userID).
+		Where("id = ?", groupID).
+		First(&group).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return
+	}
+
+	var owner models.User
+	if err := database.DB.First(&owner, userID).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user_not_found"})
+		return
+	}
+
+	var invitedUser models.User
+	var invitedUserID *uint
+	matchedUser := false
+	userQuery := database.DB
+	if targetEmail != "" && targetPhone != "" {
+		userQuery = userQuery.Where("LOWER(email) = ? OR phone = ?", targetEmail, targetPhone)
+	} else if targetEmail != "" {
+		userQuery = userQuery.Where("LOWER(email) = ?", targetEmail)
+	} else {
+		userQuery = userQuery.Where("phone = ?", targetPhone)
+	}
+	if err := userQuery.First(&invitedUser).Error; err != nil && err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_lookup_invited_user"})
+		return
+	} else if err == nil {
+		if invitedUser.ID == userID {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cannot_invite_self_to_split_group"})
+			return
+		}
+		matchedUser = true
+		invitedUserID = &invitedUser.ID
+	}
+
+	invite, err := getOrCreateActiveSplitGroupInvite(database.DB, userID, group.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_group_invite"})
+		return
+	}
+
+	directInvite, err := getOrCreateSplitGroupDirectInvite(database.DB, userID, group.ID, invite.ID, targetEmail, targetPhone, invitedUserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_group_direct_invite"})
+		return
+	}
+
+	url := splitInviteURL(invite.Token)
+	deepLink := splitInviteDeepLink(invite.Token)
+	message := fmt.Sprintf("%s invited you to join %s on Finnri to track shared expenses: %s", displayNameForUser(owner), group.Name, url)
+	notificationSent := false
+	if matchedUser {
+		if err := createNotification(
+			invitedUser.ID,
+			"split.group_invite.received",
+			fmt.Sprintf("Join %s on Finnri", group.Name),
+			fmt.Sprintf("%s invited you to a split group.", displayNameForUser(owner)),
+			fmt.Sprintf("/invite/split/%s", invite.Token),
+		); err == nil {
+			notificationSent = true
+		}
+	}
+
+	applySplitGroupViewerPermissions(&group, userID)
+	response := splitGroupDirectInviteToResponse(directInvite, group, owner)
+	response.MatchedUser = matchedUser
+	response.NotificationSent = notificationSent
+	response.URL = url
+	response.DeepLink = deepLink
+	response.Message = message
+	c.JSON(http.StatusCreated, response)
+}
+
+func (s *Server) listSplitGroupDirectInvites(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	groupID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var group models.SplitGroup
+	if err := ownedSplitGroups(database.DB, userID).
+		Where("id = ? AND archived = ?", groupID, false).
+		First(&group).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return
+	}
+	var owner models.User
+	if err := database.DB.First(&owner, userID).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user_not_found"})
+		return
+	}
+
+	var invites []models.SplitGroupDirectInvite
+	if err := database.DB.
+		Preload("Invite").
+		Where("user_id = ? AND group_id = ? AND status = ?", userID, group.ID, "pending").
+		Order("created_at desc").
+		Find(&invites).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_group_invites"})
+		return
+	}
+
+	responses := make([]splitGroupDirectInviteResponse, 0, len(invites))
+	for _, invite := range invites {
+		responses = append(responses, splitGroupDirectInviteToResponse(invite, group, owner))
+	}
+	c.JSON(http.StatusOK, responses)
+}
+
+func (s *Server) revokeSplitGroupDirectInvite(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	groupID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	inviteID, ok := parseUintParam(c, "invite_id")
+	if !ok {
+		return
+	}
+
+	var group models.SplitGroup
+	if err := ownedSplitGroups(database.DB, userID).
+		Where("id = ? AND archived = ?", groupID, false).
+		First(&group).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return
+	}
+
+	result := database.DB.Model(&models.SplitGroupDirectInvite{}).
+		Where("id = ? AND user_id = ? AND group_id = ? AND status = ?", inviteID, userID, group.ID, "pending").
+		Update("status", "revoked")
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_revoke_split_group_invite"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_invite_not_found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "split group invite revoked"})
 }
 
 func (s *Server) listSplitFriends(c *gin.Context) {
@@ -204,13 +614,25 @@ func (s *Server) createSplitGroup(c *gin.Context) {
 		return
 	}
 	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
+	applySplitGroupViewerPermissions(&group, userID)
 	c.JSON(http.StatusCreated, group)
 }
 
 func (s *Server) listSplitGroups(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
-	query := database.DB.Preload("Members.Friend").Where("user_id = ?", userID)
+	sharedGroupIDs, err := activeSharedSplitGroupIDs(database.DB, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_groups"})
+		return
+	}
+
+	query := database.DB.Preload("Members.Friend")
+	if len(sharedGroupIDs) > 0 {
+		query = query.Where("user_id = ? OR id IN ?", userID, sharedGroupIDs)
+	} else {
+		query = query.Where("user_id = ?", userID)
+	}
 	if !strings.EqualFold(c.Query("status"), "all") {
 		query = query.Where("archived = ?", false)
 	}
@@ -220,6 +642,7 @@ func (s *Server) listSplitGroups(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_groups"})
 		return
 	}
+	applySplitGroupListViewerPermissions(groups, userID)
 	c.JSON(http.StatusOK, groups)
 }
 
@@ -269,6 +692,7 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 		return
 	}
 	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
+	applySplitGroupViewerPermissions(&group, userID)
 	c.JSON(http.StatusOK, group)
 }
 
@@ -293,6 +717,37 @@ func (s *Server) archiveSplitGroup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "split group archived"})
 }
 
+func (s *Server) leaveSplitGroup(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var group models.SplitGroup
+	if err := database.DB.Where("id = ? AND archived = ?", id, false).First(&group).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return
+	}
+	if group.UserID == userID {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "split_group_owner_cannot_leave"})
+		return
+	}
+
+	result := database.DB.Model(&models.SplitGroupUserMember{}).
+		Where("group_id = ? AND user_id = ? AND status = ?", id, userID, "active").
+		Update("status", "removed")
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_leave_split_group"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_membership_not_found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "split group left"})
+}
+
 func (s *Server) createSplitBill(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
@@ -314,7 +769,7 @@ func (s *Server) createSplitBill(c *gin.Context) {
 			return
 		}
 	}
-	if fields, err := validateSplitParticipantFriends(userID, input.Participants); err != nil {
+	if fields, err := validateSplitBillParticipantFriends(userID, input.GroupID, input.Participants); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
 		return
 	} else if len(fields) > 0 {
@@ -322,11 +777,11 @@ func (s *Server) createSplitBill(c *gin.Context) {
 		return
 	}
 	if input.GroupID != nil {
-		if ok, err := userOwnsActiveSplitGroup(userID, *input.GroupID); err != nil {
+		if ok, err := userCanAccessActiveSplitGroup(userID, *input.GroupID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "split_group_lookup_failed"})
 			return
 		} else if !ok {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": gin.H{"group_id": "must belong to the current user"}})
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": gin.H{"group_id": "must be a group you can access"}})
 			return
 		}
 	}
@@ -350,20 +805,34 @@ func (s *Server) createSplitBill(c *gin.Context) {
 		return
 	}
 
+	applySplitBillViewerPermissions(&bill, userID)
 	c.JSON(http.StatusCreated, bill)
 }
 
 func (s *Server) listSplitBills(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
+	accessibleGroupIDs, err := accessibleActiveSplitGroupIDs(database.DB, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_bills"})
+		return
+	}
+
+	query := database.DB.Preload("Group").Preload("Participants.Friend")
+	if len(accessibleGroupIDs) > 0 {
+		query = query.Where("(user_id = ? AND group_id IS NULL) OR group_id IN ?", userID, accessibleGroupIDs)
+	} else {
+		query = query.Where("user_id = ? AND group_id IS NULL", userID)
+	}
+
 	var bills []models.SplitBill
-	if err := database.DB.Preload("Group").Preload("Participants.Friend").
-		Where("user_id = ?", userID).
+	if err := query.
 		Order("date desc, created_at desc").
 		Find(&bills).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_bills"})
 		return
 	}
+	applySplitBillListViewerPermissions(bills, userID)
 	c.JSON(http.StatusOK, bills)
 }
 
@@ -392,7 +861,7 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 			return
 		}
 	}
-	if fields, err := validateSplitParticipantFriends(userID, input.Participants); err != nil {
+	if fields, err := validateSplitBillParticipantFriends(userID, input.GroupID, input.Participants); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
 		return
 	} else if len(fields) > 0 {
@@ -400,11 +869,11 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 		return
 	}
 	if input.GroupID != nil {
-		if ok, err := userOwnsActiveSplitGroup(userID, *input.GroupID); err != nil {
+		if ok, err := userCanAccessActiveSplitGroup(userID, *input.GroupID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "split_group_lookup_failed"})
 			return
 		} else if !ok {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": gin.H{"group_id": "must belong to the current user"}})
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": gin.H{"group_id": "must be a group you can access"}})
 			return
 		}
 	}
@@ -444,6 +913,7 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 		return
 	}
 
+	applySplitBillViewerPermissions(&bill, userID)
 	c.JSON(http.StatusOK, bill)
 }
 
@@ -902,6 +1372,34 @@ func validateSplitParticipantFriends(userID uint, participants []splitParticipan
 	return fields, nil
 }
 
+func validateSplitBillParticipantFriends(userID uint, groupID *uint, participants []splitParticipantInput) (gin.H, error) {
+	if groupID == nil {
+		return validateSplitParticipantFriends(userID, participants)
+	}
+
+	var groupFriendIDs []uint
+	if err := database.DB.Model(&models.SplitGroupMember{}).
+		Where("group_id = ?", *groupID).
+		Pluck("friend_id", &groupFriendIDs).Error; err != nil {
+		return nil, err
+	}
+	allowedFriendIDs := map[uint]bool{}
+	for _, friendID := range groupFriendIDs {
+		allowedFriendIDs[friendID] = true
+	}
+
+	fields := gin.H{}
+	for index, participant := range participants {
+		if participant.FriendID == 0 {
+			continue
+		}
+		if !allowedFriendIDs[participant.FriendID] {
+			fields[fmt.Sprintf("participants[%d].friend_id", index)] = "must belong to this group"
+		}
+	}
+	return fields, nil
+}
+
 func validateSplitGroupFriends(userID uint, friendIDs []uint) (gin.H, error) {
 	fields := gin.H{}
 	for index, friendID := range friendIDs {
@@ -917,6 +1415,44 @@ func validateSplitGroupFriends(userID uint, friendIDs []uint) (gin.H, error) {
 		}
 	}
 	return fields, nil
+}
+
+func applySplitGroupViewerPermissions(group *models.SplitGroup, viewerUserID uint) {
+	if group == nil {
+		return
+	}
+	group.ViewerCanAddExpense = true
+	if group.UserID == viewerUserID {
+		group.ViewerRole = "owner"
+		group.ViewerCanManage = true
+		return
+	}
+	group.ViewerRole = "member"
+	group.ViewerCanManage = false
+}
+
+func applySplitGroupListViewerPermissions(groups []models.SplitGroup, viewerUserID uint) {
+	for index := range groups {
+		applySplitGroupViewerPermissions(&groups[index], viewerUserID)
+	}
+}
+
+func applySplitBillViewerPermissions(bill *models.SplitBill, viewerUserID uint) {
+	if bill == nil {
+		return
+	}
+	canModify := bill.UserID == viewerUserID
+	bill.ViewerCanEdit = canModify
+	bill.ViewerCanDelete = canModify
+	if bill.Group != nil {
+		applySplitGroupViewerPermissions(bill.Group, viewerUserID)
+	}
+}
+
+func applySplitBillListViewerPermissions(bills []models.SplitBill, viewerUserID uint) {
+	for index := range bills {
+		applySplitBillViewerPermissions(&bills[index], viewerUserID)
+	}
 }
 
 func validateEntrySplitReferences(userID uint, input *entrySplitInput) (gin.H, error) {
@@ -1102,6 +1638,160 @@ func normalizeSettlementDirection(direction string) string {
 	}
 }
 
+func generateSplitInviteToken() (string, error) {
+	bytes := make([]byte, 24)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+func getOrCreateActiveSplitGroupInvite(db *gorm.DB, userID, groupID uint) (models.SplitGroupInvite, error) {
+	var invite models.SplitGroupInvite
+	err := db.
+		Where("user_id = ? AND group_id = ? AND status = ?", userID, groupID, "active").
+		Order("created_at desc").
+		First(&invite).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return models.SplitGroupInvite{}, err
+	}
+	if err == nil {
+		return invite, nil
+	}
+
+	token, tokenErr := generateSplitInviteToken()
+	if tokenErr != nil {
+		return models.SplitGroupInvite{}, tokenErr
+	}
+	invite = models.SplitGroupInvite{
+		UserID:  userID,
+		GroupID: groupID,
+		Token:   token,
+		Status:  "active",
+	}
+	if err := db.Create(&invite).Error; err != nil {
+		return models.SplitGroupInvite{}, err
+	}
+	return invite, nil
+}
+
+func getOrCreateSplitGroupDirectInvite(db *gorm.DB, userID, groupID, inviteID uint, targetEmail, targetPhone string, invitedUserID *uint) (models.SplitGroupDirectInvite, error) {
+	query := db.Where("user_id = ? AND group_id = ? AND status = ?", userID, groupID, "pending")
+	if targetEmail != "" {
+		query = query.Where("LOWER(target_email) = ?", strings.ToLower(targetEmail))
+	} else {
+		query = query.Where("target_phone = ?", targetPhone)
+	}
+
+	var directInvite models.SplitGroupDirectInvite
+	err := query.First(&directInvite).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return models.SplitGroupDirectInvite{}, err
+	}
+	if err == nil {
+		changed := false
+		if directInvite.InviteID != inviteID {
+			directInvite.InviteID = inviteID
+			changed = true
+		}
+		if invitedUserID != nil && (directInvite.InvitedUserID == nil || *directInvite.InvitedUserID != *invitedUserID) {
+			directInvite.InvitedUserID = invitedUserID
+			changed = true
+		}
+		if changed {
+			return directInvite, db.Save(&directInvite).Error
+		}
+		return directInvite, nil
+	}
+
+	directInvite = models.SplitGroupDirectInvite{
+		UserID:        userID,
+		GroupID:       groupID,
+		InviteID:      inviteID,
+		TargetEmail:   targetEmail,
+		TargetPhone:   targetPhone,
+		InvitedUserID: invitedUserID,
+		Status:        "pending",
+	}
+	if err := db.Create(&directInvite).Error; err != nil {
+		return models.SplitGroupDirectInvite{}, err
+	}
+	return directInvite, nil
+}
+
+func splitGroupDirectInviteToResponse(invite models.SplitGroupDirectInvite, group models.SplitGroup, owner models.User) splitGroupDirectInviteResponse {
+	token := invite.Invite.Token
+	url := ""
+	deepLink := ""
+	message := ""
+	if token != "" {
+		url = splitInviteURL(token)
+		deepLink = splitInviteDeepLink(token)
+		message = fmt.Sprintf("%s invited you to join %s on Finnri to track shared expenses: %s", displayNameForUser(owner), group.Name, url)
+	}
+	return splitGroupDirectInviteResponse{
+		ID:          invite.ID,
+		TargetEmail: invite.TargetEmail,
+		TargetPhone: invite.TargetPhone,
+		MatchedUser: invite.InvitedUserID != nil,
+		URL:         url,
+		DeepLink:    deepLink,
+		Message:     message,
+		Status:      invite.Status,
+		Group:       group,
+		CreatedAt:   invite.CreatedAt,
+	}
+}
+
+func splitInviteURL(token string) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("FINNRI_PUBLIC_WEB_URL")), "/")
+	if baseURL == "" {
+		baseURL = "https://finnri.app"
+	}
+	return fmt.Sprintf("%s/invite/split/%s", baseURL, token)
+}
+
+func splitInviteDeepLink(token string) string {
+	return fmt.Sprintf("ezmoney://invite/split/%s", token)
+}
+
+func displayNameForUser(user models.User) string {
+	if strings.TrimSpace(user.Username) != "" {
+		return strings.TrimSpace(user.Username)
+	}
+	if user.Email != nil && strings.TrimSpace(*user.Email) != "" {
+		return strings.TrimSpace(*user.Email)
+	}
+	if user.Phone != nil && strings.TrimSpace(*user.Phone) != "" {
+		return strings.TrimSpace(*user.Phone)
+	}
+	return "Finnri user"
+}
+
+func stringFromPointer(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func splitInviteUserIdentityQuery(user models.User) (string, []any) {
+	parts := []string{}
+	args := []any{}
+	if user.Email != nil && strings.TrimSpace(*user.Email) != "" {
+		parts = append(parts, "LOWER(email) = ?")
+		args = append(args, strings.ToLower(strings.TrimSpace(*user.Email)))
+	}
+	if user.Phone != nil && strings.TrimSpace(*user.Phone) != "" {
+		parts = append(parts, "phone = ?")
+		args = append(args, strings.TrimSpace(*user.Phone))
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
+}
+
 func userOwnsActiveSplitFriend(userID, friendID uint) (bool, error) {
 	var count int64
 	err := ownedSplitFriends(database.DB.Model(&models.SplitFriend{}), userID).
@@ -1116,6 +1806,44 @@ func userOwnsActiveSplitGroup(userID, groupID uint) (bool, error) {
 		Where("id = ? AND archived = ?", groupID, false).
 		Count(&count).Error
 	return count == 1, err
+}
+
+func userCanAccessActiveSplitGroup(userID, groupID uint) (bool, error) {
+	var count int64
+	err := database.DB.Model(&models.SplitGroup{}).
+		Where("id = ? AND archived = ?", groupID, false).
+		Where(
+			"user_id = ? OR id IN (?)",
+			userID,
+			database.DB.Model(&models.SplitGroupUserMember{}).
+				Select("group_id").
+				Where("user_id = ? AND status = ?", userID, "active"),
+		).
+		Count(&count).Error
+	return count == 1, err
+}
+
+func activeSharedSplitGroupIDs(db *gorm.DB, userID uint) ([]uint, error) {
+	var ids []uint
+	err := db.Model(&models.SplitGroupUserMember{}).
+		Where("user_id = ? AND status = ?", userID, "active").
+		Pluck("group_id", &ids).Error
+	return ids, err
+}
+
+func accessibleActiveSplitGroupIDs(db *gorm.DB, userID uint) ([]uint, error) {
+	var ids []uint
+	err := db.Model(&models.SplitGroup{}).
+		Where("archived = ?", false).
+		Where(
+			"user_id = ? OR id IN (?)",
+			userID,
+			db.Model(&models.SplitGroupUserMember{}).
+				Select("group_id").
+				Where("user_id = ? AND status = ?", userID, "active"),
+		).
+		Pluck("id", &ids).Error
+	return ids, err
 }
 
 func userOwnsEntry(userID, entryID uint) (bool, error) {
