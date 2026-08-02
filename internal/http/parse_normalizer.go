@@ -6,6 +6,7 @@ import (
 )
 
 const defaultParseMode = "Cash"
+const defaultParseCategory = "Misc"
 
 var confirmableParseFields = []string{"title", "amount", "type", "category", "date"}
 
@@ -68,10 +69,11 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 		}
 	}
 
+	hasTransactionSignal := parsedDraftHasTransactionSignal(entry)
 	normalizeParseMode(entry, needsConfirmation, missingSet)
 	normalizeCardNetwork(entry)
 	normalizeType(entry)
-	normalizeCategory(entry, needsConfirmation, missingSet)
+	normalizeCategory(entry, needsConfirmation, missingSet, hasTransactionSignal)
 	normalizePurposeAndTags(entry)
 	normalizeInvestmentType(entry, needsConfirmation, missingSet)
 
@@ -333,25 +335,36 @@ func normalizeType(entry map[string]any) {
 	}
 }
 
-func normalizeCategory(entry map[string]any, needsConfirmation map[string]any, missingSet map[string]bool) {
+func normalizeCategory(
+	entry map[string]any,
+	needsConfirmation map[string]any,
+	missingSet map[string]bool,
+	hasTransactionSignal bool,
+) {
 	raw, ok := entry["category"].(string)
 	if !ok || strings.TrimSpace(raw) == "" {
+		if !hasTransactionSignal {
+			return
+		}
+		entry["category"] = defaultParseCategory
+		missingSet["category"] = true
+		needsConfirmation["category"] = true
 		return
 	}
 	if normalized, ok := canonicalCategory(raw); ok {
 		entry["category"] = normalized
 		return
 	}
-	entry["category"] = nil
+	entry["category"] = defaultParseCategory
 	missingSet["category"] = true
 	needsConfirmation["category"] = true
 }
 
 func canonicalCategory(value string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "food":
+	case "food", "food & drinks", "food and drinks", "dining", "restaurant", "restaurants":
 		return "Food", true
-	case "travel":
+	case "travel", "transport", "transportation", "cab", "taxi", "uber", "ola", "metro", "train", "flight", "hotel", "hotels", "lodging", "accommodation", "airbnb", "air bnb", "stay":
 		return "Travel", true
 	case "shopping":
 		return "Shopping", true

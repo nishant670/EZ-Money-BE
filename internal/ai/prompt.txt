@@ -51,7 +51,7 @@ STRICT SCHEMA (no other keys):
   "clarifications": [string]
 }
 
-POLICY: Confirm-first. When uncertain about any field, DO NOT guess. Leave it null when allowed, set needs_confirmation[field]=true, and add a concise question to clarifications[].
+POLICY: Confirm-first. When uncertain about any field, DO NOT guess. For category only, use "Misc" as the fallback, set needs_confirmation.category=true, and add a concise question to clarifications[] instead of leaving category null. For other nullable fields, leave them null when allowed, set needs_confirmation[field]=true, and add a concise question to clarifications[].
 
 GUARDRAILS:
 - Always include stage, every schema field, missing_fields, confidence, needs_confirmation, and clarifications.
@@ -63,6 +63,7 @@ GUARDRAILS:
 - source_text must echo the exact provided transcript.
 - Use INR by default when currency missing.
 - Do not infer expense/income, merchant, account, category, amount, or date when the text does not support it.
+- Map lodging, hotels, Airbnb, trips, taxis, cabs, metro, trains, flights, and transport to Travel when the text supports it.
 - Payment mode is optional. If the user does not mention a payment mode, set mode to "Cash" as the default and do not ask a clarification for mode.
 - For bank-issued cards, set mode to "Credit Card", put the bank/issuer/card hint such as "HDFC credit card" in account_hint, and only set card_network when the network is explicitly Visa, Mastercard, Amex, or Rupay.
 - purpose_type should default to normal_spend unless the transcript implies investment, lending, refunds, donations, or other explicit cases.

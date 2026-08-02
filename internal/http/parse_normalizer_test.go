@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestNormalizeParsedDraftDoesNotGuessMissingFields(t *testing.T) {
+func TestNormalizeParsedDraftFlagsMissingCategoryWithFallback(t *testing.T) {
 	entry := map[string]any{
 		"type":     "expense",
 		"title":    "Lunch",
@@ -17,8 +17,11 @@ func TestNormalizeParsedDraftDoesNotGuessMissingFields(t *testing.T) {
 
 	normalizeParsedDraft(entry, "paid 250 for lunch")
 
-	if entry["date"] != nil || entry["category"] != nil {
-		t.Fatalf("normalizer guessed missing values: %#v", entry)
+	if entry["date"] != nil {
+		t.Fatalf("normalizer guessed missing date: %#v", entry)
+	}
+	if entry["category"] != defaultParseCategory {
+		t.Fatalf("category = %#v, want fallback %s", entry["category"], defaultParseCategory)
 	}
 	wantMissing := []string{"category", "date"}
 	if !reflect.DeepEqual(entry["missing_fields"], wantMissing) {
@@ -26,6 +29,22 @@ func TestNormalizeParsedDraftDoesNotGuessMissingFields(t *testing.T) {
 	}
 	if entry["source_text"] != "paid 250 for lunch" {
 		t.Fatal("source_text must be set from the original transcript")
+	}
+}
+
+func TestNormalizeParsedDraftMapsLodgingToTravel(t *testing.T) {
+	entry := map[string]any{
+		"type": "expense", "title": "Airbnb", "amount": float64(12000),
+		"mode": "Credit Card", "category": "Airbnb", "date": "2026-07-20",
+	}
+
+	normalizeParsedDraft(entry, "paid 12000 for Airbnb trip")
+
+	if entry["category"] != "Travel" {
+		t.Fatalf("category = %#v, want Travel", entry["category"])
+	}
+	if missing := entry["missing_fields"].([]string); len(missing) != 0 {
+		t.Fatalf("unexpected missing fields: %v", missing)
 	}
 }
 
