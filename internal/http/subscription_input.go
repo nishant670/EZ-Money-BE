@@ -8,12 +8,13 @@ import (
 )
 
 const (
-	subscriptionIntervalDaily     = "daily"
-	subscriptionIntervalWeekly    = "weekly"
-	subscriptionIntervalBiweekly  = "biweekly"
-	subscriptionIntervalMonthly   = "monthly"
-	subscriptionIntervalQuarterly = "quarterly"
-	subscriptionIntervalYearly    = "yearly"
+	subscriptionIntervalDaily         = "daily"
+	subscriptionIntervalBusinessDaily = "business_daily"
+	subscriptionIntervalWeekly        = "weekly"
+	subscriptionIntervalBiweekly      = "biweekly"
+	subscriptionIntervalMonthly       = "monthly"
+	subscriptionIntervalQuarterly     = "quarterly"
+	subscriptionIntervalYearly        = "yearly"
 
 	subscriptionStatusActive    = "active"
 	subscriptionStatusPaused    = "paused"
@@ -58,7 +59,7 @@ func (input subscriptionInput) validate() map[string]string {
 		fields["currency"] = "must be INR"
 	}
 	if normalizeSubscriptionInterval(input.BillingInterval) == "" {
-		fields["billing_interval"] = "must be daily, weekly, biweekly, monthly, quarterly, or yearly"
+		fields["billing_interval"] = "must be daily, business_daily, weekly, biweekly, monthly, quarterly, or yearly"
 	}
 	if _, err := parseStrictAPIDate(input.NextDueDate); err != nil {
 		fields["next_due_date"] = "must use YYYY-MM-DD"
@@ -114,6 +115,8 @@ func normalizeSubscriptionInterval(value string) string {
 		return subscriptionIntervalMonthly
 	case subscriptionIntervalDaily:
 		return subscriptionIntervalDaily
+	case subscriptionIntervalBusinessDaily:
+		return subscriptionIntervalBusinessDaily
 	case subscriptionIntervalWeekly:
 		return subscriptionIntervalWeekly
 	case subscriptionIntervalBiweekly:

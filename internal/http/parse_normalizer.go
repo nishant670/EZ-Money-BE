@@ -73,6 +73,7 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 	normalizeType(entry)
 	normalizeCategory(entry, needsConfirmation, missingSet)
 	normalizePurposeAndTags(entry)
+	normalizeInvestmentType(entry, needsConfirmation, missingSet)
 
 	for _, field := range confirmableParseFields {
 		if parseFieldMissing(field, entry[field]) {
@@ -103,6 +104,33 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 	normalizeSubscriptionDraft(entry)
 	normalizeSplitDraft(entry)
 	pruneKeys(entry, allowedParseRootFields)
+}
+
+func normalizeInvestmentType(entry map[string]any, needsConfirmation map[string]any, missingSet map[string]bool) {
+	purpose, _ := entry["purpose_type"].(string)
+	if purpose != "investment" && !hasNormalizedTag(entry, "Investment") {
+		return
+	}
+	entry["type"] = "expense"
+	entry["purpose_type"] = "investment"
+	entry["tag"] = "Investment"
+	appendTag(entry, "Investment")
+	delete(missingSet, "type")
+	delete(needsConfirmation, "type")
+}
+
+func hasNormalizedTag(entry map[string]any, wanted string) bool {
+	if tag, ok := entry["tag"].(string); ok && strings.EqualFold(strings.TrimSpace(tag), wanted) {
+		return true
+	}
+	if tags, ok := entry["tags"].([]any); ok {
+		for _, tag := range tags {
+			if value, ok := tag.(string); ok && strings.EqualFold(strings.TrimSpace(value), wanted) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func parsedDraftHasTransactionSignal(entry map[string]any) bool {

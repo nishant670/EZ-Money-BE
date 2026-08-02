@@ -321,6 +321,8 @@ func addSubscriptionInterval(date time.Time, interval string) time.Time {
 	switch interval {
 	case subscriptionIntervalDaily:
 		return date.AddDate(0, 0, 1)
+	case subscriptionIntervalBusinessDaily:
+		return nextNSEMutualFundDay(date)
 	case subscriptionIntervalWeekly:
 		return date.AddDate(0, 0, 7)
 	case subscriptionIntervalBiweekly:
@@ -332,6 +334,35 @@ func addSubscriptionInterval(date time.Time, interval string) time.Time {
 	default:
 		return date.AddDate(0, 1, 0)
 	}
+}
+
+// The NSE MF Invest calendar is the closest schedule to platform-based mutual-fund
+// orders. Weekends are always excluded; exchange holidays are maintained by year.
+func nextNSEMutualFundDay(date time.Time) time.Time {
+	next := date.AddDate(0, 0, 1)
+	for next.Weekday() == time.Saturday || next.Weekday() == time.Sunday || nseMutualFundHolidays[next.Format("2006-01-02")] {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
+}
+
+var nseMutualFundHolidays = map[string]bool{
+	// NSE/NMFTM/71897, including the 2026 NSE MF Invest trading holidays.
+	"2026-01-26": true,
+	"2026-03-03": true,
+	"2026-03-26": true,
+	"2026-03-31": true,
+	"2026-04-03": true,
+	"2026-04-14": true,
+	"2026-05-01": true,
+	"2026-05-28": true,
+	"2026-06-26": true,
+	"2026-09-14": true,
+	"2026-10-02": true,
+	"2026-10-20": true,
+	"2026-11-10": true,
+	"2026-11-24": true,
+	"2026-12-25": true,
 }
 
 func buildSubscriptionResponses(subscriptions []models.Subscription, now time.Time) []subscriptionResponse {

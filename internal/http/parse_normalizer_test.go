@@ -29,6 +29,26 @@ func TestNormalizeParsedDraftDoesNotGuessMissingFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeParsedDraftTreatsInvestmentAsExpense(t *testing.T) {
+	entry := map[string]any{
+		"type": "income", "title": "Daily Investment", "amount": float64(100),
+		"mode": "Cash", "category": "Misc", "date": "2026-08-01",
+		"purpose_type": "investment", "tag": "Subscription", "tags": []any{"Subscription"},
+	}
+
+	normalizeParsedDraft(entry, "I invest 100 rupees daily in a small cap fund")
+
+	if entry["type"] != "expense" {
+		t.Fatalf("investment type = %#v, want expense", entry["type"])
+	}
+	if entry["tag"] != "Investment" || entry["purpose_type"] != "investment" {
+		t.Fatalf("investment metadata was not preserved: %#v", entry)
+	}
+	if missing := entry["missing_fields"].([]string); len(missing) != 0 {
+		t.Fatalf("unexpected missing fields: %v", missing)
+	}
+}
+
 func TestNormalizeParsedDraftPreservesValidValues(t *testing.T) {
 	entry := map[string]any{
 		"title": "Metro", "amount": float64(45), "type": "expense",
