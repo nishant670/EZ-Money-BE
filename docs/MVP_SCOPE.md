@@ -20,7 +20,8 @@ Prove that users will form a daily finance-tracking habit when capture is effort
 - Full Splitwise-style groups with friend-to-friend ledgers
 - Full EMI planning workflow beyond the calculator API
 - Full subscription manager
-- Web dashboard
+- Web dashboard (deferred from the mobile MVP; active later-phase work is
+  documented in `WEB_DASHBOARD.md`)
 - Open-ended AI advisor
 - Bank integrations and statement imports
 

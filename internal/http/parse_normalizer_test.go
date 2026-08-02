@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestNormalizeParsedDraftDoesNotGuessMissingFields(t *testing.T) {
+func TestNormalizeParsedDraftFlagsMissingCategoryWithFallback(t *testing.T) {
 	entry := map[string]any{
 		"type":     "expense",
 		"title":    "Lunch",
@@ -17,8 +17,11 @@ func TestNormalizeParsedDraftDoesNotGuessMissingFields(t *testing.T) {
 
 	normalizeParsedDraft(entry, "paid 250 for lunch")
 
-	if entry["date"] != nil || entry["category"] != nil {
-		t.Fatalf("normalizer guessed missing values: %#v", entry)
+	if entry["date"] != nil {
+		t.Fatalf("normalizer guessed missing date: %#v", entry)
+	}
+	if entry["category"] != defaultParseCategory {
+		t.Fatalf("category = %#v, want fallback %s", entry["category"], defaultParseCategory)
 	}
 	wantMissing := []string{"category", "date"}
 	if !reflect.DeepEqual(entry["missing_fields"], wantMissing) {
@@ -26,6 +29,42 @@ func TestNormalizeParsedDraftDoesNotGuessMissingFields(t *testing.T) {
 	}
 	if entry["source_text"] != "paid 250 for lunch" {
 		t.Fatal("source_text must be set from the original transcript")
+	}
+}
+
+func TestNormalizeParsedDraftMapsLodgingToTravel(t *testing.T) {
+	entry := map[string]any{
+		"type": "expense", "title": "Airbnb", "amount": float64(12000),
+		"mode": "Credit Card", "category": "Airbnb", "date": "2026-07-20",
+	}
+
+	normalizeParsedDraft(entry, "paid 12000 for Airbnb trip")
+
+	if entry["category"] != "Travel" {
+		t.Fatalf("category = %#v, want Travel", entry["category"])
+	}
+	if missing := entry["missing_fields"].([]string); len(missing) != 0 {
+		t.Fatalf("unexpected missing fields: %v", missing)
+	}
+}
+
+func TestNormalizeParsedDraftTreatsInvestmentAsExpense(t *testing.T) {
+	entry := map[string]any{
+		"type": "income", "title": "Daily Investment", "amount": float64(100),
+		"mode": "Cash", "category": "Misc", "date": "2026-08-01",
+		"purpose_type": "investment", "tag": "Subscription", "tags": []any{"Subscription"},
+	}
+
+	normalizeParsedDraft(entry, "I invest 100 rupees daily in a small cap fund")
+
+	if entry["type"] != "expense" {
+		t.Fatalf("investment type = %#v, want expense", entry["type"])
+	}
+	if entry["tag"] != "Investment" || entry["purpose_type"] != "investment" {
+		t.Fatalf("investment metadata was not preserved: %#v", entry)
+	}
+	if missing := entry["missing_fields"].([]string); len(missing) != 0 {
+		t.Fatalf("unexpected missing fields: %v", missing)
 	}
 }
 

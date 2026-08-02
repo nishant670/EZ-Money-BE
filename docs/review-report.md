@@ -75,16 +75,19 @@ Incomplete or unsafe:
 
 ### Web: `finnri-web`
 
-Present:
+Historical Phase 1 baseline:
 
-- A substantial Next.js dashboard prototype with login, transactions, accounts, insights, and API wrappers.
+- A substantial Next.js dashboard prototype existed with login, transactions,
+  accounts, insights, and API wrappers.
 
-MVP status:
+Current later-phase status:
 
-- The web dashboard is explicitly deferred by the updated PRD.
-- Its existence does not justify Phase 1 expansion or parity work.
-- Web lint currently fails with 15 errors and 20 warnings.
-- Keep it isolated and patch only security or cheap contract breakages until the mobile habit loop is proven.
+- The web dashboard is active outside the original mobile MVP boundary.
+- Overview, insights, transactions, accounts, notifications, budgets,
+  recurring payments, and EMI use live backend APIs.
+- Web lint, TypeScript checking, and the production build pass.
+- Remaining web scope and deliberate deferrals are tracked in
+  `WEB_DASHBOARD.md`.
 
 ## 3. What aligns with the updated PRD
 
@@ -139,7 +142,8 @@ select them again as open backlog work.
 
 ### Explicitly deferred scope found in the repository
 
-- Next.js web dashboard: retain but stop feature investment during Phase 1.
+- Next.js web dashboard was deferred during Phase 1; its later-phase foundation
+  is now active and documented in `WEB_DASHBOARD.md`.
 - EMI summary: remove from the MVP dashboard contract or hide behind future scope.
 - Advanced/placeholder analytics and financial-health claims: replace with correct basic metrics.
 - Receipt/document ingestion: defer unless it can be secured without delaying capture.

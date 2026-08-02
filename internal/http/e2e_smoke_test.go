@@ -140,6 +140,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	auth := router.Group("/v1/auth")
 	auth.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))
 	auth.POST("/guest", server.authGuest)
+	auth.POST("/login", server.authLogin)
 
 	billingPublic := router.Group("/v1/billing")
 	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
@@ -190,6 +191,11 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	split.GET("/groups", server.listSplitGroups)
 	split.PUT("/groups/:id", server.updateSplitGroup)
 	split.DELETE("/groups/:id", server.archiveSplitGroup)
+	split.POST("/groups/:id/invite-link", server.createSplitGroupInvite)
+	split.GET("/groups/:id/invites", server.listSplitGroupDirectInvites)
+	split.POST("/groups/:id/invites", server.createSplitGroupDirectInvite)
+	split.DELETE("/groups/:id/invites/:invite_id", server.revokeSplitGroupDirectInvite)
+	split.POST("/groups/:id/leave", server.leaveSplitGroup)
 	split.POST("/bills", server.createSplitBill)
 	split.GET("/bills", server.listSplitBills)
 	split.PUT("/bills/:id", server.updateSplitBill)
@@ -198,6 +204,8 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	split.GET("/settlements", server.listSplitSettlements)
 	split.GET("/activity", server.listSplitActivity)
 	split.GET("/balances", server.listSplitBalances)
+	split.GET("/invites/:token", server.getSplitGroupInvite)
+	split.POST("/invites/:token/accept", server.acceptSplitGroupInvite)
 	authorized.POST("/tools/emi/calculate", server.calculateEMI)
 	return router
 }
@@ -242,6 +250,9 @@ func useSmokeDatabase(t *testing.T) {
 		&models.SplitFriend{},
 		&models.SplitGroup{},
 		&models.SplitGroupMember{},
+		&models.SplitGroupInvite{},
+		&models.SplitGroupDirectInvite{},
+		&models.SplitGroupUserMember{},
 		&models.SplitBill{},
 		&models.SplitParticipant{},
 		&models.SplitSettlement{},

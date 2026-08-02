@@ -25,7 +25,7 @@ STRICT SCHEMA (no other keys):
     "merchant": string|null,
     "category": string|null,
     "amount": number|null,
-    "billing_interval": "daily|weekly|biweekly|monthly|quarterly|yearly|null",
+    "billing_interval": "daily|business_daily|weekly|biweekly|monthly|quarterly|yearly|null",
     "next_due_date": "YYYY-MM-DD"|null,
     "last_charged_date": "YYYY-MM-DD"|null,
     "reminder_days": number|null,
@@ -51,7 +51,7 @@ STRICT SCHEMA (no other keys):
   "clarifications": [string]
 }
 
-POLICY: Confirm-first. When uncertain about any field, DO NOT guess. Leave it null when allowed, set needs_confirmation[field]=true, and add a concise question to clarifications[].
+POLICY: Confirm-first. When uncertain about any field, DO NOT guess. For category only, use "Misc" as the fallback, set needs_confirmation.category=true, and add a concise question to clarifications[] instead of leaving category null. For other nullable fields, leave them null when allowed, set needs_confirmation[field]=true, and add a concise question to clarifications[].
 
 GUARDRAILS:
 - Always include stage, every schema field, missing_fields, confidence, needs_confirmation, and clarifications.
@@ -63,12 +63,16 @@ GUARDRAILS:
 - source_text must echo the exact provided transcript.
 - Use INR by default when currency missing.
 - Do not infer expense/income, merchant, account, category, amount, or date when the text does not support it.
+- Map lodging, hotels, Airbnb, trips, taxis, cabs, metro, trains, flights, and transport to Travel when the text supports it.
 - Payment mode is optional. If the user does not mention a payment mode, set mode to "Cash" as the default and do not ask a clarification for mode.
 - For bank-issued cards, set mode to "Credit Card", put the bank/issuer/card hint such as "HDFC credit card" in account_hint, and only set card_network when the network is explicitly Visa, Mastercard, Amex, or Rupay.
 - purpose_type should default to normal_spend unless the transcript implies investment, lending, refunds, donations, or other explicit cases.
+- Money invested into a fund, SIP, stock, ETF, or brokerage account is an expense (money leaving the user's spendable account), never income. Set type="expense", purpose_type="investment", tag="Investment", and include "Investment" in tags.
 - tags should be a focused list of hints like ["Investment"], ["Lending"], ["EMI"], ["Subscription"], or [] when nothing applies.
 - For no-cost EMI/installment language, do not add EMI-specific keys. Set tag="EMI", include "EMI" in tags, set purpose_type="normal_spend", and summarize tenure or no-cost details in note when stated.
 - For explicit subscription or recurring-payment language, set tag to "Subscription", include "Subscription" in tags, set recurring_candidate=true, and fill subscription_candidate from the text. Do not guess the service name, billing interval, next due date, reminder preference, or cancellation preference. Ask concise clarifying questions for missing subscription fields such as service name, billing interval, and next payment date.
+- For a recurring investment, preserve "Investment" as the primary tag while also filling subscription_candidate so the recurrence can be saved. If the user says it runs only on weekdays, business days, market days, or excludes Saturdays/Sundays/market holidays, use billing_interval="business_daily". Use "daily" only for every calendar day.
+- A next payment date is the schedule anchor, not another interval. When an interval and transaction date are known, calculate the next occurrence and do not ask the user for it. For business_daily, advance to the next market day.
 - If a subscription payment has just been paid, use the transaction date as subscription_candidate.last_charged_date when the date is known.
 - For split language such as "split with Ria", "shared with wife", "half with Rahul", "divide with flatmates", Hindi/Hinglish cues like "baantna", "baant do", "aadha", "hisaab", "share karna", "split karna", or similar native-language bill-sharing words, set split_candidate=true and fill split_candidate_details.
 - If a friend/person name is stated, add that participant. If a group name is stated, set split_candidate_details.group_name. If only split intent is stated but no friend or group is clear, leave participants empty and put "friend_or_group" in split_candidate_details.missing_fields.

@@ -15,6 +15,7 @@ func TestSubscriptionInputValidation(t *testing.T) {
 	}{
 		{"valid", subscriptionInput{Name: "Streamly", Amount: testMoney("499"), NextDueDate: "2026-07-20"}, true},
 		{"daily", subscriptionInput{Name: "Cloud", Amount: testMoney("49"), BillingInterval: "daily", NextDueDate: "2026-07-20"}, true},
+		{"business daily", subscriptionInput{Name: "Fund SIP", Amount: testMoney("100"), BillingInterval: "business_daily", NextDueDate: "2026-07-20"}, true},
 		{"weekly", subscriptionInput{Name: "Cloud", Amount: testMoney("199"), BillingInterval: "weekly", NextDueDate: "2026-07-20"}, true},
 		{"biweekly", subscriptionInput{Name: "Cloud", Amount: testMoney("199"), BillingInterval: "biweekly", NextDueDate: "2026-07-20"}, true},
 		{"quarterly", subscriptionInput{Name: "Cloud", Amount: testMoney("999"), BillingInterval: "quarterly", NextDueDate: "2026-07-20"}, true},

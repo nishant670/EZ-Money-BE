@@ -455,6 +455,9 @@ func buildCreditSummary(subject billing.CreditSubject, includeGrants bool) (cred
 	if dailyRemaining < 0 {
 		dailyRemaining = 0
 	}
+	if dailyRemaining > total {
+		dailyRemaining = total
+	}
 
 	var trialExpiresAt *time.Time
 	var trialGrant models.CreditGrant

@@ -78,15 +78,24 @@ func validOTPCode(otp string) bool {
 	return true
 }
 
-func validPIN(pin string) bool {
+func validPINFormat(pin string) bool {
 	if len(pin) != 4 {
+		return false
+	}
+	for _, char := range pin {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validPIN(pin string) bool {
+	if !validPINFormat(pin) {
 		return false
 	}
 	allSame := true
 	for i, char := range pin {
-		if char < '0' || char > '9' {
-			return false
-		}
 		if i > 0 && byte(char) != pin[0] {
 			allSame = false
 		}
@@ -378,9 +387,18 @@ func (s *Server) authIdentify(c *gin.Context) {
 		return
 	}
 
+	identifierType, identifier, err := normalizeIdentifier(input.Identifier)
+	if err != nil {
+		c.JSON(422, gin.H{"error": err.Error()})
+		return
+	}
+
 	var user models.User
-	// Check both Email and Phone
-	err := database.DB.Where("email = ? OR phone = ?", input.Identifier, input.Identifier).First(&user).Error
+	query := "email = ?"
+	if identifierType == "phone" {
+		query = "phone = ?"
+	}
+	err = database.DB.Where(query, identifier).First(&user).Error
 	if err == gorm.ErrRecordNotFound {
 		c.JSON(200, gin.H{"exists": false})
 		return
@@ -714,8 +732,8 @@ func (s *Server) authLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if !validPIN(input.PIN) {
-		c.JSON(400, gin.H{"error": "weak_pin"})
+	if !validPINFormat(input.PIN) {
+		c.JSON(401, gin.H{"error": "invalid_credentials"})
 		return
 	}
 

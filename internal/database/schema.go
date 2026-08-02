@@ -127,7 +127,7 @@ func runtimeSchemaStatements() []string {
 			DROP CONSTRAINT IF EXISTS subscriptions_billing_interval_check`,
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_billing_interval_check
-			CHECK (billing_interval IN ('daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'yearly'))`,
+			CHECK (billing_interval IN ('daily', 'business_daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'yearly'))`,
 		`ALTER TABLE subscriptions
 			DROP CONSTRAINT IF EXISTS subscriptions_status_check`,
 		`ALTER TABLE subscriptions
@@ -706,6 +706,71 @@ func runtimeSchemaStatements() []string {
 			ON split_groups (user_id, archived, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_group_members_unique
 			ON split_group_members (user_id, group_id, friend_id)`,
+		`CREATE TABLE IF NOT EXISTS split_group_invites (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			group_id BIGINT NOT NULL REFERENCES split_groups(id) ON DELETE CASCADE,
+			token TEXT NOT NULL UNIQUE,
+			status VARCHAR(16) NOT NULL DEFAULT 'active',
+			expires_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE split_group_invites
+			DROP CONSTRAINT IF EXISTS split_group_invites_status_check`,
+		`ALTER TABLE split_group_invites
+			ADD CONSTRAINT split_group_invites_status_check CHECK (status IN ('active', 'revoked'))`,
+		`CREATE INDEX IF NOT EXISTS idx_split_group_invites_group_active
+			ON split_group_invites (user_id, group_id, status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS split_group_direct_invites (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			group_id BIGINT NOT NULL REFERENCES split_groups(id) ON DELETE CASCADE,
+			invite_id BIGINT NOT NULL REFERENCES split_group_invites(id) ON DELETE CASCADE,
+			target_email VARCHAR(254) NOT NULL DEFAULT '',
+			target_phone VARCHAR(32) NOT NULL DEFAULT '',
+			invited_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+			status VARCHAR(16) NOT NULL DEFAULT 'pending',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE split_group_direct_invites
+			DROP CONSTRAINT IF EXISTS split_group_direct_invites_target_check`,
+		`ALTER TABLE split_group_direct_invites
+			ADD CONSTRAINT split_group_direct_invites_target_check CHECK (target_email <> '' OR target_phone <> '')`,
+		`ALTER TABLE split_group_direct_invites
+			DROP CONSTRAINT IF EXISTS split_group_direct_invites_status_check`,
+		`ALTER TABLE split_group_direct_invites
+			ADD CONSTRAINT split_group_direct_invites_status_check CHECK (status IN ('pending', 'accepted', 'revoked'))`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_group_direct_invites_email_unique
+			ON split_group_direct_invites (group_id, LOWER(target_email))
+			WHERE target_email <> '' AND status = 'pending'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_group_direct_invites_phone_unique
+			ON split_group_direct_invites (group_id, target_phone)
+			WHERE target_phone <> '' AND status = 'pending'`,
+		`CREATE INDEX IF NOT EXISTS idx_split_group_direct_invites_invited_user
+			ON split_group_direct_invites (invited_user_id, status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS split_group_user_members (
+			id BIGSERIAL PRIMARY KEY,
+			group_id BIGINT NOT NULL REFERENCES split_groups(id) ON DELETE CASCADE,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role VARCHAR(16) NOT NULL DEFAULT 'member',
+			status VARCHAR(16) NOT NULL DEFAULT 'active',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE split_group_user_members
+			DROP CONSTRAINT IF EXISTS split_group_user_members_role_check`,
+		`ALTER TABLE split_group_user_members
+			ADD CONSTRAINT split_group_user_members_role_check CHECK (role IN ('member'))`,
+		`ALTER TABLE split_group_user_members
+			DROP CONSTRAINT IF EXISTS split_group_user_members_status_check`,
+		`ALTER TABLE split_group_user_members
+			ADD CONSTRAINT split_group_user_members_status_check CHECK (status IN ('active', 'removed'))`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_group_user_members_unique
+			ON split_group_user_members (group_id, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_group_user_members_user_active
+			ON split_group_user_members (user_id, status, group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_bills_user_date
 			ON split_bills (user_id, date DESC, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_participants_user_friend

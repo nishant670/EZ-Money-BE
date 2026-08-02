@@ -6,6 +6,7 @@ import (
 )
 
 const defaultParseMode = "Cash"
+const defaultParseCategory = "Misc"
 
 var confirmableParseFields = []string{"title", "amount", "type", "category", "date"}
 
@@ -68,11 +69,13 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 		}
 	}
 
+	hasTransactionSignal := parsedDraftHasTransactionSignal(entry)
 	normalizeParseMode(entry, needsConfirmation, missingSet)
 	normalizeCardNetwork(entry)
 	normalizeType(entry)
-	normalizeCategory(entry, needsConfirmation, missingSet)
+	normalizeCategory(entry, needsConfirmation, missingSet, hasTransactionSignal)
 	normalizePurposeAndTags(entry)
+	normalizeInvestmentType(entry, needsConfirmation, missingSet)
 
 	for _, field := range confirmableParseFields {
 		if parseFieldMissing(field, entry[field]) {
@@ -103,6 +106,33 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 	normalizeSubscriptionDraft(entry)
 	normalizeSplitDraft(entry)
 	pruneKeys(entry, allowedParseRootFields)
+}
+
+func normalizeInvestmentType(entry map[string]any, needsConfirmation map[string]any, missingSet map[string]bool) {
+	purpose, _ := entry["purpose_type"].(string)
+	if purpose != "investment" && !hasNormalizedTag(entry, "Investment") {
+		return
+	}
+	entry["type"] = "expense"
+	entry["purpose_type"] = "investment"
+	entry["tag"] = "Investment"
+	appendTag(entry, "Investment")
+	delete(missingSet, "type")
+	delete(needsConfirmation, "type")
+}
+
+func hasNormalizedTag(entry map[string]any, wanted string) bool {
+	if tag, ok := entry["tag"].(string); ok && strings.EqualFold(strings.TrimSpace(tag), wanted) {
+		return true
+	}
+	if tags, ok := entry["tags"].([]any); ok {
+		for _, tag := range tags {
+			if value, ok := tag.(string); ok && strings.EqualFold(strings.TrimSpace(value), wanted) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func parsedDraftHasTransactionSignal(entry map[string]any) bool {
@@ -305,25 +335,36 @@ func normalizeType(entry map[string]any) {
 	}
 }
 
-func normalizeCategory(entry map[string]any, needsConfirmation map[string]any, missingSet map[string]bool) {
+func normalizeCategory(
+	entry map[string]any,
+	needsConfirmation map[string]any,
+	missingSet map[string]bool,
+	hasTransactionSignal bool,
+) {
 	raw, ok := entry["category"].(string)
 	if !ok || strings.TrimSpace(raw) == "" {
+		if !hasTransactionSignal {
+			return
+		}
+		entry["category"] = defaultParseCategory
+		missingSet["category"] = true
+		needsConfirmation["category"] = true
 		return
 	}
 	if normalized, ok := canonicalCategory(raw); ok {
 		entry["category"] = normalized
 		return
 	}
-	entry["category"] = nil
+	entry["category"] = defaultParseCategory
 	missingSet["category"] = true
 	needsConfirmation["category"] = true
 }
 
 func canonicalCategory(value string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "food":
+	case "food", "food & drinks", "food and drinks", "dining", "restaurant", "restaurants":
 		return "Food", true
-	case "travel":
+	case "travel", "transport", "transportation", "cab", "taxi", "uber", "ola", "metro", "train", "flight", "hotel", "hotels", "lodging", "accommodation", "airbnb", "air bnb", "stay":
 		return "Travel", true
 	case "shopping":
 		return "Shopping", true

@@ -258,7 +258,7 @@
         },
         "billing_interval": {
           "type": ["string", "null"],
-          "enum": ["daily", "weekly", "biweekly", "monthly", "quarterly", "yearly", null]
+          "enum": ["daily", "business_daily", "weekly", "biweekly", "monthly", "quarterly", "yearly", null]
         },
         "next_due_date": {
           "type": ["string", "null"],

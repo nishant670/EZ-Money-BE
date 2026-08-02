@@ -41,6 +41,8 @@ func TestAdvanceSubscriptionDueDate(t *testing.T) {
 	}{
 		{"monthly after due", "2026-07-10", "monthly", "2026-08-10"},
 		{"daily catches up", "2026-07-10", "daily", "2026-07-14"},
+		{"market daily skips weekend", "2026-07-31", "business_daily", "2026-08-03"},
+		{"market daily skips NSE MF holiday", "2026-09-13", "business_daily", "2026-09-15"},
 		{"weekly catches up", "2026-06-20", "weekly", "2026-07-18"},
 		{"biweekly catches up", "2026-06-20", "biweekly", "2026-07-18"},
 		{"early payment advances one cycle", "2026-07-20", "monthly", "2026-08-20"},

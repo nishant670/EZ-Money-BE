@@ -95,6 +95,16 @@ func TestGuestCreditAndUsageEndpoints(t *testing.T) {
 	if _, leaked := raw["prompt"]; leaked {
 		t.Fatal("parse response must not expose raw provider prompt")
 	}
+
+	if err := database.DB.Model(&models.CreditGrant{}).
+		Where("source = ?", billing.GrantSourceFreeTrial).
+		Update("credits_remaining", 0).Error; err != nil {
+		t.Fatal(err)
+	}
+	credits = performJSONRequest[creditSummaryResponse](t, router, http.MethodGet, "/v1/ai/credits", authResponse.Token, nil, http.StatusOK)
+	if credits.TotalCreditsRemaining != 0 || credits.DailyCreditsRemaining != 0 {
+		t.Fatalf("daily credits must not exceed the usable total balance: %#v", credits)
+	}
 }
 
 func TestBillingCheckoutGuards(t *testing.T) {
