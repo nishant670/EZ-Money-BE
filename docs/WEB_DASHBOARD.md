@@ -19,8 +19,9 @@ The first active web phase prioritizes:
 | --- | --- | --- |
 | `/dashboard` | Period overview, top categories and merchants, recent activity, key insight | `GET /v1/dashboard` |
 | `/dashboard/insights` | Custom-period analysis, account usage, recurring review, formula explanation | `GET /v1/dashboard` |
-| `/dashboard/transactions` | Search, filters, pagination, CSV of the visible page, entry detail and capture | `/v1/entries`, `/v1/parse`, `/v1/accounts` |
+| `/dashboard/transactions` | Search, filters, pagination, CSV of the visible page, entry detail, capture, and inline splits | `/v1/entries`, `/v1/parse`, `/v1/accounts`, `/v1/split/*` |
 | `/dashboard/accounts` | Real account list and CRUD | `/v1/accounts` |
+| `/dashboard/splits` | Friends, groups, bills, balances, settlements, and activity | `/v1/split/*` |
 | `/dashboard/tools` | EMI, monthly budgets, recurring-payment schedules | `/v1/tools/emi/calculate`, `/v1/budgets`, `/v1/subscriptions` |
 | Dashboard shell | Notification review and global transaction search | `/v1/notifications` |
 | `/dashboard/settings` | Basic profile update | `PUT /v1/user` |
@@ -46,6 +47,8 @@ The first active web phase prioritizes:
 - Marking a recurring payment paid advances its schedule but does not create a
   transaction.
 - Account balances are manually maintained; the UI does not claim bank sync.
+- Split balances are calculated from user-recorded friend shares and
+  settlements; FINNRI does not move money or notify friends.
 
 ## Deferred web power-user work
 
@@ -53,7 +56,6 @@ The first active web phase prioritizes:
 - Full-history export and advanced reports generated server-side.
 - Statement import and reconciliation.
 - Bank, UPI, and Account Aggregator connectivity.
-- Split-ledger management on web.
 - Open-ended AI financial advice.
 
 ## Deployment configuration

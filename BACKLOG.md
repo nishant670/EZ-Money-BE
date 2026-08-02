@@ -125,7 +125,8 @@ Legend:
 - [x] Add EMI tools later; not MVP.
 - [x] Add full subscription manager later; not MVP.
 - [x] Resume active web dashboard feature work with live API-backed insights,
-  transactions, accounts, notifications, budgets, recurring payments, and EMI.
+  transactions, accounts, split ledgers, notifications, budgets, recurring
+  payments, and EMI.
 - [ ] Add exports, advanced reports, and bulk editing later.
 - [ ] Add merchant history-backed autocomplete later: remember past merchants with category associations and suggest merchants when users create or edit transactions.
 - [ ] Add hardened receipt/document uploads later with private storage, MIME/size validation, and retention controls.
