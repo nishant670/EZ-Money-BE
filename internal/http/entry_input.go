@@ -133,9 +133,9 @@ func validateEntryValues(amount models.Money, title, entryType, currency, source
 		fields["title"] = "is required"
 	}
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "cash", "upi", "credit card", "wallets":
+	case "cash", "bank account", "upi", "credit card", "wallets":
 	default:
-		fields["mode"] = "must be Cash, UPI, Credit Card, or Wallets"
+		fields["mode"] = "must be Cash, Bank Account, UPI, Credit Card, or Wallets"
 	}
 	if strings.TrimSpace(category) == "" {
 		fields["category"] = "is required"

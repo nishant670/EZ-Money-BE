@@ -26,6 +26,8 @@ func main() {
 		&models.BudgetAlert{},
 		&models.Subscription{},
 		&models.SubscriptionReminder{},
+		&models.SubscriptionOccurrence{},
+		&models.PushDevice{},
 		&models.SplitFriend{},
 		&models.SplitGroup{},
 		&models.SplitGroupMember{},
@@ -40,6 +42,7 @@ func main() {
 	}
 
 	cfg := config.Load()
+	httpserver.StartSubscriptionAutomation(cfg)
 	r := httpserver.NewServer(cfg)
 	log.Printf("listening on :%s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {

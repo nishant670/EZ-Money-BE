@@ -56,6 +56,7 @@
       ],
       "enum": [
         "Cash",
+        "Bank Account",
         "UPI",
         "Credit Card",
         "Wallets",
@@ -276,6 +277,17 @@
         "cancel_before_due": {
           "type": ["boolean", "null"]
         },
+        "cancel_on_date": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "autopay": {
+          "type": ["boolean", "null"]
+        },
+        "payment_mode": {
+          "type": ["string", "null"],
+          "enum": ["Cash", "Bank Account", "UPI", "Credit Card", "Wallets", null]
+        },
         "notes": {
           "type": ["string", "null"]
         },
@@ -293,6 +305,9 @@
               "last_charged_date",
               "reminder_days",
               "cancel_before_due",
+              "cancel_on_date",
+              "autopay",
+              "payment_mode",
               "notes"
             ]
           }

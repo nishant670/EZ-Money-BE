@@ -19,6 +19,7 @@ import (
 const (
 	subscriptionReminderDueKind     = "due"
 	subscriptionReminderOverdueKind = "overdue"
+	subscriptionReminderCancelKind  = "cancel"
 )
 
 type subscriptionResponse struct {
@@ -221,6 +222,21 @@ func syncSubscriptionReminders(userID uint, today time.Time) (int, error) {
 
 	created := 0
 	for _, subscription := range subscriptions {
+		if subscription.CancelBeforeDue && strings.TrimSpace(subscription.CancelOnDate) != "" {
+			cancelDate, err := parseAPIDate(subscription.CancelOnDate)
+			if err == nil && !truncateDate(cancelDate).After(truncateDate(today)) {
+				didCreate, createErr := createSubscriptionReminderIfNeeded(database.DB, subscription, subscription.CancelOnDate, subscriptionReminderCancelKind)
+				if createErr != nil {
+					return created, createErr
+				}
+				if didCreate {
+					created++
+				}
+			}
+		}
+		if subscription.AutoPay && (subscription.BillingInterval == subscriptionIntervalDaily || subscription.BillingInterval == subscriptionIntervalBusinessDaily) {
+			continue
+		}
 		dueDate, err := parseAPIDate(subscription.NextDueDate)
 		if err != nil {
 			continue
@@ -284,6 +300,10 @@ func createSubscriptionReminderIfNeeded(db *gorm.DB, subscription models.Subscri
 		created = true
 		return nil
 	})
+	if err == nil && created {
+		title, body := subscriptionReminderCopy(subscription, dueDate, kind)
+		go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{"action_url": "/subscriptions", "subscription_id": subscription.ID})
+	}
 	return created, err
 }
 
@@ -298,8 +318,8 @@ func subscriptionReminderCopy(subscription models.Subscription, dueDate, kind st
 	if kind == subscriptionReminderOverdueKind {
 		return "Subscription overdue", fmt.Sprintf("%s was due on %s for ₹%s.", name, dueDate, subscription.Amount.String())
 	}
-	if subscription.CancelBeforeDue {
-		return "Cancel before renewal", fmt.Sprintf("%s renews on %s for ₹%s. Cancel before payment if you no longer need it.", name, dueDate, subscription.Amount.String())
+	if kind == subscriptionReminderCancelKind {
+		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for ₹%s.", name, subscription.NextDueDate, subscription.Amount.String())
 	}
 	return "Subscription due soon", fmt.Sprintf("%s is due on %s for ₹%s.", name, dueDate, subscription.Amount.String())
 }

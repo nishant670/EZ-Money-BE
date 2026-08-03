@@ -93,11 +93,46 @@ func TestSubscriptionRemindersDeduplicateByDueDateAndKind(t *testing.T) {
 
 func TestSubscriptionCancelBeforeDueReminderCopy(t *testing.T) {
 	subscription := models.Subscription{
-		Name: "Streamly", Amount: testMoney("499"), CancelBeforeDue: true,
+		Name: "Streamly", Amount: testMoney("499"), CancelBeforeDue: true, NextDueDate: "2026-07-20",
 	}
-	title, body := subscriptionReminderCopy(subscription, "2026-07-20", subscriptionReminderDueKind)
-	if title != "Cancel before renewal" || body == "" {
+	title, body := subscriptionReminderCopy(subscription, "2026-07-18", subscriptionReminderCancelKind)
+	if title != "Cancellation reminder" || body == "" {
 		t.Fatalf("copy = %q %q", title, body)
+	}
+}
+
+func TestDailyAutopaySuppressesDueReminderAndCreatesOccurrence(t *testing.T) {
+	useSmokeDatabase(t)
+	if err := database.DB.AutoMigrate(&models.Subscription{}, &models.SubscriptionOccurrence{}, &models.PushDevice{}); err != nil {
+		t.Fatal(err)
+	}
+	user := createBudgetTestUser(t)
+	account := models.Account{UserID: user.ID, Type: "bank", Name: "Savings account", Color: "#123456"}
+	if err := database.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	subscription := models.Subscription{
+		UserID: user.ID, AccountID: &account.ID, Name: "Small cap SIP", Amount: testMoney("100"), Currency: "INR",
+		BillingInterval: "business_daily", NextDueDate: "2026-07-13", Status: "active", ReminderDays: 0,
+		AutoPay: true, PaymentMode: "Bank Account", TransactionTag: "Investment", PurposeType: "investment",
+	}
+	if err := database.DB.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	created, err := syncSubscriptionAutomation(user.ID, mustDate(t, "2026-07-13"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 || created[0].Entry.Type != "expense" || created[0].Entry.Mode != "Bank Account" || created[0].Entry.Tag != "Investment" {
+		t.Fatalf("unexpected occurrence: %#v", created)
+	}
+	reminders, err := syncSubscriptionReminders(user.ID, mustDate(t, "2026-07-13"))
+	if err != nil || reminders != 0 {
+		t.Fatalf("reminders = %d, err = %v", reminders, err)
+	}
+	createdAgain, err := syncSubscriptionAutomation(user.ID, mustDate(t, "2026-07-13"))
+	if err != nil || len(createdAgain) != 0 {
+		t.Fatalf("duplicate occurrences = %d, err = %v", len(createdAgain), err)
 	}
 }
 

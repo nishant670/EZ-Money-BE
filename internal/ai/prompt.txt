@@ -7,7 +7,7 @@ STRICT SCHEMA (no other keys):
   "title": string|null (short description),
   "amount": number|null,
   "currency": "INR" default,
-  "mode": "Cash|UPI|Credit Card|Wallets|null",
+  "mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null",
   "card_network": "Visa|Mastercard|Amex|Rupay|null",
   "account_hint": string|null,
   "category": "Food|Travel|Shopping|Bills|Family/Gifts|Misc|null",
@@ -30,6 +30,9 @@ STRICT SCHEMA (no other keys):
     "last_charged_date": "YYYY-MM-DD"|null,
     "reminder_days": number|null,
     "cancel_before_due": boolean|null,
+    "cancel_on_date": "YYYY-MM-DD"|null,
+    "autopay": boolean|null,
+    "payment_mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null",
     "notes": string|null,
     "missing_fields": [string]
   }|null,
@@ -64,7 +67,8 @@ GUARDRAILS:
 - Use INR by default when currency missing.
 - Do not infer expense/income, merchant, account, category, amount, or date when the text does not support it.
 - Map lodging, hotels, Airbnb, trips, taxis, cabs, metro, trains, flights, and transport to Travel when the text supports it.
-- Payment mode is optional. If the user does not mention a payment mode, set mode to "Cash" as the default and do not ask a clarification for mode.
+- Payment mode is optional. If the user does not mention a payment source, set mode to "Cash" as the default and do not ask a clarification for mode.
+- If the user says bank account, savings account, salary account, or that money is deducted from a bank, set mode="Bank Account" and keep the stated bank/account wording in account_hint. Never replace an explicitly stated bank account with Cash. If the specific saved account is unclear, set needs_confirmation.account_hint=true and ask which bank account should be used.
 - For bank-issued cards, set mode to "Credit Card", put the bank/issuer/card hint such as "HDFC credit card" in account_hint, and only set card_network when the network is explicitly Visa, Mastercard, Amex, or Rupay.
 - purpose_type should default to normal_spend unless the transcript implies investment, lending, refunds, donations, or other explicit cases.
 - Money invested into a fund, SIP, stock, ETF, or brokerage account is an expense (money leaving the user's spendable account), never income. Set type="expense", purpose_type="investment", tag="Investment", and include "Investment" in tags.
@@ -72,6 +76,8 @@ GUARDRAILS:
 - For no-cost EMI/installment language, do not add EMI-specific keys. Set tag="EMI", include "EMI" in tags, set purpose_type="normal_spend", and summarize tenure or no-cost details in note when stated.
 - For explicit subscription or recurring-payment language, set tag to "Subscription", include "Subscription" in tags, set recurring_candidate=true, and fill subscription_candidate from the text. Do not guess the service name, billing interval, next due date, reminder preference, or cancellation preference. Ask concise clarifying questions for missing subscription fields such as service name, billing interval, and next payment date.
 - For a recurring investment, preserve "Investment" as the primary tag while also filling subscription_candidate so the recurrence can be saved. If the user says it runs only on weekdays, business days, market days, or excludes Saturdays/Sundays/market holidays, use billing_interval="business_daily". Use "daily" only for every calendar day.
+- Treat "auto debit", "autopay", "automatically deducts", and similar language as subscription_candidate.autopay=true. Copy the resolved transaction mode into subscription_candidate.payment_mode. Daily and business_daily schedules should use autopay=true and reminder_days=0.
+- If cancel_before_due=true, require a specific cancel_on_date. Ask which date the user wants the cancellation alert when it was not stated.
 - A next payment date is the schedule anchor, not another interval. When an interval and transaction date are known, calculate the next occurrence and do not ask the user for it. For business_daily, advance to the next market day.
 - If a subscription payment has just been paid, use the transaction date as subscription_candidate.last_charged_date when the date is known.
 - For split language such as "split with Ria", "shared with wife", "half with Rahul", "divide with flatmates", Hindi/Hinglish cues like "baantna", "baant do", "aadha", "hisaab", "share karna", "split karna", or similar native-language bill-sharing words, set split_candidate=true and fill split_candidate_details.

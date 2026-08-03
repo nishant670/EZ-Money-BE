@@ -22,18 +22,19 @@ var allowedParseRootFields = map[string]bool{
 
 var allowedConfidenceFields = map[string]bool{
 	"amount": true, "mode": true, "category": true, "date": true, "merchant": true,
-	"tag": true, "type": true,
+	"tag": true, "type": true, "account_hint": true,
 }
 
 var allowedNeedsConfirmationFields = map[string]bool{
 	"title": true, "amount": true, "mode": true, "category": true, "date": true,
-	"type": true, "merchant": true, "tag": true,
+	"type": true, "merchant": true, "tag": true, "account_hint": true,
 }
 
 var allowedSubscriptionCandidateFields = map[string]bool{
 	"name": true, "merchant": true, "category": true, "amount": true,
 	"billing_interval": true, "next_due_date": true, "last_charged_date": true,
-	"reminder_days": true, "cancel_before_due": true, "notes": true, "missing_fields": true,
+	"reminder_days": true, "cancel_before_due": true, "cancel_on_date": true,
+	"autopay": true, "payment_mode": true, "notes": true, "missing_fields": true,
 }
 
 var allowedSplitCandidateFields = map[string]bool{
@@ -181,7 +182,10 @@ func parseFieldMissing(field string, value any) bool {
 
 func normalizeParseMode(entry map[string]any, needsConfirmation map[string]any, missingSet map[string]bool) {
 	mode, ok := entry["mode"].(string)
-	if !ok || strings.TrimSpace(mode) == "" {
+	if hint, hintOK := entry["account_hint"].(string); hintOK && isBankAccountHint(hint) {
+		entry["mode"] = "Bank Account"
+		needsConfirmation["account_hint"] = true
+	} else if !ok || strings.TrimSpace(mode) == "" {
 		entry["mode"] = defaultParseMode
 	} else if normalized, ok := canonicalParseMode(mode); ok {
 		entry["mode"] = normalized
@@ -205,6 +209,8 @@ func canonicalParseMode(value string) (string, bool) {
 		return "Cash", true
 	case "upi":
 		return "UPI", true
+	case "bank", "bank account", "savings account", "saving account":
+		return "Bank Account", true
 	case "credit card", "creditcard":
 		return "Credit Card", true
 	case "wallets", "wallet":
@@ -214,12 +220,32 @@ func canonicalParseMode(value string) (string, bool) {
 	}
 }
 
+func isBankAccountHint(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(normalized, "bank") || strings.Contains(normalized, "saving") || strings.Contains(normalized, "salary account")
+}
+
 func normalizeSubscriptionDraft(entry map[string]any) {
 	candidate, ok := entry["subscription_candidate"].(map[string]any)
 	if !ok || candidate == nil {
 		return
 	}
 	pruneKeys(candidate, allowedSubscriptionCandidateFields)
+	interval, _ := candidate["billing_interval"].(string)
+	if interval == subscriptionIntervalDaily || interval == subscriptionIntervalBusinessDaily {
+		candidate["autopay"] = true
+		candidate["reminder_days"] = float64(0)
+		if parseFieldMissing("next_due_date", candidate["next_due_date"]) {
+			if entryDate, ok := entry["date"].(string); ok {
+				if parsed, err := parseAPIDate(entryDate); err == nil {
+					candidate["next_due_date"] = addSubscriptionInterval(parsed, interval).Format("2006-01-02")
+				}
+			}
+		}
+	}
+	if mode, ok := entry["mode"].(string); ok {
+		candidate["payment_mode"] = mode
+	}
 	entry["recurring_candidate"] = true
 	if tag, ok := entry["tag"].(string); !ok || strings.TrimSpace(tag) == "" {
 		entry["tag"] = "Subscription"
@@ -248,7 +274,28 @@ func normalizeSubscriptionDraft(entry map[string]any) {
 			}
 		}
 		candidate["missing_fields"] = missing
+	} else if !parseFieldMissing("next_due_date", candidate["next_due_date"]) {
+		filtered := make([]any, 0, len(candidateMissing))
+		for _, value := range candidateMissing {
+			if value != "next_due_date" {
+				filtered = append(filtered, value)
+			}
+		}
+		candidate["missing_fields"] = filtered
 	}
+	if cancel, _ := candidate["cancel_before_due"].(bool); cancel && parseFieldMissing("cancel_on_date", candidate["cancel_on_date"]) {
+		candidate["missing_fields"] = appendUniqueAnyString(candidate["missing_fields"], "cancel_on_date")
+	}
+}
+
+func appendUniqueAnyString(value any, wanted string) []any {
+	values, _ := value.([]any)
+	for _, current := range values {
+		if text, ok := current.(string); ok && text == wanted {
+			return values
+		}
+	}
+	return append(values, wanted)
 }
 
 func normalizeSplitDraft(entry map[string]any) {

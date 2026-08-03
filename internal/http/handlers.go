@@ -157,9 +157,15 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/subscriptions", s.createSubscription)
 		authorized.GET("/subscriptions", s.listSubscriptions)
 		authorized.POST("/subscriptions/reminders", s.requireEntitlement(billing.FeatureSubscriptionReminders), s.createSubscriptionReminders)
+		authorized.POST("/subscriptions/sync", s.syncSubscriptionAutomationNow)
 		authorized.PUT("/subscriptions/:id", s.updateSubscription)
 		authorized.DELETE("/subscriptions/:id", s.deleteSubscription)
 		authorized.POST("/subscriptions/:id/mark-paid", s.markSubscriptionPaid)
+		authorized.GET("/subscription-occurrences", s.listSubscriptionOccurrences)
+		authorized.POST("/subscription-occurrences/:id/confirm", s.confirmSubscriptionOccurrence)
+		authorized.POST("/subscription-occurrences/:id/revert", s.revertSubscriptionOccurrence)
+		authorized.POST("/push-devices", s.registerPushDevice)
+		authorized.DELETE("/push-devices", s.unregisterPushDevice)
 
 		// Split ledger
 		split := authorized.Group("/split", s.requireEntitlement(billing.FeatureSplitLedger))
@@ -1241,7 +1247,9 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.BudgetAlert{}, "budget alerts"},
 			{&models.Budget{}, "budgets"},
 			{&models.SubscriptionReminder{}, "subscription reminders"},
+			{&models.SubscriptionOccurrence{}, "subscription occurrences"},
 			{&models.Subscription{}, "subscriptions"},
+			{&models.PushDevice{}, "push devices"},
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.Entry{}, "entries"},

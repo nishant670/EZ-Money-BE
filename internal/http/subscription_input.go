@@ -38,6 +38,11 @@ type subscriptionInput struct {
 	Status          string       `json:"status"`
 	ReminderDays    *int         `json:"reminder_days"`
 	CancelBeforeDue bool         `json:"cancel_before_due"`
+	CancelOnDate    string       `json:"cancel_on_date"`
+	AutoPay         bool         `json:"autopay"`
+	PaymentMode     string       `json:"payment_mode"`
+	TransactionTag  string       `json:"transaction_tag"`
+	PurposeType     string       `json:"purpose_type"`
 	Notes           string       `json:"notes"`
 }
 
@@ -75,6 +80,23 @@ func (input subscriptionInput) validate() map[string]string {
 	if input.ReminderDays != nil && (*input.ReminderDays < 0 || *input.ReminderDays > maxSubscriptionReminderDays) {
 		fields["reminder_days"] = "must be between 0 and 30"
 	}
+	interval := normalizeSubscriptionInterval(input.BillingInterval)
+	if (interval == subscriptionIntervalDaily || interval == subscriptionIntervalBusinessDaily) && !input.AutoPay {
+		fields["autopay"] = "must be enabled for daily and market-day schedules"
+	}
+	if input.AutoPay && input.AccountID == nil {
+		fields["account_id"] = "is required when autopay is enabled"
+	}
+	if strings.TrimSpace(input.PaymentMode) != "" && normalizeSubscriptionPaymentMode(input.PaymentMode) == "" {
+		fields["payment_mode"] = "must be Cash, Bank Account, UPI, Credit Card, or Wallets"
+	}
+	if input.CancelBeforeDue {
+		if _, err := parseStrictAPIDate(input.CancelOnDate); err != nil {
+			fields["cancel_on_date"] = "is required and must use YYYY-MM-DD"
+		}
+	} else if strings.TrimSpace(input.CancelOnDate) != "" {
+		fields["cancel_on_date"] = "must be blank when cancellation reminder is disabled"
+	}
 	if input.AccountID != nil && *input.AccountID == 0 {
 		fields["account_id"] = "must be a positive integer"
 	}
@@ -106,7 +128,41 @@ func (input subscriptionInput) apply(subscription *models.Subscription) {
 		subscription.ReminderDays = *input.ReminderDays
 	}
 	subscription.CancelBeforeDue = input.CancelBeforeDue
+	subscription.CancelOnDate = strings.TrimSpace(input.CancelOnDate)
+	subscription.AutoPay = input.AutoPay
+	subscription.PaymentMode = normalizeSubscriptionPaymentMode(input.PaymentMode)
+	if subscription.PaymentMode == "" {
+		subscription.PaymentMode = "Cash"
+	}
+	subscription.TransactionTag = strings.TrimSpace(input.TransactionTag)
+	if subscription.TransactionTag == "" {
+		subscription.TransactionTag = "Subscription"
+	}
+	subscription.PurposeType = strings.ToLower(strings.TrimSpace(input.PurposeType))
+	if subscription.PurposeType == "" {
+		subscription.PurposeType = "normal_spend"
+	}
+	if subscription.BillingInterval == subscriptionIntervalDaily || subscription.BillingInterval == subscriptionIntervalBusinessDaily {
+		subscription.ReminderDays = 0
+	}
 	subscription.Notes = strings.TrimSpace(input.Notes)
+}
+
+func normalizeSubscriptionPaymentMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "cash":
+		return "Cash"
+	case "bank", "bank account", "savings account", "saving account":
+		return "Bank Account"
+	case "upi":
+		return "UPI"
+	case "credit card", "creditcard":
+		return "Credit Card"
+	case "wallet", "wallets":
+		return "Wallets"
+	default:
+		return ""
+	}
 }
 
 func normalizeSubscriptionInterval(value string) string {

@@ -19,9 +19,30 @@ type Subscription struct {
 	Status          string    `gorm:"type:varchar(16);not null;default:active;index" json:"status"`
 	ReminderDays    int       `gorm:"not null;default:3" json:"reminder_days"`
 	CancelBeforeDue bool      `gorm:"not null;default:false" json:"cancel_before_due"`
+	CancelOnDate    string    `gorm:"type:varchar(10)" json:"cancel_on_date"`
+	AutoPay         bool      `gorm:"column:autopay;not null;default:false;index" json:"autopay"`
+	PaymentMode     string    `gorm:"type:varchar(24);not null;default:Cash" json:"payment_mode"`
+	TransactionTag  string    `gorm:"type:varchar(40);not null;default:Subscription" json:"transaction_tag"`
+	PurposeType     string    `gorm:"type:varchar(40);not null;default:normal_spend" json:"purpose_type"`
 	Notes           string    `gorm:"type:text" json:"notes"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type SubscriptionOccurrence struct {
+	ID             uint         `gorm:"primaryKey" json:"id"`
+	UserID         uint         `gorm:"uniqueIndex:idx_subscription_occurrence_once;index;not null" json:"user_id"`
+	SubscriptionID uint         `gorm:"uniqueIndex:idx_subscription_occurrence_once;index;not null" json:"subscription_id"`
+	Subscription   Subscription `json:"subscription,omitempty" gorm:"foreignKey:SubscriptionID"`
+	EntryID        uint         `gorm:"index;not null" json:"entry_id"`
+	Entry          Entry        `json:"entry,omitempty" gorm:"foreignKey:EntryID"`
+	DueDate        string       `gorm:"type:date;uniqueIndex:idx_subscription_occurrence_once;not null" json:"due_date"`
+	Status         string       `gorm:"type:varchar(16);not null;default:pending;index" json:"status"`
+	ConfirmedAt    *time.Time   `json:"confirmed_at,omitempty"`
+	RevertedAt     *time.Time   `json:"reverted_at,omitempty"`
+	NotificationID *uint        `gorm:"index" json:"notification_id,omitempty"`
+	CreatedAt      time.Time    `json:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at"`
 }
 
 type SubscriptionReminder struct {

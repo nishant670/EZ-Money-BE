@@ -68,6 +68,40 @@ func TestNormalizeParsedDraftTreatsInvestmentAsExpense(t *testing.T) {
 	}
 }
 
+func TestNormalizeParsedDraftDoesNotTurnExplicitBankAccountIntoCash(t *testing.T) {
+	entry := map[string]any{
+		"type": "expense", "title": "SIP", "amount": float64(100), "mode": "Cash",
+		"account_hint": "my savings bank account", "category": "Investment", "date": "2026-08-01",
+	}
+	normalizeParsedDraft(entry, "100 rupees deducts daily from my savings bank account")
+	if entry["mode"] != "Bank Account" {
+		t.Fatalf("mode = %#v, want Bank Account", entry["mode"])
+	}
+	needs, _ := entry["needs_confirmation"].(map[string]any)
+	if needs["account_hint"] != true {
+		t.Fatalf("bank account should remain a field to check: %#v", entry)
+	}
+}
+
+func TestNormalizeDailySubscriptionInfersNextDate(t *testing.T) {
+	entry := map[string]any{
+		"type": "expense", "title": "SIP", "amount": float64(100), "mode": "UPI",
+		"category": "Investment", "date": "2026-08-03", "tag": "Investment",
+		"subscription_candidate": map[string]any{
+			"name": "Small cap SIP", "amount": float64(100), "billing_interval": "business_daily",
+			"next_due_date": nil, "missing_fields": []any{"next_due_date"},
+		},
+	}
+	normalizeParsedDraft(entry, "invest 100 daily on market days")
+	candidate := entry["subscription_candidate"].(map[string]any)
+	if candidate["next_due_date"] != "2026-08-04" || candidate["autopay"] != true {
+		t.Fatalf("daily schedule was not inferred: %#v", candidate)
+	}
+	if missing := candidate["missing_fields"].([]any); len(missing) != 0 {
+		t.Fatalf("next date should not need confirmation: %#v", missing)
+	}
+}
+
 func TestNormalizeParsedDraftPreservesValidValues(t *testing.T) {
 	entry := map[string]any{
 		"title": "Metro", "amount": float64(45), "type": "expense",

@@ -247,6 +247,8 @@ func useSmokeDatabase(t *testing.T) {
 		&models.BudgetAlert{},
 		&models.Subscription{},
 		&models.SubscriptionReminder{},
+		&models.SubscriptionOccurrence{},
+		&models.PushDevice{},
 		&models.SplitFriend{},
 		&models.SplitGroup{},
 		&models.SplitGroupMember{},
