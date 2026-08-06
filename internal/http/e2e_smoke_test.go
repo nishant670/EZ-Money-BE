@@ -175,6 +175,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.POST("/subscriptions", server.createSubscription)
 	authorized.GET("/subscriptions", server.listSubscriptions)
 	authorized.POST("/subscriptions/reminders", server.requireEntitlement(billing.FeatureSubscriptionReminders), server.createSubscriptionReminders)
+	authorized.POST("/feedback", server.createFeedback)
 	authorized.POST("/entries", server.saveEntry)
 	authorized.GET("/entries/:id", server.getEntry)
 	authorized.PUT("/entries/:id", server.updateEntry)
@@ -243,6 +244,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.Entry{},
 		&models.QuickPrompt{},
 		&models.Notification{},
+		&models.Feedback{},
 		&models.Budget{},
 		&models.BudgetAlert{},
 		&models.Subscription{},

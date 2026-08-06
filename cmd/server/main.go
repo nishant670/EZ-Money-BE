@@ -22,6 +22,7 @@ func main() {
 		&models.Entry{},
 		&models.QuickPrompt{},
 		&models.Notification{},
+		&models.Feedback{},
 		&models.Budget{},
 		&models.BudgetAlert{},
 		&models.Subscription{},

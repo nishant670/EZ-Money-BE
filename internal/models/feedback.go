@@ -1,0 +1,17 @@
+package models
+
+import "time"
+
+type Feedback struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UserID    uint      `gorm:"index;not null" json:"user_id"`
+	User      User      `json:"-" gorm:"foreignKey:UserID"`
+	Type      string    `gorm:"type:varchar(32);not null;index" json:"type"`
+	Area      string    `gorm:"type:varchar(64);not null;default:''" json:"area"`
+	Title     string    `gorm:"type:varchar(140);not null" json:"title"`
+	Message   string    `gorm:"type:text;not null" json:"message"`
+	Impact    string    `gorm:"type:varchar(32);not null;default:'nice_to_have'" json:"impact"`
+	Status    string    `gorm:"type:varchar(32);not null;default:'new';index" json:"status"`
+	CreatedAt time.Time `gorm:"index" json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

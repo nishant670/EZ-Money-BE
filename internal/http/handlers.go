@@ -119,6 +119,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.PUT("/user", s.updateProfile)
 		authorized.DELETE("/user", s.deleteUser)
 		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
+		authorized.POST("/feedback", s.createFeedback)
 
 		// Billing and AI credit visibility
 		authorized.GET("/billing/status", s.getBillingStatus)
@@ -214,6 +215,7 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/dashboard") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/notifications") ||
+		strings.HasPrefix(path, "/v1/feedback") ||
 		strings.HasPrefix(path, "/v1/budgets") ||
 		strings.HasPrefix(path, "/v1/subscriptions") ||
 		strings.HasPrefix(path, "/v1/split") ||
