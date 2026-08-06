@@ -23,6 +23,15 @@ func dashboardEntry(
 	}
 }
 
+func insightByKind(cards []InsightCard, kind string) *InsightCard {
+	for index := range cards {
+		if cards[index].Kind == kind {
+			return &cards[index]
+		}
+	}
+	return nil
+}
+
 func TestBuildDashboardProducesFiveDeterministicTemplates(t *testing.T) {
 	location := time.FixedZone("IST", 5*60*60+30*60)
 	dateRange := dashboardRange{
@@ -53,8 +62,80 @@ func TestBuildDashboardProducesFiveDeterministicTemplates(t *testing.T) {
 			t.Fatalf("missing %s insight: %#v", expected, dashboard.Insights)
 		}
 	}
+	categoryInsight := insightByKind(dashboard.Insights, "category_increase")
+	if categoryInsight == nil || categoryInsight.Category != "Food" || categoryInsight.Amount == nil || *categoryInsight.Amount != 1200 {
+		t.Fatalf("missing structured category insight data: %#v", categoryInsight)
+	}
+	merchantInsight := insightByKind(dashboard.Insights, "top_merchant")
+	if merchantInsight == nil || merchantInsight.Merchant != "Cafe" || merchantInsight.TransactionCount == nil || *merchantInsight.TransactionCount != 3 {
+		t.Fatalf("missing structured merchant insight data: %#v", merchantInsight)
+	}
+	accountInsight := insightByKind(dashboard.Insights, "account_usage")
+	if accountInsight == nil || accountInsight.AccountName != "Cash" || accountInsight.Percentage == nil || *accountInsight.Percentage != 100 {
+		t.Fatalf("missing structured account insight data: %#v", accountInsight)
+	}
 	if dashboard.Summary.TotalSpent != 1200 || dashboard.Summary.DailyAverage != 400 {
 		t.Fatalf("unexpected summary: %#v", dashboard.Summary)
+	}
+	if len(dashboard.DailySpending) != 3 {
+		t.Fatalf("expected three daily spending rows, got %#v", dashboard.DailySpending)
+	}
+	expectedDaily := map[string]float64{
+		"2026-07-01": 100,
+		"2026-07-02": 100,
+		"2026-07-03": 1000,
+	}
+	for _, daily := range dashboard.DailySpending {
+		if expectedDaily[daily.Date] != daily.Amount {
+			t.Fatalf("unexpected daily spending row: %#v", daily)
+		}
+	}
+}
+
+func TestBuildDashboardReturnsFullPeriodReviewItems(t *testing.T) {
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 10, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 21, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          10,
+	}
+	entries := []models.Entry{
+		dashboardEntry("2026-06-23", "expense", "90", "Food", "Older Cleanup", 1, "Cash"),
+		dashboardEntry("2026-06-24", "expense", "110", "Food", "Older Cleanup", 1, "Cash"),
+		dashboardEntry("2026-06-25", "expense", "200", "Shopping", "Older Cleanup", 1, "Cash"),
+		dashboardEntry("2026-07-10", "expense", "100", "Food", "Cafe 1", 1, "Cash"),
+		dashboardEntry("2026-07-09", "expense", "100", "Food", "Cafe 2", 1, "Cash"),
+		dashboardEntry("2026-07-08", "expense", "100", "Food", "Cafe 3", 1, "Cash"),
+		dashboardEntry("2026-07-07", "expense", "100", "Food", "Cafe 4", 1, "Cash"),
+		dashboardEntry("2026-07-06", "expense", "100", "Food", "Cafe 5", 1, "Cash"),
+		dashboardEntry("2026-07-05", "expense", "100", "Uncategorized", "Older Cleanup", 1, "Cash"),
+	}
+	missingAccount := dashboardEntry("2026-07-04", "expense", "120", "Travel", "Metro", 1, "Cash")
+	missingAccount.AccountID = nil
+	missingAccount.Account = nil
+	entries = append(entries, missingAccount)
+
+	dashboard := buildDashboard(entries, dateRange)
+	if len(dashboard.RecentTransactions) != 5 {
+		t.Fatalf("expected five recent transactions, got %#v", dashboard.RecentTransactions)
+	}
+	if len(dashboard.ReviewItems) != 2 {
+		t.Fatalf("expected two review items from the full period, got %#v", dashboard.ReviewItems)
+	}
+	if dashboard.ReviewItems[0].Merchant != "Older Cleanup" || dashboard.ReviewItems[1].Merchant != "Metro" {
+		t.Fatalf("unexpected review item ordering: %#v", dashboard.ReviewItems)
+	}
+	if len(dashboard.ReviewItems[0].CategorySuggestions) != 2 ||
+		dashboard.ReviewItems[0].CategorySuggestions[0] != "Food" ||
+		dashboard.ReviewItems[0].CategorySuggestions[1] != "Shopping" {
+		t.Fatalf("expected category suggestions from matching history, got %#v", dashboard.ReviewItems[0].CategorySuggestions)
+	}
+	for _, entry := range dashboard.RecentTransactions {
+		if entry.Merchant == "Older Cleanup" || entry.Merchant == "Metro" {
+			t.Fatalf("review fixture should be outside recent preview: %#v", dashboard.RecentTransactions)
+		}
 	}
 }
 
@@ -92,6 +173,46 @@ func TestBuildDashboardDetectsRecurringCandidatesForWeeklyReview(t *testing.T) {
 	}
 	if !kinds["recurring_candidate"] {
 		t.Fatalf("missing recurring insight: %#v", dashboard.Insights)
+	}
+	recurringInsight := insightByKind(dashboard.Insights, "recurring_candidate")
+	if recurringInsight == nil || recurringInsight.Merchant != "Streamly" || recurringInsight.NextExpectedDate != "2026-07-15" || recurringInsight.Confidence == nil {
+		t.Fatalf("missing structured recurring insight data: %#v", recurringInsight)
+	}
+}
+
+func TestApplyBudgetStatusesAddsWatchAndExceededInsights(t *testing.T) {
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 20, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 11, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          20,
+	}
+	entries := []models.Entry{
+		dashboardEntry("2026-07-05", "expense", "850", "Food", "Cafe", 1, "Cash"),
+		dashboardEntry("2026-07-10", "expense", "1200", "Travel", "Metro", 1, "Cash"),
+		dashboardEntry("2026-07-11", "expense", "100", "Shopping", "Store", 1, "Cash"),
+	}
+	dashboard := buildDashboard(entries, dateRange)
+	applyBudgetStatuses(entries, []models.Budget{
+		{ID: 1, Name: "Food", Period: budgetPeriodMonthly, Category: "Food", LimitAmount: testMoney("1000"), AlertThresholdPercent: 80, Active: true},
+		{ID: 2, Name: "Travel", Period: budgetPeriodMonthly, Category: "Travel", LimitAmount: testMoney("1000"), AlertThresholdPercent: 80, Active: true},
+		{ID: 3, Name: "Shopping", Period: budgetPeriodMonthly, Category: "Shopping", LimitAmount: testMoney("1000"), AlertThresholdPercent: 80, Active: true},
+	}, dateRange, &dashboard)
+
+	if len(dashboard.BudgetStatuses) != 3 {
+		t.Fatalf("expected three budget statuses, got %#v", dashboard.BudgetStatuses)
+	}
+	kinds := map[string]int{}
+	for _, insight := range dashboard.Insights {
+		kinds[insight.Kind]++
+	}
+	if kinds["budget_watch"] != 1 || kinds["budget_exceeded"] != 1 {
+		t.Fatalf("expected one watch and one exceeded budget insight, got %#v", dashboard.Insights)
+	}
+	if dashboard.BudgetStatuses[0].Status != "exceeded" || dashboard.BudgetStatuses[1].Status != "watch" {
+		t.Fatalf("expected exceeded/watch statuses first, got %#v", dashboard.BudgetStatuses)
 	}
 }
 

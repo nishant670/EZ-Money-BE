@@ -46,7 +46,32 @@ type DashboardAccount struct {
 	Percentage  float64 `json:"percentage"`
 }
 
+type DashboardBudgetStatus struct {
+	BudgetID              uint    `json:"budget_id"`
+	Name                  string  `json:"name"`
+	Category              string  `json:"category"`
+	LimitAmount           float64 `json:"limit_amount"`
+	SpentAmount           float64 `json:"spent_amount"`
+	RemainingAmount       float64 `json:"remaining_amount"`
+	Percentage            float64 `json:"percentage"`
+	AlertThresholdPercent int     `json:"alert_threshold_percent"`
+	DaysLeft              int     `json:"days_left"`
+	Status                string  `json:"status"`
+}
+
+type DashboardDailySpend struct {
+	Date   string  `json:"date"`
+	Amount float64 `json:"amount"`
+	Count  int     `json:"count"`
+}
+
+type DashboardReviewItem struct {
+	models.Entry
+	CategorySuggestions []string `json:"category_suggestions"`
+}
+
 type DashboardRecurringCandidate struct {
+	CandidateKey     string  `json:"candidate_key"`
 	Label            string  `json:"label"`
 	Merchant         string  `json:"merchant"`
 	Category         string  `json:"category"`
@@ -60,10 +85,26 @@ type DashboardRecurringCandidate struct {
 }
 
 type InsightCard struct {
-	Kind     string `json:"kind"`
-	Severity string `json:"severity"`
-	Title    string `json:"title"`
-	Body     string `json:"body"`
+	Kind             string   `json:"kind"`
+	Severity         string   `json:"severity"`
+	Title            string   `json:"title"`
+	Body             string   `json:"body"`
+	Explanation      string   `json:"explanation,omitempty"`
+	ActionLabel      string   `json:"action_label,omitempty"`
+	Category         string   `json:"category,omitempty"`
+	Merchant         string   `json:"merchant,omitempty"`
+	BudgetID         *uint    `json:"budget_id,omitempty"`
+	AccountID        *uint    `json:"account_id,omitempty"`
+	AccountName      string   `json:"account_name,omitempty"`
+	Amount           *float64 `json:"amount,omitempty"`
+	LimitAmount      *float64 `json:"limit_amount,omitempty"`
+	RemainingAmount  *float64 `json:"remaining_amount,omitempty"`
+	Status           string   `json:"status,omitempty"`
+	Percentage       *float64 `json:"percentage,omitempty"`
+	ChangePercentage *float64 `json:"change_percentage,omitempty"`
+	TransactionCount *int     `json:"transaction_count,omitempty"`
+	NextExpectedDate string   `json:"next_expected_date,omitempty"`
+	Confidence       *float64 `json:"confidence,omitempty"`
 }
 
 type DashboardResponse struct {
@@ -72,7 +113,10 @@ type DashboardResponse struct {
 	TopCategories       []DashboardCategory           `json:"top_categories"`
 	TopMerchants        []DashboardMerchant           `json:"top_merchants"`
 	AccountSpending     []DashboardAccount            `json:"account_spending"`
+	BudgetStatuses      []DashboardBudgetStatus       `json:"budget_statuses"`
+	DailySpending       []DashboardDailySpend         `json:"daily_spending"`
 	RecentTransactions  []models.Entry                `json:"recent_transactions"`
+	ReviewItems         []DashboardReviewItem         `json:"review_items"`
 	Insights            []InsightCard                 `json:"insights"`
 	RecurringCandidates []DashboardRecurringCandidate `json:"recurring_candidates"`
 }
@@ -139,8 +183,22 @@ func (s *Server) getDashboard(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
 		return
 	}
+	var budgets []models.Budget
+	if err := database.DB.
+		Where("user_id = ? AND active = ? AND period = ?", userID, true, budgetPeriodMonthly).
+		Order("category asc, name asc").
+		Find(&budgets).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
+		return
+	}
 
-	c.JSON(http.StatusOK, buildDashboard(entries, dateRange))
+	dashboard := buildDashboard(entries, dateRange)
+	applyBudgetStatuses(entries, budgets, dateRange, &dashboard)
+	if err := suppressReviewedRecurringCandidates(userID, &dashboard, dateRange.End); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
+		return
+	}
+	c.JSON(http.StatusOK, dashboard)
 }
 
 func (s *Server) getInsights(c *gin.Context) {
@@ -167,14 +225,18 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 	response := DashboardResponse{
 		Period:        DashboardPeriod{Start: start, End: end},
 		TopCategories: []DashboardCategory{}, TopMerchants: []DashboardMerchant{},
-		AccountSpending: []DashboardAccount{}, RecentTransactions: []models.Entry{},
-		Insights: []InsightCard{}, RecurringCandidates: []DashboardRecurringCandidate{},
+		AccountSpending: []DashboardAccount{}, BudgetStatuses: []DashboardBudgetStatus{},
+		DailySpending:      []DashboardDailySpend{},
+		RecentTransactions: []models.Entry{},
+		ReviewItems:        []DashboardReviewItem{},
+		Insights:           []InsightCard{}, RecurringCandidates: []DashboardRecurringCandidate{},
 	}
 
 	categoryCurrent := map[string]float64{}
 	categoryPrevious := map[string]float64{}
 	merchantCurrent := map[string]*DashboardMerchant{}
 	accountCurrent := map[string]*DashboardAccount{}
+	dailyCurrent := map[string]*DashboardDailySpend{}
 	expenseAmounts := []float64{}
 
 	for _, entry := range previous {
@@ -194,6 +256,11 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		}
 		response.Summary.TotalSpent += amount
 		expenseAmounts = append(expenseAmounts, amount)
+		if dailyCurrent[entry.Date] == nil {
+			dailyCurrent[entry.Date] = &DashboardDailySpend{Date: entry.Date}
+		}
+		dailyCurrent[entry.Date].Amount += amount
+		dailyCurrent[entry.Date].Count++
 
 		category := normalizedLabel(entry.Category, "Uncategorized")
 		categoryCurrent[category] += amount
@@ -225,6 +292,14 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 
 	if dateRange.Days > 0 {
 		response.Summary.DailyAverage = response.Summary.TotalSpent / float64(dateRange.Days)
+	}
+	for day := dateRange.Start; !day.After(dateRange.End); day = day.AddDate(0, 0, 1) {
+		date := day.Format("2006-01-02")
+		if dailyCurrent[date] != nil {
+			response.DailySpending = append(response.DailySpending, *dailyCurrent[date])
+			continue
+		}
+		response.DailySpending = append(response.DailySpending, DashboardDailySpend{Date: date})
 	}
 	for category, amount := range categoryCurrent {
 		change := percentageChange(amount, categoryPrevious[category])
@@ -264,6 +339,7 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		}
 		return current[i].Date > current[j].Date
 	})
+	response.ReviewItems = dashboardReviewItems(current, entries)
 	if len(current) > 5 {
 		current = current[:5]
 	}
@@ -273,6 +349,79 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		response, previousExpenseTotal(previous), categoryPrevious, expenseAmounts,
 	)
 	return response
+}
+
+func dashboardReviewItems(currentEntries, allEntries []models.Entry) []DashboardReviewItem {
+	items := []DashboardReviewItem{}
+	for _, entry := range currentEntries {
+		category := strings.TrimSpace(entry.Category)
+		if category == "" || strings.EqualFold(category, "uncategorized") || entry.AccountID == nil {
+			items = append(items, DashboardReviewItem{
+				Entry:               entry,
+				CategorySuggestions: categorySuggestionsForReviewItem(entry, allEntries),
+			})
+			if len(items) == 10 {
+				return items
+			}
+		}
+	}
+	return items
+}
+
+func categorySuggestionsForReviewItem(target models.Entry, entries []models.Entry) []string {
+	type scoredCategory struct {
+		category string
+		score    int
+	}
+	categoryScores := map[string]int{}
+	targetMerchant := normalizeInsightMatch(target.Merchant)
+	targetTitle := normalizeInsightMatch(target.Title)
+
+	for _, entry := range entries {
+		if entry.ID != 0 && target.ID != 0 && entry.ID == target.ID {
+			continue
+		}
+		category := normalizedLabel(entry.Category, "")
+		if category == "" || strings.EqualFold(category, "uncategorized") {
+			continue
+		}
+
+		score := 0
+		if targetMerchant != "" && normalizeInsightMatch(entry.Merchant) == targetMerchant {
+			score += 3
+		}
+		if targetTitle != "" && normalizeInsightMatch(entry.Title) == targetTitle {
+			score += 2
+		}
+		if score == 0 {
+			continue
+		}
+		categoryScores[category] += score
+	}
+
+	scored := make([]scoredCategory, 0, len(categoryScores))
+	for category, score := range categoryScores {
+		scored = append(scored, scoredCategory{category: category, score: score})
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		return scored[i].category < scored[j].category
+	})
+
+	suggestions := []string{}
+	for _, item := range scored {
+		suggestions = append(suggestions, item.category)
+		if len(suggestions) == 3 {
+			break
+		}
+	}
+	return suggestions
+}
+
+func normalizeInsightMatch(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
 func buildInsightCards(
@@ -288,46 +437,212 @@ func buildInsightCards(
 		if change < 0 {
 			direction = "lower"
 		}
+		amount := dashboard.Summary.TotalSpent
 		cards = append(cards, InsightCard{
 			Kind: "period_comparison", Severity: "info", Title: "Period comparison",
-			Body: fmt.Sprintf("Spending is %.0f%% %s than the previous period.", math.Abs(change), direction),
+			Body:             fmt.Sprintf("Spending is %.0f%% %s than the previous period.", math.Abs(change), direction),
+			Explanation:      "Compares confirmed expense totals against the immediately preceding equal-length period.",
+			ActionLabel:      "Review period transactions",
+			Amount:           &amount,
+			ChangePercentage: &change,
 		})
 	}
 
 	for _, category := range dashboard.TopCategories {
 		if previous := categoryPrevious[category.Category]; previous > 0 && category.Change >= 20 {
+			amount := category.Amount
+			percentage := category.Percentage
+			change := category.Change
 			cards = append(cards, InsightCard{
 				Kind: "category_increase", Severity: "warning", Title: category.Category + " increased",
-				Body: fmt.Sprintf("%s spending is %.0f%% higher than the previous period.", category.Category, category.Change),
+				Body:             fmt.Sprintf("%s spending is %.0f%% higher than the previous period.", category.Category, category.Change),
+				Explanation:      "Flags a category that had previous-period activity and increased by at least 20%.",
+				ActionLabel:      "Open category",
+				Category:         category.Category,
+				Amount:           &amount,
+				Percentage:       &percentage,
+				ChangePercentage: &change,
 			})
 			break
 		}
 	}
 	if len(dashboard.TopMerchants) > 0 {
 		top := dashboard.TopMerchants[0]
+		amount := top.Amount
+		count := top.TransactionCount
 		cards = append(cards, InsightCard{
 			Kind: "top_merchant", Severity: "info", Title: "Top merchant",
-			Body: fmt.Sprintf("%s accounted for ₹%.2f across %d transaction(s).", top.Merchant, top.Amount, top.TransactionCount),
+			Body:             fmt.Sprintf("%s accounted for ₹%.2f across %d transaction(s).", top.Merchant, top.Amount, top.TransactionCount),
+			Explanation:      "Finds the merchant with the highest confirmed expense total in the selected period.",
+			ActionLabel:      "Open merchant",
+			Merchant:         top.Merchant,
+			Amount:           &amount,
+			TransactionCount: &count,
 		})
 	}
 	if len(dashboard.AccountSpending) > 0 {
 		top := dashboard.AccountSpending[0]
+		amount := top.Amount
+		percentage := top.Percentage
 		cards = append(cards, InsightCard{
 			Kind: "account_usage", Severity: "info", Title: "Most-used account",
-			Body: fmt.Sprintf("%s handled %.0f%% of spending.", top.AccountName, top.Percentage),
+			Body:        fmt.Sprintf("%s handled %.0f%% of spending.", top.AccountName, top.Percentage),
+			Explanation: "Ranks linked accounts and payment sources by confirmed expense total.",
+			ActionLabel: "Review account spend",
+			AccountID:   top.AccountID,
+			AccountName: top.AccountName,
+			Amount:      &amount,
+			Percentage:  &percentage,
 		})
 	}
 	if unusual := unusualExpense(expenseAmounts); unusual > 0 {
+		amount := unusual
 		cards = append(cards, InsightCard{
 			Kind: "unusual_spending", Severity: "warning", Title: "Unusual spending",
-			Body: fmt.Sprintf("A ₹%.2f expense was substantially above this period's average.", unusual),
+			Body:        fmt.Sprintf("A ₹%.2f expense was substantially above this period's average.", unusual),
+			Explanation: "Flags an expense that is substantially above this period's average expense size.",
+			ActionLabel: "Find large expenses",
+			Amount:      &amount,
 		})
 	}
 	if len(dashboard.RecurringCandidates) > 0 {
 		candidate := dashboard.RecurringCandidates[0]
+		amount := candidate.AverageAmount
+		confidence := candidate.Confidence
 		cards = append(cards, InsightCard{
 			Kind: "recurring_candidate", Severity: "info", Title: "Recurring spend to review",
-			Body: fmt.Sprintf("Review %d likely recurring expense(s), including %s around ₹%.2f.", len(dashboard.RecurringCandidates), candidate.Label, candidate.AverageAmount),
+			Body:             fmt.Sprintf("Review %d likely recurring expense(s), including %s around ₹%.2f.", len(dashboard.RecurringCandidates), candidate.Label, candidate.AverageAmount),
+			Explanation:      "Detects repeated merchant or category patterns that look weekly or monthly.",
+			ActionLabel:      "Review recurring pattern",
+			Category:         candidate.Category,
+			Merchant:         candidate.Merchant,
+			Amount:           &amount,
+			NextExpectedDate: candidate.NextExpectedDate,
+			Confidence:       &confidence,
+		})
+	}
+	return cards
+}
+
+func applyBudgetStatuses(entries []models.Entry, budgets []models.Budget, dateRange dashboardRange, dashboard *DashboardResponse) {
+	if dashboard == nil || len(budgets) == 0 {
+		return
+	}
+	currentStart := dateRange.Start.Format("2006-01-02")
+	currentEnd := dateRange.End.Format("2006-01-02")
+	daysLeft := budgetDaysLeft(dateRange.End)
+	statuses := make([]DashboardBudgetStatus, 0, len(budgets))
+	for _, budget := range budgets {
+		spent := budgetSpendFromEntries(entries, budget, currentStart, currentEnd)
+		limit := budget.LimitAmount.Float64()
+		spentValue := spent.Float64()
+		remaining := math.Max(0, limit-spentValue)
+		status := "safe"
+		if spent >= budget.LimitAmount {
+			status = "exceeded"
+		} else {
+			threshold := budget.AlertThresholdPercent
+			if threshold == 0 {
+				threshold = defaultBudgetAlertThreshold
+			}
+			if safePercentage(spentValue, limit) >= float64(threshold) {
+				status = "watch"
+			}
+		}
+		threshold := budget.AlertThresholdPercent
+		if threshold == 0 {
+			threshold = defaultBudgetAlertThreshold
+		}
+		statuses = append(statuses, DashboardBudgetStatus{
+			BudgetID: budget.ID, Name: budget.Name, Category: budget.Category,
+			LimitAmount: limit, SpentAmount: spentValue, RemainingAmount: remaining,
+			Percentage: safePercentage(spentValue, limit), AlertThresholdPercent: threshold,
+			DaysLeft: daysLeft, Status: status,
+		})
+	}
+	sort.Slice(statuses, func(i, j int) bool {
+		if budgetStatusRank(statuses[i].Status) != budgetStatusRank(statuses[j].Status) {
+			return budgetStatusRank(statuses[i].Status) > budgetStatusRank(statuses[j].Status)
+		}
+		return statuses[i].Percentage > statuses[j].Percentage
+	})
+	dashboard.BudgetStatuses = statuses
+	dashboard.Insights = append(dashboard.Insights, buildBudgetInsightCards(statuses)...)
+}
+
+func budgetSpendFromEntries(entries []models.Entry, budget models.Budget, start, end string) models.Money {
+	total := models.Money(0)
+	category := strings.TrimSpace(budget.Category)
+	for _, entry := range entries {
+		if entry.Date < start || entry.Date > end || !strings.EqualFold(entry.Type, "expense") {
+			continue
+		}
+		if category != "" && !strings.EqualFold(strings.TrimSpace(entry.Category), category) {
+			continue
+		}
+		total += entry.Amount
+	}
+	return total
+}
+
+func budgetDaysLeft(end time.Time) int {
+	monthEnd := time.Date(end.Year(), end.Month()+1, 0, 0, 0, 0, 0, end.Location())
+	left := int(monthEnd.Sub(end).Hours() / 24)
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+func budgetStatusRank(status string) int {
+	switch status {
+	case "exceeded":
+		return 3
+	case "watch":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func buildBudgetInsightCards(statuses []DashboardBudgetStatus) []InsightCard {
+	cards := []InsightCard{}
+	for _, status := range statuses {
+		if status.Status != "watch" && status.Status != "exceeded" {
+			continue
+		}
+		budgetID := status.BudgetID
+		spent := status.SpentAmount
+		limit := status.LimitAmount
+		remaining := status.RemainingAmount
+		percentage := status.Percentage
+		target := status.Category
+		if strings.TrimSpace(target) == "" {
+			target = status.Name
+		}
+		kind := "budget_watch"
+		severity := "warning"
+		title := target + " budget nearing limit"
+		body := fmt.Sprintf("%s spend is %.0f%% of the ₹%.2f monthly budget with %d day(s) left.", target, status.Percentage, status.LimitAmount, status.DaysLeft)
+		if status.Status == "exceeded" {
+			kind = "budget_exceeded"
+			title = target + " budget exceeded"
+			body = fmt.Sprintf("%s spend is %.0f%% of the ₹%.2f monthly budget.", target, status.Percentage, status.LimitAmount)
+		}
+		cards = append(cards, InsightCard{
+			Kind:            kind,
+			Severity:        severity,
+			Title:           title,
+			Body:            body,
+			Explanation:     "Compares confirmed expenses in the selected period against your active monthly budget.",
+			ActionLabel:     "Review budget",
+			Category:        status.Category,
+			BudgetID:        &budgetID,
+			Amount:          &spent,
+			LimitAmount:     &limit,
+			RemainingAmount: &remaining,
+			Percentage:      &percentage,
+			Status:          status.Status,
 		})
 	}
 	return cards
@@ -371,6 +686,7 @@ func detectRecurringCandidates(entries []models.Entry, dateRange dashboardRange)
 	candidates := []DashboardRecurringCandidate{}
 	for _, group := range groups {
 		if candidate, ok := recurringCandidateFromGroup(group, dateRange); ok {
+			candidate.CandidateKey = recurringCandidateKey(candidate.Label, candidate.Category)
 			candidates = append(candidates, candidate)
 		}
 	}
@@ -387,6 +703,108 @@ func detectRecurringCandidates(entries []models.Entry, dateRange dashboardRange)
 		candidates = candidates[:5]
 	}
 	return candidates
+}
+
+func suppressReviewedRecurringCandidates(userID uint, dashboard *DashboardResponse, rangeEnd time.Time) error {
+	if dashboard == nil || len(dashboard.RecurringCandidates) == 0 {
+		return nil
+	}
+
+	var decisions []models.RecurringCandidateDecision
+	if err := database.DB.Where("user_id = ?", userID).Find(&decisions).Error; err != nil {
+		return err
+	}
+	decisionByKey := map[string]models.RecurringCandidateDecision{}
+	for _, decision := range decisions {
+		decisionByKey[decision.CandidateKey] = decision
+	}
+
+	var subscriptions []models.Subscription
+	if err := database.DB.Where("user_id = ? AND status IN ?", userID, []string{"active", "paused"}).Find(&subscriptions).Error; err != nil {
+		return err
+	}
+
+	filtered := make([]DashboardRecurringCandidate, 0, len(dashboard.RecurringCandidates))
+	for _, candidate := range dashboard.RecurringCandidates {
+		if candidate.CandidateKey == "" {
+			candidate.CandidateKey = recurringCandidateKey(candidate.Label, candidate.Category)
+		}
+		if recurringCandidateHasSubscription(candidate, subscriptions) {
+			continue
+		}
+		decision, exists := decisionByKey[candidate.CandidateKey]
+		if exists {
+			switch decision.Decision {
+			case "dismissed", "tracked":
+				continue
+			case "snoozed":
+				if decision.SnoozedUntil == nil || !decision.SnoozedUntil.Before(rangeEnd) {
+					continue
+				}
+			}
+		}
+		filtered = append(filtered, candidate)
+	}
+	dashboard.RecurringCandidates = filtered
+	dashboard.Insights = replaceRecurringInsight(dashboard.Insights, filtered)
+	return nil
+}
+
+func replaceRecurringInsight(cards []InsightCard, candidates []DashboardRecurringCandidate) []InsightCard {
+	filtered := make([]InsightCard, 0, len(cards))
+	for _, card := range cards {
+		if card.Kind != "recurring_candidate" {
+			filtered = append(filtered, card)
+		}
+	}
+	if len(candidates) == 0 {
+		return filtered
+	}
+	candidate := candidates[0]
+	amount := candidate.AverageAmount
+	confidence := candidate.Confidence
+	return append(filtered, InsightCard{
+		Kind:             "recurring_candidate",
+		Severity:         "info",
+		Title:            "Recurring spend to review",
+		Body:             fmt.Sprintf("Review %d likely recurring expense(s), including %s around ₹%.2f.", len(candidates), candidate.Label, candidate.AverageAmount),
+		Explanation:      "Detects repeated merchant or category patterns that look weekly or monthly.",
+		ActionLabel:      "Review recurring pattern",
+		Category:         candidate.Category,
+		Merchant:         candidate.Merchant,
+		Amount:           &amount,
+		NextExpectedDate: candidate.NextExpectedDate,
+		Confidence:       &confidence,
+	})
+}
+
+func recurringCandidateHasSubscription(candidate DashboardRecurringCandidate, subscriptions []models.Subscription) bool {
+	candidateMerchant := normalizeRecurringKeyPart(candidate.Merchant)
+	candidateLabel := normalizeRecurringKeyPart(candidate.Label)
+	candidateCategory := normalizeRecurringKeyPart(candidate.Category)
+	for _, subscription := range subscriptions {
+		subMerchant := normalizeRecurringKeyPart(subscription.Merchant)
+		subName := normalizeRecurringKeyPart(subscription.Name)
+		subCategory := normalizeRecurringKeyPart(subscription.Category)
+		if candidateMerchant != "" && (candidateMerchant == subMerchant || candidateMerchant == subName) {
+			return true
+		}
+		if candidateLabel != "" && (candidateLabel == subMerchant || candidateLabel == subName) {
+			return true
+		}
+		if candidateCategory != "" && candidateCategory == subCategory && candidateMerchant == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func recurringCandidateKey(label, category string) string {
+	return normalizeRecurringKeyPart(label) + "|" + normalizeRecurringKeyPart(category)
+}
+
+func normalizeRecurringKeyPart(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
 func recurringCandidateFromGroup(group *recurringGroup, dateRange dashboardRange) (DashboardRecurringCandidate, bool) {

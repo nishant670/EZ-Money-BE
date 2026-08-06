@@ -183,6 +183,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.GET("/notifications", server.listNotifications)
 	authorized.GET("/dashboard", server.getDashboard)
 	authorized.GET("/insights", server.requireEntitlement(billing.FeatureAdvancedInsights), server.getInsights)
+	authorized.POST("/recurring-candidates/decision", server.saveRecurringCandidateDecision)
 	split := authorized.Group("/split", server.requireEntitlement(billing.FeatureSplitLedger))
 	split.POST("/friends", server.createSplitFriend)
 	split.GET("/friends", server.listSplitFriends)
@@ -250,6 +251,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.Subscription{},
 		&models.SubscriptionReminder{},
 		&models.SubscriptionOccurrence{},
+		&models.RecurringCandidateDecision{},
 		&models.PushDevice{},
 		&models.SplitFriend{},
 		&models.SplitGroup{},

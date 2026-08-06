@@ -45,6 +45,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Dashboard"
+  /v1/recurring-candidates/decision:
+    post:
+      summary: Persist a review decision for a detected recurring candidate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecurringCandidateDecisionInput"
+      responses:
+        "200":
+          description: Decision saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecurringCandidateDecision"
+        "422":
+          description: Invalid decision fields
   /v1/user:
     delete:
       summary: Permanently delete the authenticated user and owned data
@@ -827,7 +845,7 @@ components:
   schemas:
     Dashboard:
       type: object
-      required: [period, summary, top_categories, top_merchants, account_spending, recent_transactions, insights, recurring_candidates]
+      required: [period, summary, top_categories, top_merchants, account_spending, budget_statuses, daily_spending, recent_transactions, review_items, insights, recurring_candidates]
       properties:
         period:
           type: object
@@ -863,10 +881,22 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DashboardAccount"
+        budget_statuses:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardBudgetStatus"
+        daily_spending:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardDailySpend"
         recent_transactions:
           type: array
           items:
             $ref: "#/components/schemas/SavedEntry"
+        review_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardReviewItem"
         insights:
           type: array
           items:
@@ -897,6 +927,27 @@ components:
           type: number
         transaction_count:
           type: integer
+    DashboardDailySpend:
+      type: object
+      required: [date, amount, count]
+      properties:
+        date:
+          type: string
+          format: date
+        amount:
+          type: number
+        count:
+          type: integer
+    DashboardReviewItem:
+      allOf:
+        - $ref: "#/components/schemas/SavedEntry"
+        - type: object
+          required: [category_suggestions]
+          properties:
+            category_suggestions:
+              type: array
+              items:
+                type: string
     DashboardAccount:
       type: object
       required: [account_name, amount, percentage]
@@ -909,10 +960,37 @@ components:
           type: number
         percentage:
           type: number
+    DashboardBudgetStatus:
+      type: object
+      required: [budget_id, name, category, limit_amount, spent_amount, remaining_amount, percentage, alert_threshold_percent, days_left, status]
+      properties:
+        budget_id:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+        limit_amount:
+          type: number
+        spent_amount:
+          type: number
+        remaining_amount:
+          type: number
+        percentage:
+          type: number
+        alert_threshold_percent:
+          type: integer
+        days_left:
+          type: integer
+        status:
+          type: string
+          enum: [safe, watch, exceeded]
     DashboardRecurringCandidate:
       type: object
-      required: [label, merchant, category, average_amount, interval_guess, confidence, occurrences, last_seen_date, next_expected_date, review_due]
+      required: [candidate_key, label, merchant, category, average_amount, interval_guess, confidence, occurrences, last_seen_date, next_expected_date, review_due]
       properties:
+        candidate_key:
+          type: string
         label:
           type: string
         merchant:
@@ -938,13 +1016,48 @@ components:
           format: date
         review_due:
           type: boolean
+    RecurringCandidateDecisionInput:
+      type: object
+      required: [decision]
+      properties:
+        candidate_key:
+          type: string
+        merchant:
+          type: string
+        category:
+          type: string
+        decision:
+          type: string
+          enum: [dismissed, snoozed, tracked]
+        snoozed_until:
+          type: string
+          format: date
+    RecurringCandidateDecision:
+      allOf:
+        - $ref: "#/components/schemas/RecurringCandidateDecisionInput"
+        - type: object
+          required: [id, user_id, candidate_key, merchant, category, decision, last_reviewed_at, created_at, updated_at]
+          properties:
+            id:
+              type: integer
+            user_id:
+              type: integer
+            last_reviewed_at:
+              type: string
+              format: date-time
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
     InsightCard:
       type: object
       required: [kind, severity, title, body]
       properties:
         kind:
           type: string
-          enum: [period_comparison, category_increase, top_merchant, account_usage, unusual_spending, recurring_candidate]
+          enum: [period_comparison, category_increase, top_merchant, account_usage, unusual_spending, recurring_candidate, budget_watch, budget_exceeded]
         severity:
           type: string
           enum: [info, warning, success]
@@ -952,6 +1065,42 @@ components:
           type: string
         body:
           type: string
+        explanation:
+          type: string
+        action_label:
+          type: string
+        category:
+          type: string
+        merchant:
+          type: string
+        budget_id:
+          type: integer
+        account_id:
+          type: integer
+          nullable: true
+        account_name:
+          type: string
+        amount:
+          type: number
+        limit_amount:
+          type: number
+        remaining_amount:
+          type: number
+        status:
+          type: string
+        percentage:
+          type: number
+        change_percentage:
+          type: number
+        transaction_count:
+          type: integer
+        next_expected_date:
+          type: string
+          format: date
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
     ExpenseOrIncomeEntry:
       $ref: ./schemas/expense_entry.schema.json
     FinalEntry:

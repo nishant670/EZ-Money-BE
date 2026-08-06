@@ -137,6 +137,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// Insights
 		authorized.GET("/dashboard", s.getDashboard)
 		authorized.GET("/insights", s.requireEntitlement(billing.FeatureAdvancedInsights), s.getInsights)
+		authorized.POST("/recurring-candidates/decision", s.saveRecurringCandidateDecision)
 
 		// Notifications
 		authorized.GET("/notifications", s.listNotifications)
@@ -1251,6 +1252,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.SubscriptionReminder{}, "subscription reminders"},
 			{&models.SubscriptionOccurrence{}, "subscription occurrences"},
 			{&models.Subscription{}, "subscriptions"},
+			{&models.RecurringCandidateDecision{}, "recurring candidate decisions"},
 			{&models.PushDevice{}, "push devices"},
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
