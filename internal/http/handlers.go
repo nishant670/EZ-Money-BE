@@ -60,7 +60,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		})
 	}
 
-	loader := gojsonschema.NewReferenceLoader("file://./schemas/expense_entry.schema.json")
+	schemaPath, err := filepath.Abs(config.ResolveBackendPath(filepath.Join("schemas", "expense_entry.schema.json")))
+	if err != nil {
+		panic(err)
+	}
+	loader := gojsonschema.NewReferenceLoader((&url.URL{Scheme: "file", Path: schemaPath}).String())
 	schema, err := gojsonschema.NewSchema(loader)
 	if err != nil {
 		panic(err)

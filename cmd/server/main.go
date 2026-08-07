@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"os"
+	"strings"
 
 	"finance-parser-go/internal/config"
 	"finance-parser-go/internal/database"
@@ -12,7 +14,7 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load(".env")
+	loadEnv()
 	database.Connect()
 	if err := database.DB.AutoMigrate(
 		&models.User{},
@@ -48,5 +50,22 @@ func main() {
 	log.Printf("listening on :%s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func loadEnv() {
+	loadEnvFile(".env")
+	loadEnvFile(config.ResolveBackendPath(".env"))
+}
+
+func loadEnvFile(path string) {
+	values, err := godotenv.Read(path)
+	if err != nil {
+		return
+	}
+	for key, value := range values {
+		if strings.TrimSpace(os.Getenv(key)) == "" {
+			_ = os.Setenv(key, value)
+		}
 	}
 }

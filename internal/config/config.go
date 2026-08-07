@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -133,4 +135,35 @@ func Load() *Config {
 		AIAbuseDailyCreditsThreshold:    atoi("AI_ABUSE_DAILY_CREDITS_THRESHOLD", 500),
 		AIFreeCostPerUserAlertUSDMicros: atoi64("AI_FREE_COST_PER_USER_ALERT_USD_MICROS", 100000),
 	}
+}
+
+func ResolveBackendPath(rel string) string {
+	candidates := []string{
+		rel,
+		filepath.Join("EZ-Money-BE", rel),
+	}
+
+	if _, file, _, ok := runtime.Caller(0); ok && filepath.IsAbs(file) {
+		candidates = append(candidates, filepath.Join(filepath.Dir(file), "..", "..", rel))
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		for dir := cwd; ; dir = filepath.Dir(dir) {
+			if filepath.Base(dir) == "EZ-Money-BE" {
+				candidates = append(candidates, filepath.Join(dir, rel))
+			}
+			candidates = append(candidates, filepath.Join(dir, "EZ-Money-BE", rel))
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+		}
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return rel
 }
