@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -645,6 +646,149 @@ func (s *Server) authRegister(c *gin.Context) {
 		return
 	}
 	c.JSON(201, response)
+}
+
+// POST /v1/auth/google
+func (s *Server) authGoogle(c *gin.Context) {
+	var input struct {
+		IDToken           string `json:"id_token" binding:"required"`
+		Nonce             string `json:"nonce"`
+		GuestUUID         string `json:"guest_uuid"`
+		DeviceID          string `json:"device_id"`
+		BiometricsEnabled bool   `json:"biometrics_enabled"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(413, gin.H{"error": "request_body_too_large"})
+			return
+		}
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if len(s.cfg.GoogleClientIDs) == 0 {
+		c.JSON(503, gin.H{"error": "google_login_not_configured"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	identity, err := verifyGoogleIDToken(ctx, strings.TrimSpace(input.IDToken), s.cfg.GoogleClientIDs)
+	if err != nil {
+		c.JSON(401, gin.H{"error": err.Error()})
+		return
+	}
+	if input.Nonce != "" && identity.Nonce != input.Nonce {
+		c.JSON(401, gin.H{"error": "invalid_google_nonce"})
+		return
+	}
+
+	var user models.User
+	googleSubject := identity.Subject
+	email := identity.Email
+	deviceID := strings.TrimSpace(input.DeviceID)
+	deviceIDPtr := (*string)(nil)
+	if deviceID != "" {
+		deviceIDPtr = &deviceID
+	}
+
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("google_subject = ?", googleSubject).First(&user).Error; err == nil {
+			updates := map[string]interface{}{
+				"failed_login_attempts": 0,
+				"login_locked_until":    nil,
+			}
+			if user.Email == nil || *user.Email == "" {
+				updates["email"] = email
+			}
+			if deviceID != "" {
+				updates["device_id"] = deviceID
+			}
+			if err := tx.Model(&user).Updates(updates).Error; err != nil {
+				return err
+			}
+			return tx.First(&user, user.ID).Error
+		} else if err != gorm.ErrRecordNotFound {
+			return err
+		}
+
+		var existing models.User
+		if err := tx.Where("LOWER(email) = LOWER(?)", email).First(&existing).Error; err == nil {
+			if existing.GoogleSubject != nil && *existing.GoogleSubject != googleSubject {
+				return errors.New("email_linked_to_different_google_account")
+			}
+			updates := map[string]interface{}{
+				"google_subject":        googleSubject,
+				"failed_login_attempts": 0,
+				"login_locked_until":    nil,
+			}
+			if deviceID != "" {
+				updates["device_id"] = deviceID
+			}
+			if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+				return err
+			}
+			user = existing
+			return tx.First(&user, existing.ID).Error
+		} else if err != gorm.ErrRecordNotFound {
+			return err
+		}
+
+		if strings.TrimSpace(input.GuestUUID) != "" {
+			if err := tx.Where("uuid = ? AND is_guest = ?", strings.TrimSpace(input.GuestUUID), true).First(&user).Error; err == nil {
+				user.Email = &email
+				user.GoogleSubject = &googleSubject
+				user.IsGuest = false
+				user.BiometricsEnabled = input.BiometricsEnabled
+				user.Username = "User_" + generateUUID()[:8]
+				if identity.Picture != "" {
+					user.ProfileImage = identity.Picture
+				}
+				if deviceIDPtr != nil {
+					user.DeviceID = deviceIDPtr
+				}
+				return tx.Save(&user).Error
+			} else if err != gorm.ErrRecordNotFound {
+				return err
+			}
+		}
+
+		user = models.User{
+			UUID:              generateUUID(),
+			Email:             &email,
+			GoogleSubject:     &googleSubject,
+			IsGuest:           false,
+			BiometricsEnabled: input.BiometricsEnabled,
+			DeviceID:          deviceIDPtr,
+			Username:          "User_" + generateUUID()[:8],
+			ProfileImage:      identity.Picture,
+		}
+		return tx.Create(&user).Error
+	})
+	if err != nil {
+		if err.Error() == "email_linked_to_different_google_account" {
+			c.JSON(409, gin.H{"error": "email_linked_to_different_google_account"})
+			return
+		}
+		c.JSON(500, gin.H{"error": "google_login_failed"})
+		return
+	}
+
+	if err := ensureDefaultCashAccount(user.ID); err != nil {
+		c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
+		return
+	}
+	if _, _, err := billing.NewCreditService(database.DB).EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		c.JSON(500, gin.H{"error": "failed_ensure_trial_credits"})
+		return
+	}
+
+	user.HasPin = user.PinHash != ""
+	response, err := authResponse(&user)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_create_session"})
+		return
+	}
+	c.JSON(200, response)
 }
 
 // POST /v1/auth/pin/reset

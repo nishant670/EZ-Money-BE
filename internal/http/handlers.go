@@ -77,6 +77,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authLimited.POST("/identify", s.authIdentify)
 		authLimited.POST("/otp/send", s.authOtpSend)
 		authLimited.POST("/otp/verify", s.authOtpVerify)
+		authLimited.POST("/google", s.authGoogle)
 		authLimited.POST("/register", s.authRegister)
 		authLimited.POST("/login", s.authLogin)
 		authLimited.POST("/pin/reset", s.authPinReset)

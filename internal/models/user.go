@@ -9,6 +9,7 @@ type User struct {
 	UUID                string     `gorm:"uniqueIndex" json:"uuid"`                 // Public ID for API tokens check
 	Email               *string    `gorm:"uniqueIndex" json:"email,omitempty"`      // Nullable unique email
 	Phone               *string    `gorm:"uniqueIndex" json:"phone,omitempty"`      // Nullable unique phone
+	GoogleSubject       *string    `gorm:"uniqueIndex" json:"-"`                    // Stable Google account subject
 	DeviceID            *string    `gorm:"index" json:"device_id,omitempty"`        // For device-scoped guest reuse
 	PinHash             string     `json:"-"`                                       // Bcrypt hash, hidden from JSON
 	BiometricsEnabled   bool       `gorm:"default:false" json:"biometrics_enabled"` // User preference

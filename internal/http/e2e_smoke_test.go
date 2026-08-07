@@ -120,6 +120,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 		MaxJSONKB:          64,
 		MaxUploadMB:        1,
 		MaxTranscriptChars: 1000,
+		GoogleClientIDs:    []string{"test-google-client"},
 	}
 	server := &Server{
 		cfg:       cfg,
@@ -141,6 +142,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	auth.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))
 	auth.POST("/guest", server.authGuest)
 	auth.POST("/login", server.authLogin)
+	auth.POST("/google", server.authGoogle)
 
 	billingPublic := router.Group("/v1/billing")
 	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
