@@ -421,28 +421,9 @@ func (s *CreditService) EnsureLoggedInFreeTrialGrant(userID uint) (models.Credit
 	var grant models.CreditGrant
 	created := false
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("user_id = ? AND source = ?", userID, GrantSourceFreeTrial).
-			First(&grant).Error; err == nil {
-			return nil
-		} else if err != gorm.ErrRecordNotFound {
-			return err
-		}
-
-		now := s.now()
-		expiresAt := now.Add(TrialDuration)
-		grant = models.CreditGrant{
-			UserID:           &userID,
-			Source:           GrantSourceFreeTrial,
-			CreditsGranted:   LoggedInFreeTrialCredits,
-			CreditsRemaining: LoggedInFreeTrialCredits,
-			ValidFrom:        now,
-			ExpiresAt:        &expiresAt,
-		}
-		if err := tx.Create(&grant).Error; err != nil {
-			return err
-		}
-		created = true
-		return createGrantLedger(tx, grant, LedgerDirectionGrant, LoggedInFreeTrialCredits, ReasonFreeTrial, fmt.Sprintf("free_trial:user:%d", userID))
+		var err error
+		grant, created, err = s.ensureLoggedInFreeTrialGrantTx(tx, userID)
+		return err
 	})
 	if err != nil {
 		if lookupErr := s.db.Where("user_id = ? AND source = ?", userID, GrantSourceFreeTrial).First(&grant).Error; lookupErr == nil {
@@ -452,6 +433,41 @@ func (s *CreditService) EnsureLoggedInFreeTrialGrant(userID uint) (models.Credit
 	}
 
 	return grant, created, nil
+}
+
+func (s *CreditService) EnsureLoggedInFreeTrialGrantTx(tx *gorm.DB, userID uint) (models.CreditGrant, bool, error) {
+	if userID == 0 {
+		return models.CreditGrant{}, false, fmt.Errorf("user id is required")
+	}
+	return s.ensureLoggedInFreeTrialGrantTx(tx, userID)
+}
+
+func (s *CreditService) ensureLoggedInFreeTrialGrantTx(tx *gorm.DB, userID uint) (models.CreditGrant, bool, error) {
+	var grant models.CreditGrant
+	if err := tx.Where("user_id = ? AND source = ?", userID, GrantSourceFreeTrial).
+		First(&grant).Error; err == nil {
+		return grant, false, nil
+	} else if err != gorm.ErrRecordNotFound {
+		return models.CreditGrant{}, false, err
+	}
+
+	now := s.now()
+	expiresAt := now.Add(TrialDuration)
+	grant = models.CreditGrant{
+		UserID:           &userID,
+		Source:           GrantSourceFreeTrial,
+		CreditsGranted:   LoggedInFreeTrialCredits,
+		CreditsRemaining: LoggedInFreeTrialCredits,
+		ValidFrom:        now,
+		ExpiresAt:        &expiresAt,
+	}
+	if err := tx.Create(&grant).Error; err != nil {
+		return models.CreditGrant{}, false, err
+	}
+	if err := createGrantLedger(tx, grant, LedgerDirectionGrant, LoggedInFreeTrialCredits, ReasonFreeTrial, fmt.Sprintf("free_trial:user:%d", userID)); err != nil {
+		return models.CreditGrant{}, false, err
+	}
+	return grant, true, nil
 }
 
 func (s *CreditService) EnsureGuestTrialGrant(deviceID, ip string) (models.CreditGrant, bool, error) {
@@ -526,6 +542,120 @@ func (s *CreditService) EnsureGuestTrialGrant(deviceID, ip string) (models.Credi
 	}
 
 	return grant, created, nil
+}
+
+func (s *CreditService) PromoteGuestDeviceToUser(tx *gorm.DB, userID uint, deviceID string) error {
+	if userID == 0 {
+		return fmt.Errorf("user id is required")
+	}
+	deviceHash := HashUsageKey(deviceID)
+	if deviceHash == "" {
+		return nil
+	}
+
+	var guestGrant models.CreditGrant
+	if err := tx.Where("guest_device_id_hash = ? AND source = ?", deviceHash, GrantSourceFreeTrial).
+		First(&guestGrant).Error; err == nil {
+		usedCredits := guestGrant.CreditsGranted - guestGrant.CreditsRemaining
+		if usedCredits < 0 {
+			usedCredits = 0
+		}
+		targetGranted := guestGrant.CreditsGranted
+		if targetGranted < LoggedInFreeTrialCredits {
+			targetGranted = LoggedInFreeTrialCredits
+		}
+		targetRemaining := targetGranted - usedCredits
+		if targetRemaining < 0 {
+			targetRemaining = 0
+		}
+		topUpCredits := targetRemaining - guestGrant.CreditsRemaining
+		expiresAt := s.now().Add(TrialDuration)
+		updates := map[string]any{
+			"user_id":              userID,
+			"guest_device_id_hash": "",
+			"credits_granted":      targetGranted,
+			"credits_remaining":    targetRemaining,
+			"expires_at":           expiresAt,
+		}
+		if err := tx.Model(&guestGrant).Updates(updates).Error; err != nil {
+			return err
+		}
+		guestGrant.UserID = &userID
+		guestGrant.GuestDeviceIDHash = ""
+		guestGrant.CreditsGranted = targetGranted
+		guestGrant.CreditsRemaining = targetRemaining
+		guestGrant.ExpiresAt = &expiresAt
+		if topUpCredits > 0 {
+			if err := createGrantLedger(
+				tx,
+				guestGrant,
+				LedgerDirectionGrant,
+				topUpCredits,
+				ReasonFreeTrial,
+				fmt.Sprintf("free_trial:upgrade:user:%d:guest:%s", userID, deviceHash),
+			); err != nil {
+				return err
+			}
+		}
+	} else if err != gorm.ErrRecordNotFound {
+		return err
+	}
+
+	if err := tx.Model(&models.CreditGrant{}).
+		Where("guest_device_id_hash = ?", deviceHash).
+		Updates(map[string]any{"user_id": userID, "guest_device_id_hash": ""}).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&models.CreditLedger{}).
+		Where("guest_device_id_hash = ?", deviceHash).
+		Updates(map[string]any{"user_id": userID, "guest_device_id_hash": ""}).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&models.AIUsageEvent{}).
+		Where("guest_device_id_hash = ?", deviceHash).
+		Updates(map[string]any{"user_id": userID, "guest_device_id_hash": ""}).Error; err != nil {
+		return err
+	}
+	if err := promoteGuestDailyUsageToUser(tx, userID, deviceHash); err != nil {
+		return err
+	}
+	if err := tx.Model(&models.AIUsageLimitEvent{}).
+		Where("guest_device_id_hash = ?", deviceHash).
+		Updates(map[string]any{"user_id": userID, "guest_device_id_hash": ""}).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&models.AIAbuseBlock{}).
+		Where("guest_device_id_hash = ?", deviceHash).
+		Updates(map[string]any{"user_id": userID, "guest_device_id_hash": ""}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+func promoteGuestDailyUsageToUser(tx *gorm.DB, userID uint, deviceHash string) error {
+	var guestRows []models.DailyCreditUsage
+	if err := tx.Where("guest_device_id_hash = ?", deviceHash).Find(&guestRows).Error; err != nil {
+		return err
+	}
+	for _, guestRow := range guestRows {
+		var userRow models.DailyCreditUsage
+		if err := tx.Where("user_id = ? AND usage_date = ?", userID, guestRow.UsageDate).First(&userRow).Error; err == nil {
+			if err := tx.Model(&userRow).Update("credits_used", userRow.CreditsUsed+guestRow.CreditsUsed).Error; err != nil {
+				return err
+			}
+			if err := tx.Delete(&guestRow).Error; err != nil {
+				return err
+			}
+		} else if err == gorm.ErrRecordNotFound {
+			if err := tx.Model(&guestRow).
+				Updates(map[string]any{"user_id": userID, "guest_device_id_hash": ""}).Error; err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *CreditService) GrantSubscriptionPeriod(subscription models.UserSubscription, credits int, validFrom, expiresAt time.Time) (models.CreditGrant, bool, error) {

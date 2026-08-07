@@ -18,7 +18,7 @@ Legend:
   transactions, accounts, notifications, budgets, recurring payments, and EMI
   API integrations documented in `docs/WEB_DASHBOARD.md`.
 - Backend tests pass with `GOCACHE=/private/tmp/finnri-go-build-cache go test ./...` when local `httptest` networking is allowed.
-- Mobile lint currently fails: 10 errors and 65 warnings.
+- Mobile lint errors and warnings have been addressed per the P1 quality gates.
 - Web lint, TypeScript checking, and the production build pass.
 
 ## Docs And Planning
@@ -111,7 +111,7 @@ Legend:
 
 - [x] Add persistent `ParseAttempt` model or explicitly defer it with a privacy rationale.
 - [x] Add `Category` model or explicitly keep string categories for MVP with a migration plan.
-- [ ] Move larger dashboard aggregations from in-memory scans to bounded SQL queries before scale.
+- [x] Move larger dashboard aggregations from in-memory scans to bounded SQL queries before scale.
 - [x] Add database constraints for positive amounts, supported transaction types, supported sources, and owned account references where feasible.
 - [x] Decide whether account balances/credit limits should use fixed-point money instead of `float64`.
 - [x] Standardize account type enum names across docs, backend, and mobile (`credit_card` vs `credit`, `wallet` vs `wallets`).
@@ -120,7 +120,7 @@ Legend:
 
 - [x] Improve recurring candidate detection and weekly review.
 - [x] Add budget alerts after the core habit loop is reliable.
-- [ ] Add optional login/sync after secure sessions are implemented.
+- [x] Add optional login/sync after secure sessions are implemented.
 - [x] Add full bill splitting, friend balances, and settlements later; not MVP.
 - [x] Add EMI tools later; not MVP.
 - [x] Add full subscription manager later; not MVP.

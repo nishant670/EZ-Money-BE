@@ -1,6 +1,7 @@
 package http
 
 import (
+	"database/sql"
 	"fmt"
 	"math"
 	"net/http"
@@ -174,12 +175,8 @@ func (s *Server) getDashboard(c *gin.Context) {
 		return
 	}
 
-	var entries []models.Entry
-	if err := database.DB.Preload("Account").
-		Where("user_id = ? AND date >= ? AND date <= ?", userID,
-			dateRange.PreviousStart.Format("2006-01-02"), dateRange.End.Format("2006-01-02")).
-		Order("date desc, created_at desc").
-		Find(&entries).Error; err != nil {
+	dashboard, err := buildDashboardFromDB(userID, dateRange)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
 		return
 	}
@@ -192,8 +189,20 @@ func (s *Server) getDashboard(c *gin.Context) {
 		return
 	}
 
-	dashboard := buildDashboard(entries, dateRange)
-	applyBudgetStatuses(entries, budgets, dateRange, &dashboard)
+	postProcessingEntries, err := loadDashboardPostProcessingEntries(
+		userID,
+		dateRange.PreviousStart.Format("2006-01-02"),
+		dateRange.End.Format("2006-01-02"),
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
+		return
+	}
+	dashboard.ReviewItems = dashboardReviewItems(
+		currentDashboardEntries(postProcessingEntries, dateRange),
+		postProcessingEntries,
+	)
+	applyBudgetStatuses(postProcessingEntries, budgets, dateRange, &dashboard)
 	if err := suppressReviewedRecurringCandidates(userID, &dashboard, dateRange.End); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
 		return
@@ -203,6 +212,320 @@ func (s *Server) getDashboard(c *gin.Context) {
 
 func (s *Server) getInsights(c *gin.Context) {
 	s.getDashboard(c)
+}
+
+func buildDashboardFromDB(userID uint, dateRange dashboardRange) (DashboardResponse, error) {
+	start := dateRange.Start.Format("2006-01-02")
+	end := dateRange.End.Format("2006-01-02")
+	previousStart := dateRange.PreviousStart.Format("2006-01-02")
+	previousEnd := dateRange.PreviousEnd.Format("2006-01-02")
+
+	response := DashboardResponse{
+		Period:        DashboardPeriod{Start: start, End: end},
+		TopCategories: []DashboardCategory{}, TopMerchants: []DashboardMerchant{},
+		AccountSpending: []DashboardAccount{}, BudgetStatuses: []DashboardBudgetStatus{},
+		DailySpending: []DashboardDailySpend{}, RecentTransactions: []models.Entry{},
+		ReviewItems: []DashboardReviewItem{},
+		Insights:    []InsightCard{}, RecurringCandidates: []DashboardRecurringCandidate{},
+	}
+
+	summary, err := loadDashboardSummary(userID, start, end)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	response.Summary = summary
+	if dateRange.Days > 0 {
+		response.Summary.DailyAverage = response.Summary.TotalSpent / float64(dateRange.Days)
+	}
+
+	categoryPrevious, err := loadDashboardPreviousCategoryTotals(userID, previousStart, previousEnd)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	response.TopCategories, err = loadDashboardTopCategories(userID, start, end, response.Summary.TotalSpent, categoryPrevious)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	response.TopMerchants, err = loadDashboardTopMerchants(userID, start, end)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	response.AccountSpending, err = loadDashboardAccountSpending(userID, start, end, response.Summary.TotalSpent)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	response.DailySpending, err = loadDashboardDailySpending(userID, dateRange)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	response.RecentTransactions, err = loadDashboardRecentTransactions(userID, start, end)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+
+	recurringEntries, err := loadDashboardRecurringEntries(userID, previousStart, end)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	expenseAmounts, err := loadDashboardExpenseAmounts(userID, start, end)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	previousSpent, err := loadDashboardPreviousExpenseTotal(userID, previousStart, previousEnd)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
+	response.RecurringCandidates = detectRecurringCandidates(recurringEntries, dateRange)
+	response.Insights = buildInsightCards(response, previousSpent, categoryPrevious, expenseAmounts)
+	return response, nil
+}
+
+type dashboardSummaryRow struct {
+	TotalSpent       float64
+	TotalIncome      float64
+	TransactionCount int
+}
+
+func loadDashboardSummary(userID uint, start, end string) (DashboardSummary, error) {
+	var row dashboardSummaryRow
+	err := database.DB.Model(&models.Entry{}).
+		Select(`COALESCE(SUM(CASE WHEN LOWER(type) = 'expense' THEN amount ELSE 0 END), 0) AS total_spent,
+			COALESCE(SUM(CASE WHEN LOWER(type) = 'income' THEN amount ELSE 0 END), 0) AS total_income,
+			COUNT(*) AS transaction_count`).
+		Where("user_id = ? AND date >= ? AND date <= ?", userID, start, end).
+		Scan(&row).Error
+	if err != nil {
+		return DashboardSummary{}, err
+	}
+	return DashboardSummary{
+		TotalSpent:       row.TotalSpent,
+		TotalIncome:      row.TotalIncome,
+		TransactionCount: row.TransactionCount,
+	}, nil
+}
+
+type dashboardCategoryRow struct {
+	Category string
+	Amount   float64
+}
+
+func loadDashboardPreviousCategoryTotals(userID uint, start, end string) (map[string]float64, error) {
+	var rows []dashboardCategoryRow
+	if err := database.DB.Model(&models.Entry{}).
+		Select("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END AS category, COALESCE(SUM(amount), 0) AS amount").
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
+		Group("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	totals := map[string]float64{}
+	for _, row := range rows {
+		totals[normalizedLabel(row.Category, "Uncategorized")] = row.Amount
+	}
+	return totals, nil
+}
+
+func loadDashboardTopCategories(userID uint, start, end string, totalSpent float64, previous map[string]float64) ([]DashboardCategory, error) {
+	var rows []dashboardCategoryRow
+	if err := database.DB.Model(&models.Entry{}).
+		Select("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END AS category, COALESCE(SUM(amount), 0) AS amount").
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
+		Group("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END").
+		Order("amount DESC").
+		Limit(5).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	categories := make([]DashboardCategory, 0, len(rows))
+	for _, row := range rows {
+		category := normalizedLabel(row.Category, "Uncategorized")
+		categories = append(categories, DashboardCategory{
+			Category:   category,
+			Amount:     row.Amount,
+			Percentage: safePercentage(row.Amount, totalSpent),
+			Change:     percentageChange(row.Amount, previous[category]),
+		})
+	}
+	return categories, nil
+}
+
+func loadDashboardTopMerchants(userID uint, start, end string) ([]DashboardMerchant, error) {
+	var rows []DashboardMerchant
+	if err := database.DB.Model(&models.Entry{}).
+		Select("TRIM(merchant) AS merchant, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS transaction_count").
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ? AND TRIM(merchant) <> ?", userID, start, end, "expense", "").
+		Group("TRIM(merchant)").
+		Order("amount DESC").
+		Limit(5).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []DashboardMerchant{}
+	}
+	return rows, nil
+}
+
+type dashboardAccountRow struct {
+	AccountID   sql.NullInt64
+	AccountName string
+	Amount      float64
+}
+
+func loadDashboardAccountSpending(userID uint, start, end string, totalSpent float64) ([]DashboardAccount, error) {
+	var rows []dashboardAccountRow
+	if err := database.DB.Table("entries").
+		Select(`entries.account_id AS account_id,
+			CASE
+				WHEN entries.account_id IS NULL THEN 'Unassigned'
+				WHEN TRIM(accounts.name) <> '' THEN accounts.name
+				ELSE entries.mode
+			END AS account_name,
+			COALESCE(SUM(entries.amount), 0) AS amount`).
+		Joins("LEFT JOIN accounts ON accounts.id = entries.account_id AND accounts.user_id = entries.user_id").
+		Where("entries.user_id = ? AND entries.date >= ? AND entries.date <= ? AND LOWER(entries.type) = ?", userID, start, end, "expense").
+		Group(`entries.account_id,
+			CASE
+				WHEN entries.account_id IS NULL THEN 'Unassigned'
+				WHEN TRIM(accounts.name) <> '' THEN accounts.name
+				ELSE entries.mode
+			END`).
+		Order("amount DESC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	accounts := make([]DashboardAccount, 0, len(rows))
+	for _, row := range rows {
+		var accountID *uint
+		if row.AccountID.Valid {
+			id := uint(row.AccountID.Int64)
+			accountID = &id
+		}
+		accounts = append(accounts, DashboardAccount{
+			AccountID:   accountID,
+			AccountName: normalizedLabel(row.AccountName, "Unassigned"),
+			Amount:      row.Amount,
+			Percentage:  safePercentage(row.Amount, totalSpent),
+		})
+	}
+	return accounts, nil
+}
+
+type dashboardDailySpendRow struct {
+	Date   string
+	Amount float64
+	Count  int
+}
+
+func loadDashboardDailySpending(userID uint, dateRange dashboardRange) ([]DashboardDailySpend, error) {
+	start := dateRange.Start.Format("2006-01-02")
+	end := dateRange.End.Format("2006-01-02")
+	var rows []dashboardDailySpendRow
+	if err := database.DB.Model(&models.Entry{}).
+		Select("date, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
+		Group("date").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	byDate := map[string]DashboardDailySpend{}
+	for _, row := range rows {
+		byDate[row.Date] = DashboardDailySpend{Date: row.Date, Amount: row.Amount, Count: row.Count}
+	}
+	daily := make([]DashboardDailySpend, 0, dateRange.Days)
+	for day := dateRange.Start; !day.After(dateRange.End); day = day.AddDate(0, 0, 1) {
+		date := day.Format("2006-01-02")
+		if spend, ok := byDate[date]; ok {
+			daily = append(daily, spend)
+			continue
+		}
+		daily = append(daily, DashboardDailySpend{Date: date})
+	}
+	return daily, nil
+}
+
+func loadDashboardRecentTransactions(userID uint, start, end string) ([]models.Entry, error) {
+	var entries []models.Entry
+	if err := database.DB.Preload("Account").
+		Where("user_id = ? AND date >= ? AND date <= ?", userID, start, end).
+		Order("date desc, created_at desc").
+		Limit(5).
+		Find(&entries).Error; err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		entries = []models.Entry{}
+	}
+	return entries, nil
+}
+
+func loadDashboardPostProcessingEntries(userID uint, start, end string) ([]models.Entry, error) {
+	var entries []models.Entry
+	if err := database.DB.Preload("Account").
+		Where("user_id = ? AND date >= ? AND date <= ?", userID, start, end).
+		Order("date desc, created_at desc").
+		Find(&entries).Error; err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		entries = []models.Entry{}
+	}
+	return entries, nil
+}
+
+func currentDashboardEntries(entries []models.Entry, dateRange dashboardRange) []models.Entry {
+	start := dateRange.Start.Format("2006-01-02")
+	end := dateRange.End.Format("2006-01-02")
+	current := make([]models.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Date >= start && entry.Date <= end {
+			current = append(current, entry)
+		}
+	}
+	sort.Slice(current, func(i, j int) bool {
+		if current[i].Date == current[j].Date {
+			return current[i].CreatedAt.After(current[j].CreatedAt)
+		}
+		return current[i].Date > current[j].Date
+	})
+	return current
+}
+
+func loadDashboardRecurringEntries(userID uint, start, end string) ([]models.Entry, error) {
+	var entries []models.Entry
+	if err := database.DB.Preload("Account").
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
+		Order("date asc, created_at asc").
+		Find(&entries).Error; err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		entries = []models.Entry{}
+	}
+	return entries, nil
+}
+
+func loadDashboardExpenseAmounts(userID uint, start, end string) ([]float64, error) {
+	var amounts []float64
+	if err := database.DB.Model(&models.Entry{}).
+		Select("amount").
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
+		Scan(&amounts).Error; err != nil {
+		return nil, err
+	}
+	if amounts == nil {
+		amounts = []float64{}
+	}
+	return amounts, nil
+}
+
+func loadDashboardPreviousExpenseTotal(userID uint, start, end string) (float64, error) {
+	var total float64
+	err := database.DB.Model(&models.Entry{}).
+		Select("COALESCE(SUM(amount), 0)").
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
+		Scan(&total).Error
+	return total, err
 }
 
 func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardResponse {

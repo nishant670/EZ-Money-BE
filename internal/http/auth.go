@@ -153,20 +153,24 @@ func normalizeIdentifier(identifier string) (string, string, error) {
 }
 
 func consumeClaimToken(rawToken string) (verifiedClaim, error) {
+	return consumeClaimTokenTx(database.DB, rawToken)
+}
+
+func consumeClaimTokenTx(tx *gorm.DB, rawToken string) (verifiedClaim, error) {
 	if !validClaimTokenFormat(rawToken) {
 		return verifiedClaim{}, errors.New("invalid_claim_token")
 	}
 
 	var verification models.AuthVerification
 	now := time.Now().UTC()
-	if err := database.DB.
+	if err := tx.
 		Where("claim_token_hash = ? AND claim_used_at IS NULL AND claim_expires_at > ?", hashClaimToken(rawToken), now).
 		First(&verification).Error; err != nil {
 		return verifiedClaim{}, errors.New("invalid_or_expired_claim_token")
 	}
 
 	verification.ClaimUsedAt = &now
-	if err := database.DB.Save(&verification).Error; err != nil {
+	if err := tx.Save(&verification).Error; err != nil {
 		return verifiedClaim{}, err
 	}
 
@@ -362,14 +366,18 @@ func (s *Server) authGuest(c *gin.Context) {
 }
 
 func ensureDefaultCashAccount(userID uint) error {
+	return ensureDefaultCashAccountTx(database.DB, userID)
+}
+
+func ensureDefaultCashAccountTx(tx *gorm.DB, userID uint) error {
 	var count int64
-	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+	if err := tx.Model(&models.Account{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {
 		return nil
 	}
-	return database.DB.Create(&models.Account{
+	return tx.Create(&models.Account{
 		UserID: userID, Type: "cash", Name: "Cash", IsDefault: true, Color: "#2ECC71",
 	}).Error
 }
@@ -544,21 +552,6 @@ func (s *Server) authRegister(c *gin.Context) {
 		return
 	}
 
-	claim, err := consumeClaimToken(input.ClaimToken)
-	if err != nil {
-		c.JSON(401, gin.H{"error": "invalid_claim_token"})
-		return
-	}
-
-	var email *string
-	var phone *string
-
-	if claim.IdentifierType == "email" {
-		email = &claim.Identifier
-	} else {
-		phone = &claim.Identifier
-	}
-
 	// Let's Hash PIN
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.PIN), bcrypt.DefaultCost)
 	if err != nil {
@@ -566,31 +559,56 @@ func (s *Server) authRegister(c *gin.Context) {
 		return
 	}
 
-	// Check if identifier already taken
-	var existing models.User
-	query := "email = ?"
-	if claim.IdentifierType != "email" {
-		query = "phone = ?"
-	}
-
-	if err := database.DB.Where(query, claim.Identifier).First(&existing).Error; err == nil {
-		c.JSON(409, gin.H{"error": "user_already_exists"})
-		return
-	}
-
 	var user models.User
-	userFound := false
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		claim, err := consumeClaimTokenTx(tx, input.ClaimToken)
+		if err != nil {
+			return err
+		}
 
-	// Prepare Device ID
-	var deviceIDPtr *string
-	if input.DeviceID != "" {
-		deviceIDPtr = &input.DeviceID
-	}
+		var email *string
+		var phone *string
+		if claim.IdentifierType == "email" {
+			email = &claim.Identifier
+		} else {
+			phone = &claim.Identifier
+		}
 
-	if input.GuestUUID != "" {
-		// Upgrade Flow
-		err := database.DB.Where("uuid = ? AND is_guest = ?", input.GuestUUID, true).First(&user).Error
-		if err == nil {
+		var existing models.User
+		query := "email = ?"
+		if claim.IdentifierType != "email" {
+			query = "phone = ?"
+		}
+		if err := tx.Where(query, claim.Identifier).First(&existing).Error; err == nil {
+			return gorm.ErrDuplicatedKey
+		} else if err != gorm.ErrRecordNotFound {
+			return err
+		}
+
+		deviceID := strings.TrimSpace(input.DeviceID)
+		var deviceIDPtr *string
+		if deviceID != "" {
+			deviceIDPtr = &deviceID
+		}
+
+		userFound := false
+		guestUUID := strings.TrimSpace(input.GuestUUID)
+		if guestUUID != "" {
+			if err := tx.Where("uuid = ? AND is_guest = ?", guestUUID, true).First(&user).Error; err == nil {
+				userFound = true
+			} else if err != gorm.ErrRecordNotFound {
+				return err
+			}
+		}
+		if !userFound && deviceID != "" {
+			if err := tx.Where("device_id = ? AND is_guest = ?", deviceID, true).First(&user).Error; err == nil {
+				userFound = true
+			} else if err != gorm.ErrRecordNotFound {
+				return err
+			}
+		}
+
+		if userFound {
 			if email != nil {
 				user.Email = email
 			}
@@ -600,45 +618,56 @@ func (s *Server) authRegister(c *gin.Context) {
 			user.PinHash = string(hash)
 			user.IsGuest = false
 			user.BiometricsEnabled = input.BiometricsEnabled
-			user.Username = "User_" + generateUUID()[:8] // Unique User Username
+			user.Username = "User_" + generateUUID()[:8]
 			if deviceIDPtr != nil {
-				user.DeviceID = deviceIDPtr // Ensure device ID is carried over or updated
+				user.DeviceID = deviceIDPtr
 			}
-
-			if err := database.DB.Save(&user).Error; err != nil {
-				c.JSON(500, gin.H{"error": "failed_upgrade_guest"})
-				return
+			if err := tx.Save(&user).Error; err != nil {
+				return err
 			}
-			userFound = true
-		}
-	}
-
-	if !userFound {
-		user = models.User{
-			UUID:              generateUUID(),
-			Email:             email,
-			Phone:             phone,
-			PinHash:           string(hash),
-			IsGuest:           false,
-			BiometricsEnabled: input.BiometricsEnabled,
-			DeviceID:          deviceIDPtr,
-			Username:          "User_" + generateUUID()[:8],
+		} else {
+			user = models.User{
+				UUID:              generateUUID(),
+				Email:             email,
+				Phone:             phone,
+				PinHash:           string(hash),
+				IsGuest:           false,
+				BiometricsEnabled: input.BiometricsEnabled,
+				DeviceID:          deviceIDPtr,
+				Username:          "User_" + generateUUID()[:8],
+			}
+			if err := tx.Create(&user).Error; err != nil {
+				return err
+			}
 		}
 
-		if err := database.DB.Create(&user).Error; err != nil {
-			c.JSON(500, gin.H{"error": "db_error"})
+		if err := ensureDefaultCashAccountTx(tx, user.ID); err != nil {
+			return err
+		}
+		creditService := billing.NewCreditService(database.DB)
+		if err := creditService.PromoteGuestDeviceToUser(tx, user.ID, deviceID); err != nil {
+			return err
+		}
+		if _, _, err := creditService.EnsureLoggedInFreeTrialGrantTx(tx, user.ID); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			c.JSON(409, gin.H{"error": "user_already_exists"})
 			return
 		}
-	}
-	if err := ensureDefaultCashAccount(user.ID); err != nil {
-		c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
-		return
-	}
-	if _, _, err := billing.NewCreditService(database.DB).EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
-		c.JSON(500, gin.H{"error": "failed_ensure_trial_credits"})
+		if err.Error() == "invalid_claim_token" || err.Error() == "invalid_or_expired_claim_token" {
+			c.JSON(401, gin.H{"error": "invalid_claim_token"})
+			return
+		}
+		c.JSON(500, gin.H{"error": "failed_register_user"})
 		return
 	}
 
+	_ = database.DB.Model(&models.AuthSession{}).
+		Where("user_id = ? AND revoked_at IS NULL", user.ID).
+		Update("revoked_at", time.Now().UTC()).Error
 	user.HasPin = user.PinHash != ""
 	response, err := authResponse(&user)
 	if err != nil {

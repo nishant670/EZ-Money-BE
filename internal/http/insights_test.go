@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/models"
 )
 
@@ -237,6 +238,81 @@ func TestDetectRecurringCandidatesRejectsUnstableRepeats(t *testing.T) {
 	}
 }
 
+func TestBuildDashboardFromDBUsesBoundedRollupQueries(t *testing.T) {
+	useSmokeDatabase(t)
+
+	user := models.User{UUID: "dashboard-user", Username: "dashboard-user", IsGuest: true}
+	otherUser := models.User{UUID: "dashboard-other", Username: "dashboard-other", IsGuest: true}
+	if err := database.DB.Create(&user).Error; err != nil {
+		t.Fatalf("failed to create dashboard user: %v", err)
+	}
+	if err := database.DB.Create(&otherUser).Error; err != nil {
+		t.Fatalf("failed to create other user: %v", err)
+	}
+
+	cash := models.Account{UserID: user.ID, Type: "cash", Name: "Cash", IsDefault: true}
+	upi := models.Account{UserID: user.ID, Type: "upi", Name: "UPI"}
+	if err := database.DB.Create(&cash).Error; err != nil {
+		t.Fatalf("failed to create cash account: %v", err)
+	}
+	if err := database.DB.Create(&upi).Error; err != nil {
+		t.Fatalf("failed to create upi account: %v", err)
+	}
+
+	entries := []models.Entry{
+		dbDashboardEntry(user.ID, cash.ID, "2026-06-29", "expense", "100", "Food", "Cafe", "Cash", "2026-06-29T09:00:00Z"),
+		dbDashboardEntry(user.ID, upi.ID, "2026-06-30", "expense", "200", "Travel", "Metro", "UPI", "2026-06-30T09:00:00Z"),
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-01", "expense", "100", "Food", "Cafe", "Cash", "2026-07-01T09:00:00Z"),
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-02", "expense", "100", "Food", "Cafe", "Cash", "2026-07-02T09:00:00Z"),
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-03", "expense", "1000", "Food", "Cafe", "Cash", "2026-07-03T09:00:00Z"),
+		dbDashboardEntry(user.ID, upi.ID, "2026-07-04", "expense", "50", "Travel", "Metro", "UPI", "2026-07-04T09:00:00Z"),
+		dbDashboardEntry(user.ID, upi.ID, "2026-07-03", "income", "2500", "Salary", "Employer", "UPI", "2026-07-03T10:00:00Z"),
+		dbDashboardEntry(otherUser.ID, cash.ID, "2026-07-03", "expense", "9999", "Food", "Other", "Cash", "2026-07-03T11:00:00Z"),
+	}
+	if err := database.DB.Create(&entries).Error; err != nil {
+		t.Fatalf("failed to create dashboard entries: %v", err)
+	}
+
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 4, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 27, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          4,
+	}
+
+	dashboard, err := buildDashboardFromDB(user.ID, dateRange)
+	if err != nil {
+		t.Fatalf("failed to build DB dashboard: %v", err)
+	}
+
+	if dashboard.Summary.TotalSpent != 1250 || dashboard.Summary.TotalIncome != 2500 ||
+		dashboard.Summary.TransactionCount != 5 || dashboard.Summary.DailyAverage != 312.5 {
+		t.Fatalf("unexpected summary: %#v", dashboard.Summary)
+	}
+	if len(dashboard.TopCategories) != 2 || dashboard.TopCategories[0].Category != "Food" ||
+		dashboard.TopCategories[0].Amount != 1200 || dashboard.TopCategories[0].Change != 1100 {
+		t.Fatalf("unexpected categories: %#v", dashboard.TopCategories)
+	}
+	if len(dashboard.TopMerchants) != 2 || dashboard.TopMerchants[0].Merchant != "Cafe" ||
+		dashboard.TopMerchants[0].Amount != 1200 || dashboard.TopMerchants[0].TransactionCount != 3 {
+		t.Fatalf("unexpected merchants: %#v", dashboard.TopMerchants)
+	}
+	if len(dashboard.AccountSpending) != 2 || dashboard.AccountSpending[0].AccountName != "Cash" ||
+		dashboard.AccountSpending[0].Amount != 1200 {
+		t.Fatalf("unexpected account spending: %#v", dashboard.AccountSpending)
+	}
+	if len(dashboard.RecentTransactions) != 5 || dashboard.RecentTransactions[0].Merchant != "Metro" {
+		t.Fatalf("unexpected recent transactions: %#v", dashboard.RecentTransactions)
+	}
+	for _, category := range dashboard.TopCategories {
+		if category.Amount == 9999 {
+			t.Fatalf("dashboard leaked another user's entries: %#v", dashboard.TopCategories)
+		}
+	}
+}
+
 func TestParseDashboardRangeRejectsInvalidAndOversizedRanges(t *testing.T) {
 	now := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
 	_, fields := parseDashboardRange("2026-07-10", "2026-07-01", now)
@@ -246,5 +322,25 @@ func TestParseDashboardRangeRejectsInvalidAndOversizedRanges(t *testing.T) {
 	_, fields = parseDashboardRange("2025-01-01", "2026-07-09", now)
 	if fields["start_date"] == "" {
 		t.Fatalf("expected maximum range error, got %v", fields)
+	}
+}
+
+func dbDashboardEntry(
+	userID, accountID uint,
+	date, entryType, amount, category, merchant, mode, createdAt string,
+) models.Entry {
+	parsedAmount, err := models.ParseMoney(amount)
+	if err != nil {
+		panic(err)
+	}
+	parsedCreatedAt, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		panic(err)
+	}
+	return models.Entry{
+		UserID: userID, AccountID: &accountID,
+		Date: date, Type: entryType, Amount: parsedAmount, Category: category,
+		Merchant: merchant, Mode: mode, Currency: "INR", Source: "manual",
+		CreatedAt: parsedCreatedAt,
 	}
 }
