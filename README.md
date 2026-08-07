@@ -70,6 +70,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0005_require_entry_account
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0006_create_auth_sessions.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0007_create_auth_verifications.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0008_guest_device_and_login_lockout.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0030_add_google_subject_to_users.sql
 ```
 
 ## Auth verification
@@ -81,6 +82,10 @@ testing only, set `OTP_DEBUG_RESPONSE=true` to include `dev_otp` in the
 `POST /v1/auth/otp/send` response. To force a predictable local-only code, also
 set `OTP_DEV_CODE=123456`; this static code is ignored unless
 `OTP_DEBUG_RESPONSE=true`.
+
+Google login verifies Google ID tokens against the comma-separated
+`GOOGLE_CLIENT_IDS` audience allowlist, then creates, links, or upgrades the
+same Finnri user session returned by the email/mobile login flow.
 
 ## Account deletion
 

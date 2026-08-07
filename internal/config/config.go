@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -33,6 +35,7 @@ type Config struct {
 	OTPDevCode                      string
 	OTPExpiresMinutes               int
 	ClaimTokenMinutes               int
+	GoogleClientIDs                 []string
 	AIDailyCostAlertUSDMicros       int64
 	AIAbuseDailyCreditsThreshold    int
 	AIFreeCostPerUserAlertUSDMicros int64
@@ -84,6 +87,21 @@ func atob(key string, def bool) bool {
 	return def
 }
 
+func csv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
 func Load() *Config {
 	return &Config{
 		Port:                            getenv("PORT", "8080"),
@@ -112,8 +130,40 @@ func Load() *Config {
 		OTPDevCode:                      getenv("OTP_DEV_CODE", ""),
 		OTPExpiresMinutes:               atoi("OTP_EXPIRES_MINUTES", 10),
 		ClaimTokenMinutes:               atoi("CLAIM_TOKEN_EXPIRES_MINUTES", 15),
+		GoogleClientIDs:                 csv("GOOGLE_CLIENT_IDS"),
 		AIDailyCostAlertUSDMicros:       atoi64("AI_DAILY_COST_ALERT_USD_MICROS", 0),
 		AIAbuseDailyCreditsThreshold:    atoi("AI_ABUSE_DAILY_CREDITS_THRESHOLD", 500),
 		AIFreeCostPerUserAlertUSDMicros: atoi64("AI_FREE_COST_PER_USER_ALERT_USD_MICROS", 100000),
 	}
+}
+
+func ResolveBackendPath(rel string) string {
+	candidates := []string{
+		rel,
+		filepath.Join("EZ-Money-BE", rel),
+	}
+
+	if _, file, _, ok := runtime.Caller(0); ok && filepath.IsAbs(file) {
+		candidates = append(candidates, filepath.Join(filepath.Dir(file), "..", "..", rel))
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		for dir := cwd; ; dir = filepath.Dir(dir) {
+			if filepath.Base(dir) == "EZ-Money-BE" {
+				candidates = append(candidates, filepath.Join(dir, rel))
+			}
+			candidates = append(candidates, filepath.Join(dir, "EZ-Money-BE", rel))
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+		}
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return rel
 }

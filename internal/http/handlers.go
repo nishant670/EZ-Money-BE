@@ -60,7 +60,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		})
 	}
 
-	loader := gojsonschema.NewReferenceLoader("file://./schemas/expense_entry.schema.json")
+	schemaPath, err := filepath.Abs(config.ResolveBackendPath(filepath.Join("schemas", "expense_entry.schema.json")))
+	if err != nil {
+		panic(err)
+	}
+	loader := gojsonschema.NewReferenceLoader((&url.URL{Scheme: "file", Path: schemaPath}).String())
 	schema, err := gojsonschema.NewSchema(loader)
 	if err != nil {
 		panic(err)
@@ -77,6 +81,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authLimited.POST("/identify", s.authIdentify)
 		authLimited.POST("/otp/send", s.authOtpSend)
 		authLimited.POST("/otp/verify", s.authOtpVerify)
+		authLimited.POST("/google", s.authGoogle)
 		authLimited.POST("/register", s.authRegister)
 		authLimited.POST("/login", s.authLogin)
 		authLimited.POST("/pin/reset", s.authPinReset)
