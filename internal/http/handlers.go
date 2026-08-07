@@ -1239,6 +1239,41 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			return err
 		}
 
+		guestDeviceHash := ""
+		if user.DeviceID != nil {
+			guestDeviceHash = billing.HashUsageKey(*user.DeviceID)
+		}
+		if guestDeviceHash != "" {
+			if err := tx.Where("guest_device_id_hash = ?", guestDeviceHash).
+				Delete(&models.GuestUsageKey{}).Error; err != nil {
+				return fmt.Errorf("delete guest usage keys: %w", err)
+			}
+		}
+
+		billingDeletes := []struct {
+			model          any
+			name           string
+			hasGuestDevice bool
+		}{
+			{model: &models.CreditLedger{}, name: "credit ledger", hasGuestDevice: true},
+			{model: &models.AIUsageEvent{}, name: "ai usage events", hasGuestDevice: true},
+			{model: &models.AIUsageLimitEvent{}, name: "ai usage limit events", hasGuestDevice: true},
+			{model: &models.DailyCreditUsage{}, name: "daily credit usage", hasGuestDevice: true},
+			{model: &models.AIAbuseBlock{}, name: "ai abuse blocks", hasGuestDevice: true},
+			{model: &models.LifetimeQuoteRequest{}, name: "lifetime quote requests"},
+			{model: &models.CreditGrant{}, name: "credit grants", hasGuestDevice: true},
+			{model: &models.UserSubscription{}, name: "user subscriptions"},
+		}
+		for _, item := range billingDeletes {
+			query := tx.Where("user_id = ?", user.ID)
+			if guestDeviceHash != "" && item.hasGuestDevice {
+				query = query.Or("guest_device_id_hash = ?", guestDeviceHash)
+			}
+			if err := query.Delete(item.model).Error; err != nil {
+				return fmt.Errorf("delete %s: %w", item.name, err)
+			}
+		}
+
 		deletes := []struct {
 			model any
 			name  string
