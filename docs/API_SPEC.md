@@ -4,6 +4,8 @@
 - POST /v1/parse
 - POST /v1/entries
 - GET /v1/entries
+- GET /v1/entries/export
+- GET /v1/reports/transactions/summary
 - GET /v1/entries/:id
 - PUT /v1/entries/:id
 - DELETE /v1/entries/:id
@@ -93,6 +95,20 @@ clients, and OpenAPI should use the versioned route names above.
 
 ## Transaction Account Rule
 Transaction create and update payloads require `account_id`. The account must belong to the authenticated user. Transaction responses include the linked account summary, and account deletion must fail while transactions still reference it.
+
+## Transaction Export
+`GET /v1/entries/export?format=csv` returns a `text/csv` attachment containing
+only the authenticated user's entries. It accepts the same ownership-scoped
+filters as `GET /v1/entries` (`type`, `category`, `mode`, `q`, `tag`,
+`account_id`, `min_amount`, `max_amount`, `start_date`, and `end_date`) and is
+capped at 10,000 rows per request.
+
+## Transaction Reports
+`GET /v1/reports/transactions/summary` returns read-only rollups for the
+authenticated user's entries. It accepts the same ownership-scoped filters as
+`GET /v1/entries` and returns totals, counts, category, merchant, account,
+month, and type breakdowns. Expense breakdown percentages are calculated against
+the filtered expense total.
 
 ## Notifications
 Notifications are authenticated, user-owned records exposed through `/v1/notifications`.

@@ -213,6 +213,136 @@ paths:
           description: Invalid filters
         "500":
           description: Database error
+  /v1/entries/export:
+    get:
+      summary: Export filtered transaction entries as CSV
+      parameters:
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [csv]
+            default: csv
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [expense, income]
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: mode
+          schema:
+            type: string
+            enum: [Cash, UPI, Credit Card, Wallets]
+        - in: query
+          name: q
+          description: Case-insensitive search across title, merchant, and notes.
+          schema:
+            type: string
+        - in: query
+          name: tag
+          description: Return only entries that include this tag.
+          schema:
+            type: string
+        - in: query
+          name: account_id
+          description: Return only entries linked to this owned account.
+          schema:
+            type: integer
+        - in: query
+          name: min_amount
+          schema:
+            type: string
+        - in: query
+          name: max_amount
+          schema:
+            type: string
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: CSV export containing owned entries that match filters
+          content:
+            text/csv:
+              schema:
+                type: string
+        "422":
+          description: Invalid filters, unsupported format, or export row limit exceeded
+        "500":
+          description: Export failed
+  /v1/reports/transactions/summary:
+    get:
+      summary: Return filtered transaction report rollups
+      parameters:
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [expense, income]
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: mode
+          schema:
+            type: string
+            enum: [Cash, UPI, Credit Card, Wallets]
+        - in: query
+          name: q
+          description: Case-insensitive search across title, merchant, and notes.
+          schema:
+            type: string
+        - in: query
+          name: tag
+          description: Return only entries that include this tag.
+          schema:
+            type: string
+        - in: query
+          name: account_id
+          description: Return only entries linked to this owned account.
+          schema:
+            type: integer
+        - in: query
+          name: min_amount
+          schema:
+            type: string
+        - in: query
+          name: max_amount
+          schema:
+            type: string
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Summary and read-only rollups for owned entries matching filters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionReport"
+        "422":
+          description: Invalid filters
+        "500":
+          description: Report failed
   /v1/accounts:
     get:
       summary: List accounts owned by the authenticated user
@@ -843,6 +973,100 @@ components:
       type: http
       scheme: bearer
   schemas:
+    TransactionReport:
+      type: object
+      required: [summary, by_category, by_merchant, by_account, by_month, by_type]
+      properties:
+        summary:
+          type: object
+          required: [total_expense, total_income, net_cashflow, transaction_count, expense_count, income_count]
+          properties:
+            total_expense:
+              type: number
+            total_income:
+              type: number
+            net_cashflow:
+              type: number
+            transaction_count:
+              type: integer
+            expense_count:
+              type: integer
+            income_count:
+              type: integer
+        by_category:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionReportBreakdown"
+        by_merchant:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionReportBreakdown"
+        by_account:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionAccountReportBreakdown"
+        by_month:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionMonthlyReportBreakdown"
+        by_type:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionTypeReportBreakdown"
+    TransactionReportBreakdown:
+      type: object
+      required: [key, label, amount, percentage, transaction_count]
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        amount:
+          type: number
+        percentage:
+          type: number
+        transaction_count:
+          type: integer
+    TransactionAccountReportBreakdown:
+      type: object
+      required: [account_name, amount, percentage, transaction_count]
+      properties:
+        account_id:
+          type: [integer, "null"]
+        account_name:
+          type: string
+        amount:
+          type: number
+        percentage:
+          type: number
+        transaction_count:
+          type: integer
+    TransactionMonthlyReportBreakdown:
+      type: object
+      required: [month, expense, income, net_cashflow, transaction_count]
+      properties:
+        month:
+          type: string
+          pattern: "^\\d{4}-\\d{2}$"
+        expense:
+          type: number
+        income:
+          type: number
+        net_cashflow:
+          type: number
+        transaction_count:
+          type: integer
+    TransactionTypeReportBreakdown:
+      type: object
+      required: [type, amount, transaction_count]
+      properties:
+        type:
+          type: string
+          enum: [expense, income]
+        amount:
+          type: number
+        transaction_count:
+          type: integer
     Dashboard:
       type: object
       required: [period, summary, top_categories, top_merchants, account_spending, budget_statuses, daily_spending, recent_transactions, review_items, insights, recurring_candidates]
