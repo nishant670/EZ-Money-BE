@@ -51,6 +51,10 @@ error_code, started/provider/finished timestamps.
 Every AI provider attempt must create one usage event. Raw prompts, transcripts,
 audio, and provider responses are not stored here.
 
+Anonymous guest AI usage events are retained for 90 days. The retention cleanup
+purges old guest-scoped usage events and linked guest credit metadata while
+leaving registered-user rows in place until account deletion.
+
 ### AIUsageLimitEvent
 id, nullable user_id, nullable guest_device_id_hash, action_code, reason,
 required_credits, available_credits, daily_limit, used_today, reset_at,
@@ -91,6 +95,9 @@ trial_grant_id, abuse_score, timestamps.
 
 Guest usage keys reduce repeated free-trial grants across reinstall/session
 loops. Device IDs and IPs are stored only as hashes.
+
+Anonymous guest usage keys are retained for 90 days after last use, then purged
+with old guest-scoped AI usage and credit metadata.
 
 ### LifetimeQuoteRequest
 id, user_id, status (`requested`, `reviewed`, `quoted`, `declined`,

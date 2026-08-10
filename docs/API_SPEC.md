@@ -69,9 +69,14 @@ hash and must be treated as revocable.
 ## Account/Data Deletion
 `DELETE /v1/user` permanently deletes the authenticated user's transactions,
 accounts, budgets, subscriptions, split ledger records, quick prompts,
-notifications, sessions, profile record, and matching OTP/claim verification
+notifications, sessions, profile record, AI credit grants, credit ledger rows,
+AI usage events, daily AI usage counters, AI usage limit events, AI abuse blocks,
+user subscription mirror rows, lifetime quote requests, linked guest usage keys
+where the user's device can be matched, and matching OTP/claim verification
 records. Legacy local upload files referenced by the user's entries are removed
-only when they resolve safely under `uploads/`.
+only when they resolve safely under `uploads/`. Clients expose this as a
+destructive account deletion flow that clears local auth state after the backend
+delete succeeds.
 
 ## OTP Verification
 `POST /v1/auth/otp/send` creates a random, expiring OTP challenge for an email

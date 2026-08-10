@@ -85,6 +85,8 @@ Legend:
 - [x] Add `.env.example` with redacted required variables.
 - [x] Document source-text/transcript retention and deletion policy.
 - [x] Add account/data deletion path before any public beta.
+- [x] Expose destructive mobile account deletion from Security & Privacy after
+  backend deletion covers AI/billing records.
 
 ## P1 - Quality Gates
 
@@ -140,4 +142,5 @@ Legend:
   `docs/WEB_DASHBOARD.md`.
 - [x] Fix web lint and TypeScript/build compatibility for the resumed dashboard.
 - [ ] Avoid adding new deferred features until P0 and P1 MVP items are done.
-- [ ] After every completed task, update the relevant code, tests, docs, and this checklist together.
+- [x] After completed privacy/account-deletion work, update the relevant code,
+  tests, docs, and this checklist together.

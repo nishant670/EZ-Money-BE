@@ -28,6 +28,9 @@ func TestLoadDoesNotDefaultCORSWildcard(t *testing.T) {
 	if cfg.AIProviderFailureThreshold != 5 || cfg.AIProviderCircuitBreakerSeconds != 120 {
 		t.Fatalf("unexpected provider circuit breaker defaults: %#v", cfg)
 	}
+	if !cfg.MaintenanceJobsEnabled || cfg.MaintenanceIntervalHours != 24 || cfg.AnonymousGuestRetentionDays != 90 {
+		t.Fatalf("unexpected maintenance defaults: %#v", cfg)
+	}
 }
 
 func TestEnvExampleContainsRequiredRedactedVariables(t *testing.T) {
@@ -56,6 +59,9 @@ func TestEnvExampleContainsRequiredRedactedVariables(t *testing.T) {
 		"AI_DAILY_COST_ALERT_USD_MICROS",
 		"AI_ABUSE_DAILY_CREDITS_THRESHOLD",
 		"AI_FREE_COST_PER_USER_ALERT_USD_MICROS",
+		"MAINTENANCE_JOBS_ENABLED",
+		"MAINTENANCE_INTERVAL_HOURS",
+		"ANONYMOUS_GUEST_RETENTION_DAYS",
 		"REQUEST_TIMEOUT_SECONDS",
 		"RATE_LIMIT_RPS",
 		"RATE_LIMIT_BURST",

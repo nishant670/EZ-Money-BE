@@ -39,6 +39,9 @@ type Config struct {
 	AIDailyCostAlertUSDMicros       int64
 	AIAbuseDailyCreditsThreshold    int
 	AIFreeCostPerUserAlertUSDMicros int64
+	MaintenanceJobsEnabled          bool
+	MaintenanceIntervalHours        int
+	AnonymousGuestRetentionDays     int
 }
 
 func getenv(key, def string) string {
@@ -134,6 +137,9 @@ func Load() *Config {
 		AIDailyCostAlertUSDMicros:       atoi64("AI_DAILY_COST_ALERT_USD_MICROS", 0),
 		AIAbuseDailyCreditsThreshold:    atoi("AI_ABUSE_DAILY_CREDITS_THRESHOLD", 500),
 		AIFreeCostPerUserAlertUSDMicros: atoi64("AI_FREE_COST_PER_USER_ALERT_USD_MICROS", 100000),
+		MaintenanceJobsEnabled:          atob("MAINTENANCE_JOBS_ENABLED", true),
+		MaintenanceIntervalHours:        atoi("MAINTENANCE_INTERVAL_HOURS", 24),
+		AnonymousGuestRetentionDays:     atoi("ANONYMOUS_GUEST_RETENTION_DAYS", 90),
 	}
 }
 

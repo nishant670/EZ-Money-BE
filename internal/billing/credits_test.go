@@ -263,6 +263,195 @@ func TestExpireCreditsMovesRemainingBalanceToLedger(t *testing.T) {
 	}
 }
 
+func TestPurgeAnonymousGuestUsageDeletesOnlyExpiredGuestMetadata(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	oldGuestHash := HashUsageKey("old-guest-device")
+	recentGuestHash := HashUsageKey("recent-guest-device")
+	oldTime := now.Add(-(AnonymousGuestRetention + 24*time.Hour))
+	recentTime := now.Add(-24 * time.Hour)
+	oldDate := oldTime.Format("2006-01-02")
+	recentDate := recentTime.Format("2006-01-02")
+
+	user := models.User{UUID: "retention-user", Username: "retention_user"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	oldGrant := models.CreditGrant{
+		GuestDeviceIDHash: oldGuestHash,
+		Source:            GrantSourceFreeTrial,
+		CreditsGranted:    GuestTrialCredits,
+		CreditsRemaining:  0,
+		ValidFrom:         oldTime.Add(-TrialDuration),
+		ExpiresAt:         &oldTime,
+	}
+	recentGrant := models.CreditGrant{
+		GuestDeviceIDHash: recentGuestHash,
+		Source:            GrantSourceFreeTrial,
+		CreditsGranted:    GuestTrialCredits,
+		CreditsRemaining:  GuestTrialCredits,
+		ValidFrom:         recentTime,
+	}
+	userGrant := models.CreditGrant{
+		UserID:           &user.ID,
+		Source:           GrantSourceFreeTrial,
+		CreditsGranted:   LoggedInFreeTrialCredits,
+		CreditsRemaining: LoggedInFreeTrialCredits,
+		ValidFrom:        oldTime,
+		ExpiresAt:        &oldTime,
+	}
+	if err := db.Create(&oldGrant).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&recentGrant).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&userGrant).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	oldUsage := models.AIUsageEvent{
+		GuestDeviceIDHash: oldGuestHash,
+		RequestID:         "old-guest-usage",
+		ActionCode:        string(ai.ActionTransactionParseText),
+		InputKind:         "text",
+		Status:            UsageStatusSucceeded,
+		EstimatedCredits:  5,
+		ReservedCredits:   5,
+		FinalCredits:      5,
+		StartedAt:         oldTime,
+	}
+	recentUsage := models.AIUsageEvent{
+		GuestDeviceIDHash: recentGuestHash,
+		RequestID:         "recent-guest-usage",
+		ActionCode:        string(ai.ActionTransactionParseText),
+		InputKind:         "text",
+		Status:            UsageStatusSucceeded,
+		EstimatedCredits:  5,
+		ReservedCredits:   5,
+		FinalCredits:      5,
+		StartedAt:         recentTime,
+	}
+	userUsage := models.AIUsageEvent{
+		UserID:           &user.ID,
+		RequestID:        "user-usage",
+		ActionCode:       string(ai.ActionTransactionParseText),
+		InputKind:        "text",
+		Status:           UsageStatusSucceeded,
+		EstimatedCredits: 5,
+		ReservedCredits:  5,
+		FinalCredits:     5,
+		StartedAt:        oldTime,
+	}
+	if err := db.Create(&oldUsage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&recentUsage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&userUsage).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	ledgerRows := []models.CreditLedger{
+		{GuestDeviceIDHash: oldGuestHash, GrantID: &oldGrant.ID, AIUsageEventID: &oldUsage.ID, Direction: LedgerDirectionDebit, Credits: 5, BalanceAfter: 295, ReasonCode: ReasonReservationDebit, IdempotencyKey: "old-guest-ledger", CreatedAt: oldTime},
+		{GuestDeviceIDHash: recentGuestHash, GrantID: &recentGrant.ID, AIUsageEventID: &recentUsage.ID, Direction: LedgerDirectionDebit, Credits: 5, BalanceAfter: 295, ReasonCode: ReasonReservationDebit, IdempotencyKey: "recent-guest-ledger", CreatedAt: recentTime},
+		{UserID: &user.ID, GrantID: &userGrant.ID, AIUsageEventID: &userUsage.ID, Direction: LedgerDirectionDebit, Credits: 5, BalanceAfter: 995, ReasonCode: ReasonReservationDebit, IdempotencyKey: "user-ledger", CreatedAt: oldTime},
+	}
+	if err := db.Create(&ledgerRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AIUsageLimitEvent{GuestDeviceIDHash: oldGuestHash, ActionCode: string(ai.ActionTransactionParseText), Reason: AllowanceDailyLimitReached, CreatedAt: oldTime}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AIUsageLimitEvent{GuestDeviceIDHash: recentGuestHash, ActionCode: string(ai.ActionTransactionParseText), Reason: AllowanceDailyLimitReached, CreatedAt: recentTime}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AIUsageLimitEvent{UserID: &user.ID, ActionCode: string(ai.ActionTransactionParseText), Reason: AllowanceDailyLimitReached, CreatedAt: oldTime}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.DailyCreditUsage{GuestDeviceIDHash: oldGuestHash, UsageDate: oldDate, CreditsUsed: 5}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.DailyCreditUsage{GuestDeviceIDHash: recentGuestHash, UsageDate: recentDate, CreditsUsed: 5}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.DailyCreditUsage{UserID: &user.ID, UsageDate: oldDate, CreditsUsed: 5}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.GuestUsageKey{GuestDeviceIDHash: oldGuestHash, IPHash: HashUsageKey("203.0.113.1"), FirstSeenAt: oldTime, LastSeenAt: oldTime, TrialGrantID: &oldGrant.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.GuestUsageKey{GuestDeviceIDHash: recentGuestHash, IPHash: HashUsageKey("203.0.113.2"), FirstSeenAt: recentTime, LastSeenAt: recentTime, TrialGrantID: &recentGrant.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.PurgeAnonymousGuestUsage(AnonymousGuestRetention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CreditLedger != 1 || result.AIUsageEvents != 1 || result.AIUsageLimitEvents != 1 ||
+		result.DailyCreditUsage != 1 || result.GuestUsageKeys != 1 || result.CreditGrants != 1 {
+		t.Fatalf("unexpected purge result: %#v", result)
+	}
+
+	assertGuestRetentionCount(t, db, &models.CreditLedger{}, oldGuestHash, 0)
+	assertGuestRetentionCount(t, db, &models.AIUsageEvent{}, oldGuestHash, 0)
+	assertGuestRetentionCount(t, db, &models.AIUsageLimitEvent{}, oldGuestHash, 0)
+	assertGuestRetentionCount(t, db, &models.DailyCreditUsage{}, oldGuestHash, 0)
+	assertGuestRetentionCount(t, db, &models.GuestUsageKey{}, oldGuestHash, 0)
+	assertGuestRetentionCount(t, db, &models.CreditGrant{}, oldGuestHash, 0)
+
+	assertGuestRetentionCount(t, db, &models.CreditLedger{}, recentGuestHash, 1)
+	assertGuestRetentionCount(t, db, &models.AIUsageEvent{}, recentGuestHash, 1)
+	assertGuestRetentionCount(t, db, &models.AIUsageLimitEvent{}, recentGuestHash, 1)
+	assertGuestRetentionCount(t, db, &models.DailyCreditUsage{}, recentGuestHash, 1)
+	assertGuestRetentionCount(t, db, &models.GuestUsageKey{}, recentGuestHash, 1)
+	assertGuestRetentionCount(t, db, &models.CreditGrant{}, recentGuestHash, 1)
+
+	assertUserRetentionCount(t, db, &models.CreditLedger{}, user.ID, 1)
+	assertUserRetentionCount(t, db, &models.AIUsageEvent{}, user.ID, 1)
+	assertUserRetentionCount(t, db, &models.AIUsageLimitEvent{}, user.ID, 1)
+	assertUserRetentionCount(t, db, &models.DailyCreditUsage{}, user.ID, 1)
+	assertUserRetentionCount(t, db, &models.CreditGrant{}, user.ID, 1)
+}
+
+func TestPurgeAnonymousGuestUsageRejectsInvalidRetention(t *testing.T) {
+	db := setupCreditTestDB(t)
+	service := NewCreditService(db)
+
+	if _, err := service.PurgeAnonymousGuestUsage(0); err == nil {
+		t.Fatal("expected non-positive retention to be rejected")
+	}
+}
+
+func assertGuestRetentionCount(t *testing.T, db *gorm.DB, model any, guestHash string, want int64) {
+	t.Helper()
+
+	var count int64
+	if err := db.Model(model).Where("guest_device_id_hash = ?", guestHash).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf("unexpected guest retention count for %T and %s: got %d, want %d", model, guestHash, count, want)
+	}
+}
+
+func assertUserRetentionCount(t *testing.T, db *gorm.DB, model any, userID uint, want int64) {
+	t.Helper()
+
+	var count int64
+	if err := db.Model(model).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf("unexpected user retention count for %T and user %d: got %d, want %d", model, userID, count, want)
+	}
+}
+
 func TestCheckAllowanceAllowsFreeTextParse(t *testing.T) {
 	db := setupCreditTestDB(t)
 	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)

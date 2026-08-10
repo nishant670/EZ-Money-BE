@@ -230,7 +230,7 @@ accurate usage accounting creates uncontrolled AI cost risk.
 - [x] On subscription renewal, create a new period grant.
 - [x] Decide whether paid credits roll over.
   - Recommended v1: no rollover; unused period credits expire.
-- [ ] Add a scheduled expiry job.
+- [x] Add a scheduled expiry job.
   - [x] Move expired remaining credits to an `expiry` ledger entry.
   - [x] Set remaining credits to zero.
 - [x] Add tests for free grant once-only behavior.
@@ -491,9 +491,9 @@ accurate usage accounting creates uncontrolled AI cost risk.
 
 ## Phase 11 - Privacy And Retention
 
-- [ ] Do not store raw voice audio.
-- [ ] Do not store raw provider prompts or raw provider responses by default.
-- [ ] Store usage metadata only:
+- [x] Do not store raw voice audio.
+- [x] Do not store raw provider prompts or raw provider responses by default.
+- [x] Store usage metadata only:
   - Action.
   - Model.
   - Token counts.
@@ -501,15 +501,21 @@ accurate usage accounting creates uncontrolled AI cost risk.
   - Cost estimate.
   - Credits charged.
   - Status/error code.
-- [ ] Keep confirmed transaction `source_text` only because the user saved it.
-- [ ] Ensure `DELETE /v1/user` deletes:
+- [x] Keep confirmed transaction `source_text` only because the user saved it.
+- [x] Ensure `DELETE /v1/user` deletes:
   - Subscriptions.
   - Credit grants.
   - Credit ledger.
   - AI usage events.
   - Guest usage keys linked to the user where possible.
-- [ ] Decide retention for anonymous guest usage events.
-  - Recommended: delete or aggregate after 90 days.
+  - Daily AI usage counters, AI usage limit events, AI abuse blocks, user
+    subscription mirror rows, and lifetime quote requests.
+- [x] Decide retention for anonymous guest usage events.
+  - V1 policy: purge anonymous guest AI usage, AI limit events, daily usage,
+    guest usage keys, expired guest grants, and linked credit ledger rows after
+    90 days. Registered-user rows are retained until account deletion.
+  - Scheduled backend maintenance runs credit expiry and anonymous guest
+    retention daily by default.
 
 ## Phase 12 - Testing Checklist
 
