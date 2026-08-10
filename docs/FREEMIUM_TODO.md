@@ -519,7 +519,7 @@ accurate usage accounting creates uncontrolled AI cost risk.
 
 ## Phase 12 - Testing Checklist
 
-- [ ] Unit test credit math.
+- [x] Unit test credit math.
 - [ ] Unit test plan entitlement resolution.
 - [ ] Unit test guest/free/paid allowance selection.
 - [ ] Unit test credit grant expiry.

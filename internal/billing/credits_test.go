@@ -656,6 +656,140 @@ func TestFinalizeUsageRefundsLowerFinalCredits(t *testing.T) {
 	assertLedgerDirectionCount(t, db, event.ID, LedgerDirectionRefund, 1)
 }
 
+func TestFinalizeUsageDebitsExtraCreditsUpToActionMax(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	user := createCreditTestUser(t, db)
+	grant, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "text-extra")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	finalCredits := 999
+	finalized, err := service.FinalizeUsage(event.ID, ProviderUsage{FinalCredits: &finalCredits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalized.FinalCredits != 10 {
+		t.Fatalf("expected text parse final credits to clamp to max 10, got %#v", finalized)
+	}
+	var reloaded models.CreditGrant
+	if err := db.First(&reloaded, grant.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.CreditsRemaining != LoggedInFreeTrialCredits-10 {
+		t.Fatalf("expected grant to debit max final credits, remaining=%d", reloaded.CreditsRemaining)
+	}
+	if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 10 {
+		t.Fatalf("expected daily usage to include extra final debit, got %d", got)
+	}
+	assertLedgerDirectionCount(t, db, event.ID, LedgerDirectionDebit, 2)
+}
+
+func TestFinalizeUsageKeepsReservedCreditsWhenExtraDebitWouldExceedDailyLimit(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	user := createCreditTestUser(t, db)
+	grant, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.DailyCreditUsage{
+		UserID:      &user.ID,
+		UsageDate:   now.Format("2006-01-02"),
+		CreditsUsed: LoggedInFreeDailyLimit - 5,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "text-no-extra")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	finalCredits := 10
+	finalized, err := service.FinalizeUsage(event.ID, ProviderUsage{FinalCredits: &finalCredits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalized.FinalCredits != event.ReservedCredits {
+		t.Fatalf("expected final credits to remain reserved amount when daily cap has no extra room, got %#v", finalized)
+	}
+	var reloaded models.CreditGrant
+	if err := db.First(&reloaded, grant.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.CreditsRemaining != LoggedInFreeTrialCredits-event.ReservedCredits {
+		t.Fatalf("expected no extra grant debit, remaining=%d", reloaded.CreditsRemaining)
+	}
+	if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != LoggedInFreeDailyLimit {
+		t.Fatalf("expected daily usage to stay at limit, got %d", got)
+	}
+	assertLedgerDirectionCount(t, db, event.ID, LedgerDirectionDebit, 1)
+}
+
+func TestFinalizeUsageCombinesLLMAndTranscriptionCostPricing(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	if err := db.Create(&[]models.AIModelPricing{
+		{
+			Provider:             "openai",
+			Model:                "gpt-4o-mini",
+			Operation:            "llm",
+			InputTokenUSDMicros:  2,
+			OutputTokenUSDMicros: 6,
+			RequestUSDMicros:     10,
+			Active:               true,
+		},
+		{
+			Provider:             "openai",
+			Model:                "gpt-4o-mini-transcribe",
+			Operation:            "transcription",
+			AudioMinuteUSDMicros: 1000,
+			RequestUSDMicros:     20,
+			Active:               true,
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	user := createCreditTestUser(t, db)
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseVoiceShort, "voice-cost")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	promptTokens := 100
+	completionTokens := 20
+	audioDurationMs := 90000
+	finalized, err := service.FinalizeUsage(event.ID, ProviderUsage{
+		Provider:          "openai",
+		Model:             "gpt-4o-mini",
+		SecondaryProvider: "openai",
+		SecondaryModel:    "gpt-4o-mini-transcribe",
+		PromptTokens:      &promptTokens,
+		CompletionTokens:  &completionTokens,
+		AudioDurationMs:   &audioDurationMs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalized.EstimatedCostUSDMicros != 1850 {
+		t.Fatalf("estimated cost = %d, want llm 330 + transcription 1520", finalized.EstimatedCostUSDMicros)
+	}
+}
+
 func TestFinalizeUsageRecordsFailedAfterProviderUsage(t *testing.T) {
 	db := setupCreditTestDB(t)
 	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
