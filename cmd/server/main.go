@@ -45,6 +45,7 @@ func main() {
 	}
 
 	cfg := config.Load()
+	httpserver.StartMaintenanceJobs(cfg)
 	httpserver.StartSubscriptionAutomation(cfg)
 	r := httpserver.NewServer(cfg)
 	log.Printf("listening on :%s", cfg.Port)

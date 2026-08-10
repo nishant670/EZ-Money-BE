@@ -114,6 +114,9 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParse)
 		authorized.POST("/entries", s.saveEntry)
 		authorized.GET("/entries", s.listEntries)
+		authorized.GET("/entries/export", s.exportEntriesCSV)
+		authorized.GET("/merchants/suggestions", s.listMerchantSuggestions)
+		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)
 		authorized.DELETE("/entries/:id", s.deleteEntry)
@@ -658,103 +661,13 @@ func (s *Server) listEntries(c *gin.Context) {
 		return
 	}
 
+	query, filterFields := filteredEntriesQuery(userID, c)
+	if len(filterFields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_filters", "fields": filterFields})
+		return
+	}
+
 	var entries []models.Entry
-	query := database.DB.Model(&models.Entry{}).Where("user_id = ?", userID)
-
-	if t := strings.TrimSpace(c.Query("type")); t != "" && !strings.EqualFold(t, "all") {
-		if !strings.EqualFold(t, "expense") && !strings.EqualFold(t, "income") {
-			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"type": "must be expense or income"}})
-			return
-		}
-		query = query.Where("LOWER(type) = LOWER(?)", t)
-	}
-
-	if cat := strings.TrimSpace(c.Query("category")); cat != "" {
-		query = query.Where("LOWER(category) = LOWER(?)", cat)
-	}
-
-	if mode := strings.TrimSpace(c.Query("mode")); mode != "" {
-		switch strings.ToLower(mode) {
-		case "cash", "upi", "credit card", "wallets":
-		default:
-			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"mode": "is invalid"}})
-			return
-		}
-		query = query.Where("LOWER(mode) = LOWER(?)", mode)
-	}
-	if accountID := strings.TrimSpace(c.Query("account_id")); accountID != "" {
-		parsed, err := strconv.ParseUint(accountID, 10, 32)
-		if err != nil || parsed == 0 {
-			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"account_id": "must be a positive integer"}})
-			return
-		}
-		query = query.Where("account_id = ?", parsed)
-	}
-
-	var minAmount, maxAmount *models.Money
-	if minStr := c.Query("min_amount"); minStr != "" {
-		min, err := models.ParseMoney(minStr)
-		if err != nil {
-			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"min_amount": err.Error()}})
-			return
-		}
-		minAmount = &min
-		query = query.Where("amount >= ?", min)
-	}
-
-	if maxStr := c.Query("max_amount"); maxStr != "" {
-		max, err := models.ParseMoney(maxStr)
-		if err != nil {
-			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"max_amount": err.Error()}})
-			return
-		}
-		maxAmount = &max
-		query = query.Where("amount <= ?", max)
-	}
-	if minAmount != nil && maxAmount != nil && *minAmount > *maxAmount {
-		c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"max_amount": "must be greater than or equal to min_amount"}})
-		return
-	}
-
-	startDate := c.Query("start_date")
-	if startDate != "" {
-		if _, err := timepkg.Parse("2006-01-02", startDate); err != nil {
-			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"start_date": "must use YYYY-MM-DD"}})
-			return
-		}
-		query = query.Where("date >= ?", startDate)
-	}
-
-	endDate := c.Query("end_date")
-	if endDate != "" {
-		if _, err := timepkg.Parse("2006-01-02", endDate); err != nil {
-			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"end_date": "must use YYYY-MM-DD"}})
-			return
-		}
-		query = query.Where("date <= ?", endDate)
-	}
-	if startDate != "" && endDate != "" && startDate > endDate {
-		c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"end_date": "must be on or after start_date"}})
-		return
-	}
-
-	if tag := strings.TrimSpace(c.Query("tag")); tag != "" {
-		if tagFilter, err := json.Marshal([]string{tag}); err == nil {
-			query = query.Where("tags @> ?", string(tagFilter))
-		}
-	}
-	if search := strings.TrimSpace(c.Query("q")); search != "" {
-		if len(search) > 200 {
-			c.JSON(422, gin.H{"error": "invalid_filters", "fields": gin.H{"q": "must not exceed 200 characters"}})
-			return
-		}
-		pattern := "%" + search + "%"
-		query = query.Where(
-			"title ILIKE ? OR merchant ILIKE ? OR notes ILIKE ?",
-			pattern, pattern, pattern,
-		)
-	}
-
 	listQuery := query.Session(&gorm.Session{})
 	var total int64
 	if err := query.Count(&total).Error; err != nil {

@@ -1,0 +1,141 @@
+package http
+
+import (
+	"encoding/csv"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+
+	"finance-parser-go/internal/models"
+)
+
+func TestExportEntriesCSVUsesFiltersAndOwnedRows(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+
+	authResponse := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "export-owner-device"}, http.StatusOK,
+	)
+	otherAuth := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "export-other-device"}, http.StatusOK,
+	)
+	accounts := performJSONRequest[[]models.Account](
+		t, router, http.MethodGet, "/v1/accounts", authResponse.Token, nil, http.StatusOK,
+	)
+	otherAccounts := performJSONRequest[[]models.Account](
+		t, router, http.MethodGet, "/v1/accounts", otherAuth.Token, nil, http.StatusOK,
+	)
+
+	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
+		"title": "Coffee, beans", "type": "expense", "amount": 120.5, "currency": "INR",
+		"source": "manual", "mode": "Cash", "category": "Food", "merchant": "Cafe \"A\"",
+		"date": "2026-07-12", "time": "09:15", "notes": "with, comma and \"quote\"",
+		"tags": []string{"morning", "cafe"},
+	})
+	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
+		"title": "Metro", "type": "expense", "amount": 40, "currency": "INR",
+		"source": "manual", "mode": "Cash", "category": "Travel", "merchant": "Metro",
+		"date": "2026-07-13",
+	})
+	createExportEntry(t, router, otherAuth.Token, otherAccounts[0].ID, map[string]any{
+		"title": "Other food", "type": "expense", "amount": 999, "currency": "INR",
+		"source": "manual", "mode": "Cash", "category": "Food", "merchant": "Other",
+		"date": "2026-07-12",
+	})
+
+	response := performRawRequest(t, router, http.MethodGet, "/v1/entries/export?format=csv&category=Food", authResponse.Token, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("export status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "text/csv") {
+		t.Fatalf("expected CSV content type, got %q", contentType)
+	}
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, "finnri-entries.csv") {
+		t.Fatalf("expected attachment disposition, got %q", disposition)
+	}
+
+	rows, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
+	if err != nil {
+		t.Fatalf("failed to read CSV: %v\n%s", err, response.Body.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected header plus one filtered owner row, got %#v", rows)
+	}
+	header := rows[0]
+	if strings.Join(header, ",") != strings.Join(entryExportCSVHeader, ",") {
+		t.Fatalf("unexpected header: %#v", header)
+	}
+	row := rows[1]
+	assertCSVValue(t, header, row, "title", "Coffee, beans")
+	assertCSVValue(t, header, row, "amount", "120.50")
+	assertCSVValue(t, header, row, "category", "Food")
+	assertCSVValue(t, header, row, "merchant", "Cafe \"A\"")
+	assertCSVValue(t, header, row, "notes", "with, comma and \"quote\"")
+	assertCSVValue(t, header, row, "tags", "morning|cafe")
+	assertCSVValue(t, header, row, "account_name", "Cash")
+	if strings.Contains(response.Body.String(), "Other food") || strings.Contains(response.Body.String(), "Metro") {
+		t.Fatalf("export leaked unowned or unfiltered rows: %s", response.Body.String())
+	}
+}
+
+func TestExportEntriesCSVSupportsEmptyAndRejectsInvalidFormat(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+
+	authResponse := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "export-empty-device"}, http.StatusOK,
+	)
+
+	response := performRawRequest(t, router, http.MethodGet, "/v1/entries/export?format=csv", authResponse.Token, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("empty export status = %d, body = %s", response.Code, response.Body.String())
+	}
+	rows, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
+	if err != nil {
+		t.Fatalf("failed to read empty CSV: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected only header row, got %#v", rows)
+	}
+
+	invalid := performRawRequest(t, router, http.MethodGet, "/v1/entries/export?format=xlsx", authResponse.Token, nil)
+	if invalid.Code != http.StatusUnprocessableEntity || !strings.Contains(invalid.Body.String(), "must be csv") {
+		t.Fatalf("unexpected invalid format response: status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func createExportEntry(t *testing.T, router *gin.Engine, token string, accountID uint, payload map[string]any) {
+	t.Helper()
+	payload["account_id"] = accountID
+	_ = performJSONRequest[models.Entry](t, router, http.MethodPost, "/v1/entries", token, payload, http.StatusCreated)
+}
+
+func performRawRequest(t *testing.T, router http.Handler, method, target, token string, body *strings.Reader) *httptest.ResponseRecorder {
+	t.Helper()
+	if body == nil {
+		body = strings.NewReader("")
+	}
+	request := httptest.NewRequest(method, target, body)
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
+}
+
+func assertCSVValue(t *testing.T, header, row []string, column, want string) {
+	t.Helper()
+	for index, name := range header {
+		if name == column {
+			if index >= len(row) || row[index] != want {
+				t.Fatalf("unexpected %s value: got row=%#v want %q", column, row, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing CSV column %q in header %#v", column, header)
+}

@@ -24,6 +24,7 @@ const (
 	LoggedInFreeDailyLimit   = 50
 	GuestDailyLimit          = 15
 	TrialDuration            = 30 * 24 * time.Hour
+	AnonymousGuestRetention  = 90 * 24 * time.Hour
 )
 
 const (
@@ -139,6 +140,15 @@ type ProviderUsage struct {
 	ErrorCode              string
 	ProviderStartedAt      *time.Time
 	FinishedAt             *time.Time
+}
+
+type AnonymousGuestRetentionResult struct {
+	CreditLedger       int64
+	AIUsageEvents      int64
+	AIUsageLimitEvents int64
+	DailyCreditUsage   int64
+	GuestUsageKeys     int64
+	CreditGrants       int64
 }
 
 func HashUsageKey(value string) string {
@@ -741,6 +751,88 @@ func (s *CreditService) ExpireCredits() (int, error) {
 	return expiredCount, err
 }
 
+func (s *CreditService) PurgeAnonymousGuestUsage(retention time.Duration) (AnonymousGuestRetentionResult, error) {
+	if retention <= 0 {
+		return AnonymousGuestRetentionResult{}, fmt.Errorf("retention must be positive")
+	}
+	return s.PurgeAnonymousGuestUsageBefore(s.now().Add(-retention))
+}
+
+func (s *CreditService) PurgeAnonymousGuestUsageBefore(cutoff time.Time) (AnonymousGuestRetentionResult, error) {
+	cutoff = cutoff.UTC()
+	cutoffDate := cutoff.Format("2006-01-02")
+	result := AnonymousGuestRetentionResult{}
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var oldGuestHashes []string
+		if err := tx.Model(&models.GuestUsageKey{}).
+			Where("last_seen_at < ?", cutoff).
+			Pluck("guest_device_id_hash", &oldGuestHashes).Error; err != nil {
+			return err
+		}
+
+		guestLedger := tx.Where("user_id IS NULL AND guest_device_id_hash <> '' AND created_at < ?", cutoff)
+		if len(oldGuestHashes) > 0 {
+			guestLedger = guestLedger.Or("user_id IS NULL AND guest_device_id_hash IN ?", oldGuestHashes)
+		}
+		deleted, err := deleteRows(guestLedger, &models.CreditLedger{})
+		if err != nil {
+			return fmt.Errorf("purge anonymous guest credit ledger: %w", err)
+		}
+		result.CreditLedger = deleted
+
+		guestUsage := tx.Where("user_id IS NULL AND guest_device_id_hash <> '' AND started_at < ?", cutoff)
+		if len(oldGuestHashes) > 0 {
+			guestUsage = guestUsage.Or("user_id IS NULL AND guest_device_id_hash IN ?", oldGuestHashes)
+		}
+		deleted, err = deleteRows(guestUsage, &models.AIUsageEvent{})
+		if err != nil {
+			return fmt.Errorf("purge anonymous guest ai usage events: %w", err)
+		}
+		result.AIUsageEvents = deleted
+
+		guestLimitEvents := tx.Where("user_id IS NULL AND guest_device_id_hash <> '' AND created_at < ?", cutoff)
+		if len(oldGuestHashes) > 0 {
+			guestLimitEvents = guestLimitEvents.Or("user_id IS NULL AND guest_device_id_hash IN ?", oldGuestHashes)
+		}
+		deleted, err = deleteRows(guestLimitEvents, &models.AIUsageLimitEvent{})
+		if err != nil {
+			return fmt.Errorf("purge anonymous guest ai usage limit events: %w", err)
+		}
+		result.AIUsageLimitEvents = deleted
+
+		guestDailyUsage := tx.Where("user_id IS NULL AND guest_device_id_hash <> '' AND usage_date < ?", cutoffDate)
+		if len(oldGuestHashes) > 0 {
+			guestDailyUsage = guestDailyUsage.Or("user_id IS NULL AND guest_device_id_hash IN ?", oldGuestHashes)
+		}
+		deleted, err = deleteRows(guestDailyUsage, &models.DailyCreditUsage{})
+		if err != nil {
+			return fmt.Errorf("purge anonymous guest daily usage: %w", err)
+		}
+		result.DailyCreditUsage = deleted
+
+		guestKeys := tx.Where("last_seen_at < ?", cutoff)
+		deleted, err = deleteRows(guestKeys, &models.GuestUsageKey{})
+		if err != nil {
+			return fmt.Errorf("purge anonymous guest usage keys: %w", err)
+		}
+		result.GuestUsageKeys = deleted
+
+		guestGrants := tx.Where("user_id IS NULL AND guest_device_id_hash <> '' AND expires_at IS NOT NULL AND expires_at < ?", cutoff)
+		if len(oldGuestHashes) > 0 {
+			guestGrants = guestGrants.Or("user_id IS NULL AND guest_device_id_hash IN ?", oldGuestHashes)
+		}
+		deleted, err = deleteRows(guestGrants, &models.CreditGrant{})
+		if err != nil {
+			return fmt.Errorf("purge anonymous guest credit grants: %w", err)
+		}
+		result.CreditGrants = deleted
+
+		return nil
+	})
+	return result, err
+}
+
 func (s *CreditService) checkAllowanceTx(tx *gorm.DB, subject CreditSubject, actionCode ai.ActionCode) (AllowanceResult, error) {
 	if !subject.valid() {
 		return AllowanceResult{Allowed: false, Reason: AllowanceSubjectRequired}, nil
@@ -1172,6 +1264,14 @@ func createLedger(tx *gorm.DB, ledger models.CreditLedger) error {
 		return fmt.Errorf("ledger balance cannot be negative")
 	}
 	return tx.Create(&ledger).Error
+}
+
+func deleteRows(tx *gorm.DB, model any) (int64, error) {
+	result := tx.Delete(model)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
 }
 
 func (s *CreditService) recordAllowanceDenial(subject CreditSubject, allowance AllowanceResult) {
