@@ -500,6 +500,55 @@ func TestCheckAllowanceDeniesDailyLimit(t *testing.T) {
 	}
 }
 
+func TestCheckAllowanceSelectsGuestTrialLimits(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	grant, _, err := service.EnsureGuestTrialGrant("guest-device-allowance", "203.0.113.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := SubjectForGuestHash(grant.GuestDeviceIDHash)
+
+	allowance, err := service.CheckAllowance(subject, ai.ActionTransactionParseText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allowance.Allowed || allowance.Reason != AllowanceAllowed {
+		t.Fatalf("expected guest text allowance, got %#v", allowance)
+	}
+	if allowance.RequiredCredits != 5 ||
+		allowance.AvailableCredits != GuestTrialCredits ||
+		allowance.DailyLimit != GuestDailyLimit ||
+		allowance.DailyRemaining != GuestDailyLimit ||
+		allowance.PlanCode != "" ||
+		allowance.PaidPlanActive {
+		t.Fatalf("unexpected guest allowance details: %#v", allowance)
+	}
+}
+
+func TestCheckAllowanceDeniesGuestForNonGuestAction(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	grant, _, err := service.EnsureGuestTrialGrant("guest-device-medium-voice", "203.0.113.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowance, err := service.CheckAllowance(SubjectForGuestHash(grant.GuestDeviceIDHash), ai.ActionTransactionParseVoiceMedium)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowance.Allowed || allowance.Reason != AllowanceGuestNotAllowed {
+		t.Fatalf("expected guest-not-allowed denial, got %#v", allowance)
+	}
+	if allowance.RequiredCredits != 18 || allowance.DailyLimit != 0 || allowance.AvailableCredits != 0 {
+		t.Fatalf("guest-not-allowed should stop before limit/balance lookups, got %#v", allowance)
+	}
+}
+
 func TestReserveCreditsDebitsGrantDailyUsageAndIsIdempotent(t *testing.T) {
 	db := setupCreditTestDB(t)
 	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
@@ -863,6 +912,48 @@ func TestPaidPlanDailyLimitOverridesFreeLimit(t *testing.T) {
 	}
 	if !allowance.Allowed || !allowance.PaidPlanActive || allowance.DailyLimit != 200 || allowance.PlanCode != "monthly" {
 		t.Fatalf("expected paid allowance, got %#v", allowance)
+	}
+}
+
+func TestCheckAllowanceInactiveSubscriptionFallsBackToFreeLimits(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	user := createCreditTestUser(t, db)
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		t.Fatal(err)
+	}
+	plan := models.Plan{Code: "monthly", Name: "Monthly", BillingInterval: "monthly", IncludedCredits: 3000, DailyCreditLimit: 200}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	subscription := models.UserSubscription{
+		UserID:             user.ID,
+		PlanID:             plan.ID,
+		Status:             "cancelled",
+		CurrentPeriodStart: now.Add(-30 * 24 * time.Hour),
+		CurrentPeriodEnd:   now.Add(30 * 24 * time.Hour),
+	}
+	if err := db.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.GrantSubscriptionPeriod(subscription, plan.IncludedCredits, subscription.CurrentPeriodStart, subscription.CurrentPeriodEnd); err != nil {
+		t.Fatal(err)
+	}
+
+	allowance, err := service.CheckAllowance(SubjectForUser(user.ID), ai.ActionTransactionParseText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allowance.Allowed || allowance.PaidPlanActive || allowance.PlanCode != "" {
+		t.Fatalf("expected free allowance fallback, got %#v", allowance)
+	}
+	if allowance.DailyLimit != LoggedInFreeDailyLimit || allowance.DailyRemaining != LoggedInFreeDailyLimit {
+		t.Fatalf("expected free daily limits after inactive subscription, got %#v", allowance)
+	}
+	if allowance.AvailableCredits != LoggedInFreeTrialCredits+plan.IncludedCredits {
+		t.Fatalf("expected all unexpired credits to remain usable, got %#v", allowance)
 	}
 }
 

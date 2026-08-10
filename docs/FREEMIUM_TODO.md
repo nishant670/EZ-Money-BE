@@ -521,7 +521,7 @@ accurate usage accounting creates uncontrolled AI cost risk.
 
 - [x] Unit test credit math.
 - [ ] Unit test plan entitlement resolution.
-- [ ] Unit test guest/free/paid allowance selection.
+- [x] Unit test guest/free/paid allowance selection.
 - [ ] Unit test credit grant expiry.
 - [ ] Unit test idempotency.
 - [ ] Unit test refunds for pre-provider failures.
