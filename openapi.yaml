@@ -281,6 +281,34 @@ paths:
           description: Invalid filters, unsupported format, or export row limit exceeded
         "500":
           description: Export failed
+  /v1/merchants/suggestions:
+    get:
+      summary: Suggest merchants from the authenticated user's entry history
+      parameters:
+        - in: query
+          name: q
+          description: Optional case-insensitive merchant substring to match.
+          schema:
+            type: string
+            maxLength: 120
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 25
+            default: 10
+      responses:
+        "200":
+          description: Merchant autocomplete suggestions derived from owned entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MerchantSuggestions"
+        "422":
+          description: Invalid query or limit
+        "500":
+          description: Suggestions failed
   /v1/reports/transactions/summary:
     get:
       summary: Return filtered transaction report rollups
@@ -1450,6 +1478,27 @@ components:
           type: integer
         total_pages:
           type: integer
+    MerchantSuggestions:
+      type: object
+      required: [suggestions]
+      properties:
+        suggestions:
+          type: array
+          items:
+            $ref: "#/components/schemas/MerchantSuggestion"
+    MerchantSuggestion:
+      type: object
+      required: [merchant, category, transaction_count, last_seen_date]
+      properties:
+        merchant:
+          type: string
+        category:
+          type: string
+        transaction_count:
+          type: integer
+        last_seen_date:
+          type: string
+          format: date
     AccountInput:
       type: object
       required: [name, type]

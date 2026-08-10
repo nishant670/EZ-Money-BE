@@ -5,6 +5,7 @@
 - POST /v1/entries
 - GET /v1/entries
 - GET /v1/entries/export
+- GET /v1/merchants/suggestions
 - GET /v1/reports/transactions/summary
 - GET /v1/entries/:id
 - PUT /v1/entries/:id
@@ -109,6 +110,13 @@ authenticated user's entries. It accepts the same ownership-scoped filters as
 `GET /v1/entries` and returns totals, counts, category, merchant, account,
 month, and type breakdowns. Expense breakdown percentages are calculated against
 the filtered expense total.
+
+## Merchant Suggestions
+`GET /v1/merchants/suggestions?q=swig&limit=10` returns autocomplete
+suggestions derived only from the authenticated user's saved entries. Each
+suggestion includes the merchant, most associated category, transaction count,
+and last seen date. The endpoint is read-only and does not create a merchant
+catalog table.
 
 ## Notifications
 Notifications are authenticated, user-owned records exposed through `/v1/notifications`.

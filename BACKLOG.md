@@ -132,7 +132,7 @@ Legend:
 - [x] Add authenticated, filtered CSV export for transaction entries.
 - [x] Add authenticated transaction summary report rollups.
 - [ ] Add bulk editing later.
-- [ ] Add merchant history-backed autocomplete later: remember past merchants with category associations and suggest merchants when users create or edit transactions.
+- [x] Add merchant history-backed autocomplete later: remember past merchants with category associations and suggest merchants when users create or edit transactions.
 - [ ] Add hardened receipt/document uploads later with private storage, MIME/size validation, and retention controls.
 - [ ] Add statement imports/reconciliation later.
 - [ ] Add bank/UPI/Account Aggregator integrations later.

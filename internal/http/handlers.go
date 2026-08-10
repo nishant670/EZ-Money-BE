@@ -115,6 +115,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/entries", s.saveEntry)
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/export", s.exportEntriesCSV)
+		authorized.GET("/merchants/suggestions", s.listMerchantSuggestions)
 		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)

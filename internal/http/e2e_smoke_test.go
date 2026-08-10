@@ -185,6 +185,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.POST("/feedback", server.createFeedback)
 	authorized.POST("/entries", server.saveEntry)
 	authorized.GET("/entries/export", server.exportEntriesCSV)
+	authorized.GET("/merchants/suggestions", server.listMerchantSuggestions)
 	authorized.GET("/reports/transactions/summary", server.getTransactionSummaryReport)
 	authorized.GET("/entries/:id", server.getEntry)
 	authorized.PUT("/entries/:id", server.updateEntry)
