@@ -133,7 +133,9 @@ Legend:
 - [x] Add authenticated transaction summary report rollups.
 - [ ] Add bulk editing later.
 - [x] Add merchant history-backed autocomplete later: remember past merchants with category associations and suggest merchants when users create or edit transactions.
-- [ ] Add hardened receipt/document uploads later with private storage, MIME/size validation, and retention controls.
+- [x] Add hardened receipt/document uploads with MIME/size validation and retention controls: content-sniffed allowlist (JPEG/PNG/HEIC/WebP/PDF), random filenames, and file cleanup on entry delete, attachment replacement, and account deletion.
+- [ ] Move receipts to private storage. They are currently served from an unauthenticated static route and protected only by unguessable filenames, which is a capability URL rather than real access control. Needs a per-file owner record and an authenticated handler replacing `r.Static`.
+- [ ] Reap orphaned uploads: a file uploaded through `/v1/upload` whose entry save then fails is never referenced and never cleaned up. Add a sweep to the existing maintenance job.
 - [ ] Add statement imports/reconciliation later.
 - [ ] Add bank/UPI/Account Aggregator integrations later.
 - [ ] Consider open-ended AI financial advice only after separate product, safety, and compliance review.

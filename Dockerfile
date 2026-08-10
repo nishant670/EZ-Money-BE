@@ -1,0 +1,31 @@
+# Build a static Go binary; the server needs no CGO because the sqlite driver
+# is only used by tests.
+FROM golang:1.23-alpine AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/server ./cmd/server
+
+FROM alpine:3.20
+
+# ca-certificates for outbound HTTPS (OpenAI, Google token verification, Postgres TLS).
+# tzdata because handlers call time.LoadLocation("Asia/Kolkata").
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+
+COPY --from=build /out/server /app/server
+COPY schemas /app/schemas
+COPY migrations /app/migrations
+
+# Receipt uploads are written here. Mount a Railway volume on this path so the
+# files survive redeploys.
+RUN mkdir -p /app/uploads
+
+EXPOSE 8080
+
+CMD ["/app/server"]

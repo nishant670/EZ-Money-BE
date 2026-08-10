@@ -40,6 +40,11 @@ type Server struct {
 
 func NewServer(cfg *config.Config) *gin.Engine {
 	r := gin.New()
+	// Without this Gin trusts every proxy, so a client can pick its own
+	// X-Forwarded-For and get a fresh rate-limit bucket on each request.
+	if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		log.Fatalf("invalid TRUSTED_PROXIES: %v", err)
+	}
 	r.Use(gin.Recovery())
 	r.Use(cors(cfg))
 	r.Use(logging())
@@ -209,7 +214,15 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/tools/emi/calculate", s.calculateEMI)
 	}
 
-	r.Static("/uploads", "./uploads")
+	// Receipts are user-supplied bytes served from our own origin. The upload
+	// handler already restricts them to images and PDFs, but pin the type down
+	// so a browser cannot be talked into re-interpreting one as markup.
+	uploads := r.Group("/"+uploadDir, func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Content-Security-Policy", "default-src 'none'; img-src 'self'; object-src 'none'; sandbox")
+		c.Next()
+	})
+	uploads.Static("/", "./"+uploadDir)
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
 	return r
 }
@@ -857,7 +870,12 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.SourceText != nil {
 		entry.SourceText = *input.SourceText
 	}
+	// Hold the previous receipt so it can be removed once the swap is committed.
+	replacedAttachment := ""
 	if input.Attachment != nil {
+		if entry.Attachment != "" && entry.Attachment != *input.Attachment {
+			replacedAttachment = entry.Attachment
+		}
 		entry.Attachment = *input.Attachment
 	}
 	if input.AccountID.Set {
@@ -875,6 +893,9 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}); err != nil {
 		c.JSON(500, gin.H{"error": "failed_update_entry"})
 		return
+	}
+	if replacedAttachment != "" {
+		deleteLocalUploadFiles([]string{replacedAttachment})
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 	_ = createEntryNotification(userID, "transaction.updated", "Transaction updated", entryNotificationBody("Updated", entry), entry.ID)
@@ -933,6 +954,8 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	// The row is gone, so nothing else can reference the receipt now.
+	deleteLocalUploadFiles([]string{entry.Attachment})
 	_ = createNotification(userID, "transaction.deleted", "Transaction deleted", entryNotificationBody("Deleted", entry), "")
 
 	c.JSON(200, gin.H{"message": "entry deleted"})
@@ -1351,38 +1374,33 @@ func loadLocationOrIndia(requested, fallback string) *timepkg.Location {
 	return timepkg.FixedZone("IST", 5*3600+1800)
 }
 
-func (s *Server) handleUpload(c *gin.Context) {
-	file, err := c.FormFile("file")
-	if err != nil {
-		if requestBodyTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
-			return
-		}
-		c.JSON(400, gin.H{"error": "no file provided"})
-		return
-	}
-	if file.Size > s.cfg.MaxUploadMB*1024*1024 {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file_too_large"})
-		return
-	}
 
-	// Create unique filename
-	filename := fmt.Sprintf("%d_%s", time.Now().Unix(), file.Filename)
-	path := "uploads/" + filename
-
-	if err := c.SaveUploadedFile(file, path); err != nil {
-		c.JSON(500, gin.H{"error": "failed to save file"})
-		return
-	}
-
-	// build full url using host header
+// publicOrigin resolves the scheme and host the client reached us on. A
+// TLS-terminating proxy leaves Request.TLS nil, so relying on it alone would
+// hand back http:// URLs that Android blocks as cleartext — and those URLs are
+// persisted on the entry, so a wrong one stays wrong.
+func publicOrigin(r *http.Request) string {
 	scheme := "http"
-	if c.Request.TLS != nil {
+	if r.TLS != nil {
 		scheme = "https"
 	}
-	fullURL := fmt.Sprintf("%s://%s/%s", scheme, c.Request.Host, path)
+	if forwarded := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		scheme = forwarded
+	}
 
-	c.JSON(200, gin.H{"url": fullURL})
+	host := r.Host
+	if forwarded := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		host = forwarded
+	}
+
+	return scheme + "://" + host
+}
+
+// firstForwardedValue takes the left-most entry of a comma-separated forwarding
+// header, which is the value the original client was served.
+func firstForwardedValue(header string) string {
+	value, _, _ := strings.Cut(header, ",")
+	return strings.TrimSpace(value)
 }
 func (s *Server) saveAccount(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)

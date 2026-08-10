@@ -479,6 +479,48 @@ paths:
           description: Deleted
         "404":
           description: Not found
+  /v1/upload:
+    post:
+      summary: Upload a receipt and get the URL to persist on an entry
+      description: >
+        Accepts a single JPEG, PNG, HEIC, WebP or PDF file. The stored type is
+        determined by sniffing the file's leading bytes; the client-supplied
+        filename and Content-Type are ignored. The file is saved under a random
+        name and served from an unauthenticated static route, so the returned
+        URL is effectively a capability - treat it as secret.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Stored receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    example: https://api.finnri.com/uploads/9f8c1d2e3a4b5c6d7e8f90a1b2c3d4e5.jpg
+        "400":
+          description: No file provided
+        "413":
+          description: File exceeds MAX_UPLOAD_MB
+        "415":
+          description: File type is not an accepted image or PDF
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
   /v1/notifications:
     get:
       summary: List notifications for the authenticated user
