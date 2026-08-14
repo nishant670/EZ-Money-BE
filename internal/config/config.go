@@ -42,6 +42,7 @@ type Config struct {
 	MaintenanceJobsEnabled          bool
 	MaintenanceIntervalHours        int
 	AnonymousGuestRetentionDays     int
+	TrustedProxies                  []string
 }
 
 func getenv(key, def string) string {
@@ -140,7 +141,43 @@ func Load() *Config {
 		MaintenanceJobsEnabled:          atob("MAINTENANCE_JOBS_ENABLED", true),
 		MaintenanceIntervalHours:        atoi("MAINTENANCE_INTERVAL_HOURS", 24),
 		AnonymousGuestRetentionDays:     atoi("ANONYMOUS_GUEST_RETENTION_DAYS", 90),
+		TrustedProxies:                  trustedProxies(),
 	}
+}
+
+// defaultTrustedProxies covers the private ranges a managed platform's edge
+// proxy talks to the container from (Railway, Fly, Render, or nginx on the same
+// host). Trusting only these means X-Forwarded-For entries a client injects sit
+// to the left of the address the edge appended, so ClientIP still resolves to
+// the real caller.
+var defaultTrustedProxies = []string{
+	"127.0.0.1/32",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"::1/128",
+	"fc00::/7",
+}
+
+// DefaultTrustedProxies returns a copy of the private-range default.
+func DefaultTrustedProxies() []string {
+	out := make([]string, len(defaultTrustedProxies))
+	copy(out, defaultTrustedProxies)
+	return out
+}
+
+// trustedProxies reads TRUSTED_PROXIES. Empty uses the private-range default.
+// "none" trusts nothing, which is correct when the process is exposed directly
+// to the internet with no proxy in front.
+func trustedProxies() []string {
+	raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
+	if raw == "" {
+		return defaultTrustedProxies
+	}
+	if strings.EqualFold(raw, "none") {
+		return nil
+	}
+	return csv("TRUSTED_PROXIES")
 }
 
 func ResolveBackendPath(rel string) string {

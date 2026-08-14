@@ -40,6 +40,11 @@ type Server struct {
 
 func NewServer(cfg *config.Config) *gin.Engine {
 	r := gin.New()
+	// Without this Gin trusts every proxy, so a client can pick its own
+	// X-Forwarded-For and get a fresh rate-limit bucket on each request.
+	if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		log.Fatalf("invalid TRUSTED_PROXIES: %v", err)
+	}
 	r.Use(gin.Recovery())
 	r.Use(cors(cfg))
 	r.Use(logging())
@@ -209,7 +214,15 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/tools/emi/calculate", s.calculateEMI)
 	}
 
-	r.Static("/uploads", "./uploads")
+	// Receipts are user-supplied bytes served from our own origin. The upload
+	// handler already restricts them to images and PDFs, but pin the type down
+	// so a browser cannot be talked into re-interpreting one as markup.
+	uploads := r.Group("/"+uploadDir, func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Content-Security-Policy", "default-src 'none'; img-src 'self'; object-src 'none'; sandbox")
+		c.Next()
+	})
+	uploads.Static("/", "./"+uploadDir)
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
 	return r
 }
@@ -641,7 +654,8 @@ func (s *Server) saveEntry(c *gin.Context) {
 		return
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
-	_ = createEntryNotification(userID, "transaction.created", "Transaction added", entryNotificationBody("Added", entry), entry.ID)
+	// No notification here: the client already confirms its own save inline. Only
+	// events the user could not otherwise know about belong in the inbox.
 	_ = maybeCreateBudgetAlertsForEntry(entry)
 
 	c.JSON(201, entry)
@@ -667,6 +681,12 @@ func (s *Server) listEntries(c *gin.Context) {
 		return
 	}
 
+	sortOrder, sortFields := parseEntrySort(c.Query("sort"))
+	if len(sortFields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_filters", "fields": sortFields})
+		return
+	}
+
 	var entries []models.Entry
 	listQuery := query.Session(&gorm.Session{})
 	var total int64
@@ -676,7 +696,7 @@ func (s *Server) listEntries(c *gin.Context) {
 	}
 
 	if err := listQuery.Preload("Account").
-		Order("date desc, created_at desc").
+		Order(sortOrder).
 		Limit(pageSize).
 		Offset((page - 1) * pageSize).
 		Find(&entries).Error; err != nil {
@@ -684,11 +704,55 @@ func (s *Server) listEntries(c *gin.Context) {
 		return
 	}
 
+	categoryCounts, err := entryCategoryCounts(userID, c)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_count_entries"})
+		return
+	}
+
 	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
 	c.JSON(200, gin.H{
 		"entries": entries, "page": page, "page_size": pageSize,
 		"total": total, "total_pages": totalPages,
+		"category_counts": categoryCounts,
 	})
+}
+
+// entryCategoryCounts answers "how many would I get if I picked this category",
+// so it counts against every active filter except the category one.
+//
+// Canonical names are the keys. Legacy rows are folded onto their canonical
+// name here rather than reported separately, because the filter chips are the
+// canonical list and a "Food: 12" the UI cannot render is a count nobody sees.
+func entryCategoryCounts(userID uint, c *gin.Context) (map[string]int64, error) {
+	query, fields := filteredEntriesQueryOmitting(userID, c, true)
+	if len(fields) > 0 {
+		return map[string]int64{}, nil
+	}
+
+	var rows []struct {
+		Category string
+		Total    int64
+	}
+	if err := query.
+		Select("entries.category as category, count(*) as total").
+		Group("entries.category").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	counts := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		name := row.Category
+		if resolved, ok := canonicalCategory(name); ok {
+			name = resolved
+		}
+		if strings.TrimSpace(name) == "" {
+			name = defaultCategory
+		}
+		counts[name] += row.Total
+	}
+	return counts, nil
 }
 
 func (s *Server) getEntry(c *gin.Context) {
@@ -832,6 +896,9 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}
 	if input.Category != nil {
 		entry.Category = *input.Category
+		if resolved, ok := categoryForSave(entry.Category); ok {
+			entry.Category = resolved
+		}
 	}
 	if input.Notes != nil {
 		entry.Notes = *input.Notes
@@ -857,7 +924,12 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.SourceText != nil {
 		entry.SourceText = *input.SourceText
 	}
+	// Hold the previous receipt so it can be removed once the swap is committed.
+	replacedAttachment := ""
 	if input.Attachment != nil {
+		if entry.Attachment != "" && entry.Attachment != *input.Attachment {
+			replacedAttachment = entry.Attachment
+		}
 		entry.Attachment = *input.Attachment
 	}
 	if input.AccountID.Set {
@@ -876,8 +948,11 @@ func (s *Server) updateEntry(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_update_entry"})
 		return
 	}
+	if replacedAttachment != "" {
+		deleteLocalUploadFiles([]string{replacedAttachment})
+	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
-	_ = createEntryNotification(userID, "transaction.updated", "Transaction updated", entryNotificationBody("Updated", entry), entry.ID)
+	// See createEntry: the user performed this edit and saw it succeed.
 	_ = maybeCreateBudgetAlertsForEntry(entry)
 
 	c.JSON(200, entry)
@@ -933,7 +1008,9 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	_ = createNotification(userID, "transaction.deleted", "Transaction deleted", entryNotificationBody("Deleted", entry), "")
+	// The row is gone, so nothing else can reference the receipt now.
+	deleteLocalUploadFiles([]string{entry.Attachment})
+	// See createEntry: the user performed this delete and saw it succeed.
 
 	c.JSON(200, gin.H{"message": "entry deleted"})
 }
@@ -1351,38 +1428,33 @@ func loadLocationOrIndia(requested, fallback string) *timepkg.Location {
 	return timepkg.FixedZone("IST", 5*3600+1800)
 }
 
-func (s *Server) handleUpload(c *gin.Context) {
-	file, err := c.FormFile("file")
-	if err != nil {
-		if requestBodyTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
-			return
-		}
-		c.JSON(400, gin.H{"error": "no file provided"})
-		return
-	}
-	if file.Size > s.cfg.MaxUploadMB*1024*1024 {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file_too_large"})
-		return
-	}
 
-	// Create unique filename
-	filename := fmt.Sprintf("%d_%s", time.Now().Unix(), file.Filename)
-	path := "uploads/" + filename
-
-	if err := c.SaveUploadedFile(file, path); err != nil {
-		c.JSON(500, gin.H{"error": "failed to save file"})
-		return
-	}
-
-	// build full url using host header
+// publicOrigin resolves the scheme and host the client reached us on. A
+// TLS-terminating proxy leaves Request.TLS nil, so relying on it alone would
+// hand back http:// URLs that Android blocks as cleartext — and those URLs are
+// persisted on the entry, so a wrong one stays wrong.
+func publicOrigin(r *http.Request) string {
 	scheme := "http"
-	if c.Request.TLS != nil {
+	if r.TLS != nil {
 		scheme = "https"
 	}
-	fullURL := fmt.Sprintf("%s://%s/%s", scheme, c.Request.Host, path)
+	if forwarded := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		scheme = forwarded
+	}
 
-	c.JSON(200, gin.H{"url": fullURL})
+	host := r.Host
+	if forwarded := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		host = forwarded
+	}
+
+	return scheme + "://" + host
+}
+
+// firstForwardedValue takes the left-most entry of a comma-separated forwarding
+// header, which is the value the original client was served.
+func firstForwardedValue(header string) string {
+	value, _, _ := strings.Cut(header, ",")
+	return strings.TrimSpace(value)
 }
 func (s *Server) saveAccount(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
@@ -1426,7 +1498,17 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, accounts)
+
+	// Each account arrives with what its transactions prove, not just what the
+	// user typed into it once. See account_summary.go for the rules.
+	location := loadLocationOrIndia(c.Query("tz"), s.cfg.TZDefault)
+	monthStart, monthEnd := monthToDateWindow(timepkg.Now().In(location))
+	totals, err := loadAccountLedgerTotals(userID, monthStart, monthEnd)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_account_activity"})
+		return
+	}
+	c.JSON(200, summariseAccounts(accounts, totals))
 }
 
 func (s *Server) updateAccount(c *gin.Context) {

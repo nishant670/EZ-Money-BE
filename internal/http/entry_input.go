@@ -132,13 +132,16 @@ func validateEntryValues(amount models.Money, title, entryType, currency, source
 	if strings.TrimSpace(title) == "" {
 		fields["title"] = "is required"
 	}
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "cash", "bank account", "upi", "credit card", "wallets":
-	default:
-		fields["mode"] = "must be Cash, Bank Account, UPI, Credit Card, or Wallets"
+	if _, ok := canonicalMode(mode); !ok {
+		fields["mode"] = modeMessage()
 	}
 	if strings.TrimSpace(category) == "" {
 		fields["category"] = "is required"
+	} else if _, ok := categoryForSave(category); !ok {
+		// Custom categories from the picker are allowed through; only the length
+		// is bounded. Legacy names like "Food" are accepted and canonicalized by
+		// toModel, which keeps older app builds saving successfully.
+		fields["category"] = categoryLengthMessage()
 	}
 	return fields
 }
@@ -223,10 +226,16 @@ func (input entryInput) toModel(userID uint) models.Entry {
 	if source == "" {
 		source = "manual"
 	}
+	// Rewrites recognised aliases to canonical form and passes a user's own
+	// custom category through untouched.
+	category := input.Category
+	if resolved, ok := categoryForSave(category); ok {
+		category = resolved
+	}
 	return models.Entry{
 		Title: input.Title, Type: strings.ToLower(input.Type), Amount: input.Amount,
 		Currency: currency, Source: source, Mode: input.Mode, CardNetwork: input.CardNetwork,
-		Category: input.Category, Merchant: input.Merchant, PurposeType: input.PurposeType,
+		Category: category, Merchant: input.Merchant, PurposeType: input.PurposeType,
 		Tag: input.Tag, Tags: input.Tags, Notes: input.Notes, Date: input.Date,
 		Time: input.Time, SourceText: input.SourceText, Attachment: input.Attachment,
 		AccountID: input.AccountID, UserID: userID,

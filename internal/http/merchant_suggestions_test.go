@@ -36,7 +36,7 @@ func TestMerchantSuggestionsUseOwnedHistoryAndCategoryAssociation(t *testing.T) 
 	})
 	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
 		"title": "Instamart", "type": "expense", "amount": 800, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Groceries", "merchant": "Swiggy Instamart",
+		"source": "manual", "mode": "Cash", "category": "Shopping", "merchant": "Swiggy Instamart",
 		"date": "2026-07-21",
 	})
 	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
@@ -58,13 +58,15 @@ func TestMerchantSuggestionsUseOwnedHistoryAndCategoryAssociation(t *testing.T) 
 	if len(response.Suggestions) != 2 {
 		t.Fatalf("expected two owner swig suggestions, got %#v", response.Suggestions)
 	}
+	// The Swiggy entries above were saved with the legacy "Food" category, which
+	// older app builds still send. They come back canonicalized.
 	first := response.Suggestions[0]
-	if first.Merchant != "swiggy" || first.Category != "Food" ||
+	if first.Merchant != "swiggy" || first.Category != "Food & Drinks" ||
 		first.TransactionCount != 2 || first.LastSeenDate != "2026-07-20" {
 		t.Fatalf("unexpected first suggestion: %#v", first)
 	}
 	second := response.Suggestions[1]
-	if second.Merchant != "Swiggy Instamart" || second.Category != "Groceries" ||
+	if second.Merchant != "Swiggy Instamart" || second.Category != "Shopping" ||
 		second.TransactionCount != 1 {
 		t.Fatalf("unexpected second suggestion: %#v", second)
 	}

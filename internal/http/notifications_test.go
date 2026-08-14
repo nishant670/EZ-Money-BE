@@ -1,11 +1,15 @@
 package http
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
+	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/models"
 
+	"github.com/gin-gonic/gin"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -31,15 +35,65 @@ func TestNotificationsSkipStaticBearerGate(t *testing.T) {
 	}
 }
 
-func TestEntryNotificationBodyUsesBestAvailableLabel(t *testing.T) {
-	entry := models.Entry{
-		Merchant: "Starbucks",
-		Type:     "expense",
-		Amount:   testMoney("275.50"),
+// The API used to write a notification for every entry the user created,
+// updated, or deleted — a receipt for an action they had just performed and
+// watched succeed. That buried the alerts that actually matter. The inbox is
+// reserved for events the user could not otherwise know about.
+func TestEntryMutationsCreateNoSelfNotifications(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+
+	auth := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{
+			"device_id": "notification-noise-device",
+		}, http.StatusOK,
+	)
+
+	accounts := performJSONRequest[[]models.Account](
+		t, router, http.MethodGet, "/v1/accounts", auth.Token, nil, http.StatusOK,
+	)
+	if len(accounts) == 0 {
+		t.Fatal("expected a default account for the guest user")
 	}
-	body := entryNotificationBody("Added", entry)
-	if !strings.Contains(body, "Starbucks") || !strings.Contains(body, "expense") || !strings.Contains(body, "₹275.50") {
-		t.Fatalf("unexpected notification body: %q", body)
+
+	entry := map[string]any{
+		"title": "Chai", "type": "expense", "amount": 80, "currency": "INR",
+		"source": "manual", "account_id": accounts[0].ID, "mode": "Cash",
+		"category": "Food & Drinks", "merchant": "Tea Stall",
+		"date": "2026-07-12", "time": "09:15",
+	}
+
+	saved := performJSONRequest[models.Entry](
+		t, router, http.MethodPost, "/v1/entries", auth.Token, entry, http.StatusCreated,
+	)
+	assertNoTransactionNotifications(t, "create")
+
+	entry["amount"] = 95
+	performJSONRequest[models.Entry](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/entries/%d", saved.ID),
+		auth.Token, entry, http.StatusOK,
+	)
+	assertNoTransactionNotifications(t, "update")
+
+	performJSONRequest[map[string]any](
+		t, router, http.MethodDelete, fmt.Sprintf("/v1/entries/%d", saved.ID),
+		auth.Token, nil, http.StatusOK,
+	)
+	assertNoTransactionNotifications(t, "delete")
+}
+
+func assertNoTransactionNotifications(t *testing.T, stage string) {
+	t.Helper()
+
+	var found []models.Notification
+	if err := database.DB.Where("type LIKE ?", "transaction.%").Find(&found).Error; err != nil {
+		t.Fatalf("failed to read notifications after %s: %v", stage, err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("entry %s wrote %d self-notification(s), first: type=%q title=%q",
+			stage, len(found), found[0].Type, found[0].Title)
 	}
 }
 

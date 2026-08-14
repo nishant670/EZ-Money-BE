@@ -18,6 +18,12 @@ import (
 type DashboardPeriod struct {
 	Start string `json:"start"`
 	End   string `json:"end"`
+	// The window every change on this response is measured against, named so
+	// the app can state it rather than saying "than last period".
+	PreviousStart   string `json:"previous_start"`
+	PreviousEnd     string `json:"previous_end"`
+	ComparisonKind  string `json:"comparison_kind"`
+	ComparisonLabel string `json:"comparison_label"`
 }
 
 type DashboardSummary struct {
@@ -25,6 +31,15 @@ type DashboardSummary struct {
 	TotalIncome      float64 `json:"total_income"`
 	DailyAverage     float64 `json:"daily_average"`
 	TransactionCount int     `json:"transaction_count"`
+	// What the same window spent last time, and how this compares — the
+	// headline version of what TopCategories already carries per category.
+	// It lived only inside a `period_comparison` insight card before, which is
+	// rankable and dedupable, so a caller wanting the plain number had to hope
+	// the card survived. Same floor as everywhere else: SpendChange is 0 and
+	// SpendChangeComparable false when the base is too thin to divide by.
+	PreviousTotalSpent    float64 `json:"previous_total_spent"`
+	SpendChange           float64 `json:"spend_change"`
+	SpendChangeComparable bool    `json:"spend_change_comparable"`
 }
 
 type DashboardCategory struct {
@@ -32,6 +47,9 @@ type DashboardCategory struct {
 	Amount     float64 `json:"amount"`
 	Percentage float64 `json:"percentage"`
 	Change     float64 `json:"change"`
+	// False when the previous period was too thin to divide by. `change` is 0
+	// in that case, which the app already reads as "show no trend".
+	ChangeComparable bool `json:"change_comparable"`
 }
 
 type DashboardMerchant struct {
@@ -109,10 +127,16 @@ type InsightCard struct {
 }
 
 type DashboardResponse struct {
-	Period              DashboardPeriod               `json:"period"`
-	Summary             DashboardSummary              `json:"summary"`
-	TopCategories       []DashboardCategory           `json:"top_categories"`
-	TopMerchants        []DashboardMerchant           `json:"top_merchants"`
+	Period  DashboardPeriod  `json:"period"`
+	Summary DashboardSummary `json:"summary"`
+	// The complete expense breakdown for the window, highest first — not the
+	// top five it is still named after. A donut that charts five of eight
+	// categories is not a breakdown, and a caller could not tell whether the
+	// residual was one category or a dozen. Bounded by dashboardCategoryLimit;
+	// past that, the residual is `summary.total_spent` minus this list, which
+	// is what "Other" is built from.
+	TopCategories []DashboardCategory `json:"top_categories"`
+	TopMerchants  []DashboardMerchant `json:"top_merchants"`
 	AccountSpending     []DashboardAccount            `json:"account_spending"`
 	BudgetStatuses      []DashboardBudgetStatus       `json:"budget_statuses"`
 	DailySpending       []DashboardDailySpend         `json:"daily_spending"`
@@ -123,11 +147,23 @@ type DashboardResponse struct {
 }
 
 type dashboardRange struct {
-	Start         time.Time
-	End           time.Time
-	PreviousStart time.Time
-	PreviousEnd   time.Time
-	Days          int
+	Start          time.Time
+	End            time.Time
+	PreviousStart  time.Time
+	PreviousEnd    time.Time
+	Days           int
+	ComparisonKind string
+}
+
+func (r dashboardRange) period() DashboardPeriod {
+	return DashboardPeriod{
+		Start:           r.Start.Format("2006-01-02"),
+		End:             r.End.Format("2006-01-02"),
+		PreviousStart:   r.PreviousStart.Format("2006-01-02"),
+		PreviousEnd:     r.PreviousEnd.Format("2006-01-02"),
+		ComparisonKind:  r.ComparisonKind,
+		ComparisonLabel: comparisonLabel(r),
+	}
 }
 
 func parseDashboardRange(startValue, endValue string, now time.Time) (dashboardRange, map[string]string) {
@@ -158,11 +194,10 @@ func parseDashboardRange(startValue, endValue string, now time.Time) (dashboardR
 	if len(fields) == 0 && days > 366 {
 		fields["start_date"] = "range must not exceed 366 days"
 	}
-	previousEnd := start.AddDate(0, 0, -1)
-	previousStart := previousEnd.AddDate(0, 0, -(days - 1))
+	previousStart, previousEnd, comparisonKind := previousComparisonWindow(start, end)
 	return dashboardRange{
 		Start: start, End: end, PreviousStart: previousStart,
-		PreviousEnd: previousEnd, Days: days,
+		PreviousEnd: previousEnd, Days: days, ComparisonKind: comparisonKind,
 	}, fields
 }
 
@@ -221,7 +256,7 @@ func buildDashboardFromDB(userID uint, dateRange dashboardRange) (DashboardRespo
 	previousEnd := dateRange.PreviousEnd.Format("2006-01-02")
 
 	response := DashboardResponse{
-		Period:        DashboardPeriod{Start: start, End: end},
+		Period:        dateRange.period(),
 		TopCategories: []DashboardCategory{}, TopMerchants: []DashboardMerchant{},
 		AccountSpending: []DashboardAccount{}, BudgetStatuses: []DashboardBudgetStatus{},
 		DailySpending: []DashboardDailySpend{}, RecentTransactions: []models.Entry{},
@@ -275,8 +310,9 @@ func buildDashboardFromDB(userID uint, dateRange dashboardRange) (DashboardRespo
 	if err != nil {
 		return DashboardResponse{}, err
 	}
+	applySpendComparison(&response.Summary, previousSpent)
 	response.RecurringCandidates = detectRecurringCandidates(recurringEntries, dateRange)
-	response.Insights = buildInsightCards(response, previousSpent, categoryPrevious, expenseAmounts)
+	response.Insights = buildInsightCards(response, dateRange, previousSpent, categoryPrevious, expenseAmounts)
 	return response, nil
 }
 
@@ -307,46 +343,76 @@ func loadDashboardSummary(userID uint, start, end string) (DashboardSummary, err
 type dashboardCategoryRow struct {
 	Category string
 	Amount   float64
+	Count    int
 }
 
-func loadDashboardPreviousCategoryTotals(userID uint, start, end string) (map[string]float64, error) {
+// The baseline carries a transaction count as well as a total, because the
+// floor that keeps four-digit percentages off the screen needs both.
+func loadDashboardPreviousCategoryTotals(userID uint, start, end string) (map[string]comparisonBase, error) {
 	var rows []dashboardCategoryRow
 	if err := database.DB.Model(&models.Entry{}).
-		Select("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END AS category, COALESCE(SUM(amount), 0) AS amount").
+		Select("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END AS category, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
 		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
 		Group("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END").
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	totals := map[string]float64{}
+	totals := map[string]comparisonBase{}
 	for _, row := range rows {
-		totals[normalizedLabel(row.Category, "Uncategorized")] = row.Amount
+		totals[normalizedLabel(row.Category, "Uncategorized")] = comparisonBase{
+			Amount: row.Amount,
+			Count:  row.Count,
+		}
 	}
 	return totals, nil
 }
 
-func loadDashboardTopCategories(userID uint, start, end string, totalSpent float64, previous map[string]float64) ([]DashboardCategory, error) {
+// dashboardCategoryLimit bounds the breakdown without pretending to rank it.
+// The canonical set is 8 and users may add their own, so this has to clear the
+// realistic case comfortably; it exists only so a user with hundreds of
+// hand-typed categories cannot make the payload unbounded. Anything past the
+// 25th largest category is a rounding error, and it is still counted — in
+// `summary.total_spent`, which is what the app's "Other" is derived from.
+const dashboardCategoryLimit = 25
+
+func loadDashboardTopCategories(userID uint, start, end string, totalSpent float64, previous map[string]comparisonBase) ([]DashboardCategory, error) {
 	var rows []dashboardCategoryRow
 	if err := database.DB.Model(&models.Entry{}).
 		Select("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END AS category, COALESCE(SUM(amount), 0) AS amount").
 		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
 		Group("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END").
 		Order("amount DESC").
-		Limit(5).
+		Limit(dashboardCategoryLimit).
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	categories := make([]DashboardCategory, 0, len(rows))
 	for _, row := range rows {
 		category := normalizedLabel(row.Category, "Uncategorized")
-		categories = append(categories, DashboardCategory{
-			Category:   category,
-			Amount:     row.Amount,
-			Percentage: safePercentage(row.Amount, totalSpent),
-			Change:     percentageChange(row.Amount, previous[category]),
-		})
+		categories = append(categories, newDashboardCategory(
+			category, row.Amount, totalSpent, previous[category],
+		))
 	}
 	return categories, nil
+}
+
+// newDashboardCategory is the one place a category change is decided, so the
+// floor cannot be applied on one code path and forgotten on the other.
+func newDashboardCategory(
+	category string,
+	amount, totalSpent float64,
+	base comparisonBase,
+) DashboardCategory {
+	entry := DashboardCategory{
+		Category:   category,
+		Amount:     amount,
+		Percentage: safePercentage(amount, totalSpent),
+	}
+	if base.publishable() {
+		entry.Change = percentageChange(amount, base.Amount)
+		entry.ChangeComparable = true
+	}
+	return entry
 }
 
 func loadDashboardTopMerchants(userID uint, start, end string) ([]DashboardMerchant, error) {
@@ -519,13 +585,16 @@ func loadDashboardExpenseAmounts(userID uint, start, end string) ([]float64, err
 	return amounts, nil
 }
 
-func loadDashboardPreviousExpenseTotal(userID uint, start, end string) (float64, error) {
-	var total float64
+func loadDashboardPreviousExpenseTotal(userID uint, start, end string) (comparisonBase, error) {
+	var row struct {
+		Amount float64
+		Count  int
+	}
 	err := database.DB.Model(&models.Entry{}).
-		Select("COALESCE(SUM(amount), 0)").
+		Select("COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
 		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = ?", userID, start, end, "expense").
-		Scan(&total).Error
-	return total, err
+		Scan(&row).Error
+	return comparisonBase{Amount: row.Amount, Count: row.Count}, err
 }
 
 func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardResponse {
@@ -546,7 +615,7 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 	}
 
 	response := DashboardResponse{
-		Period:        DashboardPeriod{Start: start, End: end},
+		Period:        dateRange.period(),
 		TopCategories: []DashboardCategory{}, TopMerchants: []DashboardMerchant{},
 		AccountSpending: []DashboardAccount{}, BudgetStatuses: []DashboardBudgetStatus{},
 		DailySpending:      []DashboardDailySpend{},
@@ -556,7 +625,7 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 	}
 
 	categoryCurrent := map[string]float64{}
-	categoryPrevious := map[string]float64{}
+	categoryPrevious := map[string]comparisonBase{}
 	merchantCurrent := map[string]*DashboardMerchant{}
 	accountCurrent := map[string]*DashboardAccount{}
 	dailyCurrent := map[string]*DashboardDailySpend{}
@@ -564,7 +633,11 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 
 	for _, entry := range previous {
 		if strings.EqualFold(entry.Type, "expense") {
-			categoryPrevious[normalizedLabel(entry.Category, "Uncategorized")] += entry.Amount.Float64()
+			label := normalizedLabel(entry.Category, "Uncategorized")
+			base := categoryPrevious[label]
+			base.Amount += entry.Amount.Float64()
+			base.Count++
+			categoryPrevious[label] = base
 		}
 	}
 	for _, entry := range current {
@@ -625,17 +698,15 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		response.DailySpending = append(response.DailySpending, DashboardDailySpend{Date: date})
 	}
 	for category, amount := range categoryCurrent {
-		change := percentageChange(amount, categoryPrevious[category])
-		response.TopCategories = append(response.TopCategories, DashboardCategory{
-			Category: category, Amount: amount,
-			Percentage: safePercentage(amount, response.Summary.TotalSpent), Change: change,
-		})
+		response.TopCategories = append(response.TopCategories, newDashboardCategory(
+			category, amount, response.Summary.TotalSpent, categoryPrevious[category],
+		))
 	}
 	sort.Slice(response.TopCategories, func(i, j int) bool {
 		return response.TopCategories[i].Amount > response.TopCategories[j].Amount
 	})
-	if len(response.TopCategories) > 5 {
-		response.TopCategories = response.TopCategories[:5]
+	if len(response.TopCategories) > dashboardCategoryLimit {
+		response.TopCategories = response.TopCategories[:dashboardCategoryLimit]
 	}
 
 	for _, merchant := range merchantCurrent {
@@ -667,9 +738,11 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		current = current[:5]
 	}
 	response.RecentTransactions = current
+	previousSpent := previousExpenseBase(previous)
+	applySpendComparison(&response.Summary, previousSpent)
 	response.RecurringCandidates = detectRecurringCandidates(entries, dateRange)
 	response.Insights = buildInsightCards(
-		response, previousExpenseTotal(previous), categoryPrevious, expenseAmounts,
+		response, dateRange, previousSpent, categoryPrevious, expenseAmounts,
 	)
 	return response
 }
@@ -747,39 +820,63 @@ func normalizeInsightMatch(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
+// insightCategoryCandidates is how far down the breakdown an alert may look.
+// It is the old TopCategories cap, kept here so widening that list for the
+// charts could not quietly change which alerts users see.
+const insightCategoryCandidates = 5
+
+func firstN[T any](items []T, n int) []T {
+	if len(items) <= n {
+		return items
+	}
+	return items[:n]
+}
+
 func buildInsightCards(
 	dashboard DashboardResponse,
-	previousSpent float64,
-	categoryPrevious map[string]float64,
+	dateRange dashboardRange,
+	previousSpent comparisonBase,
+	categoryPrevious map[string]comparisonBase,
 	expenseAmounts []float64,
 ) []InsightCard {
 	cards := []InsightCard{}
-	if dashboard.Summary.TotalSpent > 0 || previousSpent > 0 {
-		change := percentageChange(dashboard.Summary.TotalSpent, previousSpent)
-		direction := "higher"
-		if change < 0 {
-			direction = "lower"
-		}
+	previousLabel := formatComparisonWindow(dateRange.PreviousStart, dateRange.PreviousEnd)
+
+	// No card at all when the baseline is too thin. A comparison the user
+	// cannot trust is worse than no comparison: it is the whole reason the
+	// Insights tab stopped being believable.
+	if previousSpent.publishable() && dashboard.Summary.TotalSpent > 0 {
+		change := percentageChange(dashboard.Summary.TotalSpent, previousSpent.Amount)
 		amount := dashboard.Summary.TotalSpent
 		cards = append(cards, InsightCard{
 			Kind: "period_comparison", Severity: "info", Title: "Period comparison",
-			Body:             fmt.Sprintf("Spending is %.0f%% %s than the previous period.", math.Abs(change), direction),
-			Explanation:      "Compares confirmed expense totals against the immediately preceding equal-length period.",
+			Body: fmt.Sprintf("Spending is %s %s than %s.",
+				formatChangeMagnitude(change), changeDirection(change), previousLabel),
+			Explanation:      comparisonExplanation(dateRange),
 			ActionLabel:      "Review period transactions",
 			Amount:           &amount,
 			ChangePercentage: &change,
 		})
 	}
 
-	for _, category := range dashboard.TopCategories {
-		if previous := categoryPrevious[category.Category]; previous > 0 && category.Change >= 20 {
+	// Only the largest few categories can raise an alert. TopCategories now
+	// carries the whole breakdown so the donut can chart it, but a category
+	// ranked twelfth rising 20% is arithmetic, not something worth putting on
+	// the screen — and the loop takes the first match, so without this bound a
+	// long tail could out-shout the categories that actually move the total.
+	for _, category := range firstN(dashboard.TopCategories, insightCategoryCandidates) {
+		if category.ChangeComparable && category.Change >= 20 {
 			amount := category.Amount
 			percentage := category.Percentage
 			change := category.Change
 			cards = append(cards, InsightCard{
 				Kind: "category_increase", Severity: "warning", Title: category.Category + " increased",
-				Body:             fmt.Sprintf("%s spending is %.0f%% higher than the previous period.", category.Category, category.Change),
-				Explanation:      "Flags a category that had previous-period activity and increased by at least 20%.",
+				Body: fmt.Sprintf("%s spending is %s higher than %s.",
+					category.Category, formatChangeMagnitude(change), previousLabel),
+				Explanation: fmt.Sprintf(
+					"Flags a category that rose at least 20%%. %s",
+					comparisonExplanation(dateRange),
+				),
 				ActionLabel:      "Open category",
 				Category:         category.Category,
 				Amount:           &amount,
@@ -1304,14 +1401,15 @@ func normalizedLabel(value, fallback string) string {
 	return fallback
 }
 
-func previousExpenseTotal(entries []models.Entry) float64 {
-	total := 0.0
+func previousExpenseBase(entries []models.Entry) comparisonBase {
+	base := comparisonBase{}
 	for _, entry := range entries {
 		if strings.EqualFold(entry.Type, "expense") {
-			total += entry.Amount.Float64()
+			base.Amount += entry.Amount.Float64()
+			base.Count++
 		}
 	}
-	return total
+	return base
 }
 
 func safePercentage(value, total float64) float64 {

@@ -88,10 +88,12 @@
         "null"
       ],
       "enum": [
-        "Food",
+        "Food & Drinks",
+        "Transport",
         "Travel",
         "Shopping",
         "Bills",
+        "Entertainment",
         "Family/Gifts",
         "Misc",
         null

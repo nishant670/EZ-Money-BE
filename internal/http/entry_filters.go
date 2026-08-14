@@ -14,6 +14,21 @@ import (
 )
 
 func filteredEntriesQuery(userID uint, c *gin.Context) (*gorm.DB, map[string]string) {
+	return filteredEntriesQueryOmitting(userID, c, false)
+}
+
+// filteredEntriesQueryOmitting builds the same query with one predicate
+// optionally left out.
+//
+// Facet counts need it: a chip reading "Bills 15" is answering "how many would I
+// get if I picked Bills", so it has to be counted against every filter *except*
+// the category one. Counting inside the category filter would make the selected
+// chip show its own count and every other chip show zero.
+func filteredEntriesQueryOmitting(
+	userID uint,
+	c *gin.Context,
+	omitCategory bool,
+) (*gorm.DB, map[string]string) {
 	fields := map[string]string{}
 	query := database.DB.Model(&models.Entry{}).Where("entries.user_id = ?", userID)
 
@@ -25,16 +40,37 @@ func filteredEntriesQuery(userID uint, c *gin.Context) (*gorm.DB, map[string]str
 		}
 	}
 
-	if cat := strings.TrimSpace(c.Query("category")); cat != "" {
+	if cat := strings.TrimSpace(c.Query("category")); cat != "" && !omitCategory {
 		query = query.Where("LOWER(entries.category) = LOWER(?)", cat)
 	}
 
-	if mode := strings.TrimSpace(c.Query("mode")); mode != "" {
-		switch strings.ToLower(mode) {
-		case "cash", "upi", "credit card", "wallets":
-			query = query.Where("LOWER(entries.mode) = LOWER(?)", mode)
+	// The cleanup filter behind the app's "Uncategorised" preset.
+	//
+	// Misc is deliberately not included. It is the confirm-first fallback the
+	// parser files things under when it cannot place them, and it is also what a
+	// manual entry defaults to — a real category people budget against, not an
+	// empty one. This matches needsTransactionReview in the app rather than
+	// inventing a second meaning for the same word.
+	if uncategorised := strings.TrimSpace(c.Query("uncategorised")); uncategorised != "" {
+		switch uncategorised {
+		case "1", "true":
+			query = query.Where(
+				"entries.category IS NULL OR TRIM(entries.category) = '' OR LOWER(entries.category) = ?",
+				"uncategorized",
+			)
 		default:
-			fields["mode"] = "is invalid"
+			fields["uncategorised"] = "must be 1 or true when present"
+		}
+	}
+
+	if mode := strings.TrimSpace(c.Query("mode")); mode != "" {
+		// Resolved rather than matched against a second list, so whatever may be
+		// saved may be searched for — and an alias like "bank" finds the
+		// "Bank Account" rows it means.
+		if resolved, ok := canonicalMode(mode); ok {
+			query = query.Where("LOWER(entries.mode) = LOWER(?)", resolved)
+		} else {
+			fields["mode"] = modeMessage()
 		}
 	}
 	if accountID := strings.TrimSpace(c.Query("account_id")); accountID != "" {
@@ -110,6 +146,35 @@ func filteredEntriesQuery(userID uint, c *gin.Context) (*gorm.DB, map[string]str
 		return query, fields
 	}
 	return query, nil
+}
+
+// entrySortOrders maps the sort the client asks for onto SQL.
+//
+// created_at is the tie-break on every one of them: date has day resolution, so
+// several entries share it routinely, and without a second key their relative
+// order is whatever the planner felt like — which makes pagination drop and
+// repeat rows between pages.
+var entrySortOrders = map[string]string{
+	"newest":  "entries.date desc, entries.created_at desc",
+	"oldest":  "entries.date asc, entries.created_at asc",
+	"highest": "entries.amount desc, entries.created_at desc",
+	"lowest":  "entries.amount asc, entries.created_at desc",
+}
+
+const defaultEntrySort = "newest"
+
+// parseEntrySort resolves the sort parameter, reporting an invalid one rather
+// than silently falling back — a list quietly ordered by something other than
+// what was asked for is indistinguishable from a bug in the data.
+func parseEntrySort(value string) (string, map[string]string) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return entrySortOrders[defaultEntrySort], nil
+	}
+	if order, ok := entrySortOrders[normalized]; ok {
+		return order, nil
+	}
+	return "", map[string]string{"sort": "must be newest, oldest, highest, or lowest"}
 }
 
 func applyEntryTagFilter(query *gorm.DB, tag string) *gorm.DB {

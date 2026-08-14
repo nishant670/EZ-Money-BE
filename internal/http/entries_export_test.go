@@ -31,22 +31,22 @@ func TestExportEntriesCSVUsesFiltersAndOwnedRows(t *testing.T) {
 
 	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
 		"title": "Coffee, beans", "type": "expense", "amount": 120.5, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Food", "merchant": "Cafe \"A\"",
+		"source": "manual", "mode": "Cash", "category": "Food & Drinks", "merchant": "Cafe \"A\"",
 		"date": "2026-07-12", "time": "09:15", "notes": "with, comma and \"quote\"",
 		"tags": []string{"morning", "cafe"},
 	})
 	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
 		"title": "Metro", "type": "expense", "amount": 40, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Travel", "merchant": "Metro",
+		"source": "manual", "mode": "Cash", "category": "Transport", "merchant": "Metro",
 		"date": "2026-07-13",
 	})
 	createExportEntry(t, router, otherAuth.Token, otherAccounts[0].ID, map[string]any{
 		"title": "Other food", "type": "expense", "amount": 999, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Food", "merchant": "Other",
+		"source": "manual", "mode": "Cash", "category": "Food & Drinks", "merchant": "Other",
 		"date": "2026-07-12",
 	})
 
-	response := performRawRequest(t, router, http.MethodGet, "/v1/entries/export?format=csv&category=Food", authResponse.Token, nil)
+	response := performRawRequest(t, router, http.MethodGet, "/v1/entries/export?format=csv&category=Food+%26+Drinks", authResponse.Token, nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("export status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -71,7 +71,7 @@ func TestExportEntriesCSVUsesFiltersAndOwnedRows(t *testing.T) {
 	row := rows[1]
 	assertCSVValue(t, header, row, "title", "Coffee, beans")
 	assertCSVValue(t, header, row, "amount", "120.50")
-	assertCSVValue(t, header, row, "category", "Food")
+	assertCSVValue(t, header, row, "category", "Food & Drinks")
 	assertCSVValue(t, header, row, "merchant", "Cafe \"A\"")
 	assertCSVValue(t, header, row, "notes", "with, comma and \"quote\"")
 	assertCSVValue(t, header, row, "tags", "morning|cafe")

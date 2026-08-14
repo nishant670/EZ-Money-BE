@@ -71,6 +71,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0006_create_auth_sessions.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0007_create_auth_verifications.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0008_guest_device_and_login_lockout.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0030_add_google_subject_to_users.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0031_remove_transaction_self_notifications.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0032_canonicalize_entry_categories.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0033_canonicalize_subscription_categories.sql
 ```
 
 ## Auth verification

@@ -33,29 +33,6 @@ func createNotification(userID uint, notificationType, title, body, actionURL st
 	return database.DB.Create(&notification).Error
 }
 
-func createEntryNotification(userID uint, notificationType, title, body string, entryID uint) error {
-	return createNotification(userID, notificationType, title, body, fmt.Sprintf("/entry/%d", entryID))
-}
-
-func entryNotificationBody(verb string, entry models.Entry) string {
-	label := strings.TrimSpace(entry.Title)
-	if label == "" {
-		label = strings.TrimSpace(entry.Merchant)
-	}
-	if label == "" {
-		label = strings.TrimSpace(entry.Category)
-	}
-	if label == "" {
-		label = "Transaction"
-	}
-
-	entryType := strings.ToLower(strings.TrimSpace(entry.Type))
-	if entryType == "" {
-		entryType = "transaction"
-	}
-	return fmt.Sprintf("%s %s %s of ₹%s.", verb, label, entryType, entry.Amount.String())
-}
-
 func parseNotificationPagination(pageParam, pageSizeParam string) (int, int, gin.H) {
 	page := 1
 	pageSize := defaultNotificationPageSize

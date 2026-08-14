@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+.DS_Store
+main
+uploads/
+docs/
+*.md
+api_tests.http
+Makefile

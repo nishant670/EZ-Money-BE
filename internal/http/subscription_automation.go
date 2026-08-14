@@ -118,9 +118,14 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 		if purpose == "" {
 			purpose = "normal_spend"
 		}
-		category := strings.TrimSpace(subscription.Category)
-		if category == "" {
-			category = "Misc"
+		// Autopay writes an entry directly, so it never passes through the entry
+		// input validation that canonicalizes categories. Route it through the
+		// same resolver, otherwise a subscription filed under the old
+		// subscription-only vocabulary ("Cloud", "Membership") would put that
+		// value straight into the ledger and fragment the category rollups.
+		category, ok := categoryForSave(subscription.Category)
+		if !ok {
+			category = defaultCategory
 		}
 		mode := normalizedOccurrencePaymentMode(*subscription)
 		idempotencyKey := fmt.Sprintf("subscription:%d:%s", subscription.ID, due)
