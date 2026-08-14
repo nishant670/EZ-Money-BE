@@ -104,6 +104,26 @@ func validPIN(pin string) bool {
 	return !allSame
 }
 
+var errWeakPIN = errors.New("weak_pin")
+
+// hashOptionalPIN turns a PIN the caller may have omitted into the value that
+// belongs in users.pin_hash. An empty PIN is not an error — it is an account
+// that deliberately has none — and returns an empty hash, which is exactly what
+// bcrypt.CompareHashAndPassword rejects on every PIN login attempt.
+func hashOptionalPIN(pin string) (string, error) {
+	if pin == "" {
+		return "", nil
+	}
+	if !validPIN(pin) {
+		return "", errWeakPIN
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
 func hashOTP(otp string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
 	if err != nil {
@@ -416,7 +436,10 @@ func (s *Server) authIdentify(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"exists": true, "is_guest": user.IsGuest})
+	// has_pin tells the app which second step to show: the PIN keypad, or the
+	// OTP it would otherwise only reach through "Forgot PIN". An account that
+	// skipped PIN setup has no keypad to offer.
+	c.JSON(200, gin.H{"exists": true, "is_guest": user.IsGuest, "has_pin": user.PinHash != ""})
 }
 
 // POST /v1/auth/otp/send
@@ -534,7 +557,7 @@ func (s *Server) authOtpVerify(c *gin.Context) {
 func (s *Server) authRegister(c *gin.Context) {
 	var input struct {
 		ClaimToken        string `json:"claim_token" binding:"required"`
-		PIN               string `json:"pin" binding:"required,len=4"`
+		PIN               string `json:"pin" binding:"omitempty,len=4"`
 		GuestUUID         string `json:"guest_uuid"`
 		DeviceID          string `json:"device_id"`
 		BiometricsEnabled bool   `json:"biometrics_enabled"`
@@ -547,14 +570,17 @@ func (s *Server) authRegister(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if !validPIN(input.PIN) {
-		c.JSON(400, gin.H{"error": "weak_pin"})
-		return
-	}
 
-	// Let's Hash PIN
-	hash, err := bcrypt.GenerateFromPassword([]byte(input.PIN), bcrypt.DefaultCost)
+	// A PIN is optional at signup: the account exists to back the data up, and
+	// the app screen that asks for one has a "Set up later". An omitted PIN
+	// leaves pin_hash empty, which is what has_pin=false is derived from — the
+	// account then signs in on a new device by OTP instead of by keypad.
+	hash, err := hashOptionalPIN(input.PIN)
 	if err != nil {
+		if errors.Is(err, errWeakPIN) {
+			c.JSON(400, gin.H{"error": "weak_pin"})
+			return
+		}
 		c.JSON(500, gin.H{"error": "encryption_failed"})
 		return
 	}
@@ -615,7 +641,9 @@ func (s *Server) authRegister(c *gin.Context) {
 			if phone != nil {
 				user.Phone = phone
 			}
-			user.PinHash = string(hash)
+			if hash != "" {
+				user.PinHash = hash
+			}
 			user.IsGuest = false
 			user.BiometricsEnabled = input.BiometricsEnabled
 			user.Username = "User_" + generateUUID()[:8]
@@ -630,7 +658,7 @@ func (s *Server) authRegister(c *gin.Context) {
 				UUID:              generateUUID(),
 				Email:             email,
 				Phone:             phone,
-				PinHash:           string(hash),
+				PinHash:           hash,
 				IsGuest:           false,
 				BiometricsEnabled: input.BiometricsEnabled,
 				DeviceID:          deviceIDPtr,
@@ -824,7 +852,7 @@ func (s *Server) authGoogle(c *gin.Context) {
 func (s *Server) authPinReset(c *gin.Context) {
 	var input struct {
 		ClaimToken        string `json:"claim_token" binding:"required"`
-		PIN               string `json:"pin" binding:"required,len=4"`
+		PIN               string `json:"pin" binding:"omitempty,len=4"`
 		DeviceID          string `json:"device_id"`
 		BiometricsEnabled *bool  `json:"biometrics_enabled"`
 	}
@@ -836,8 +864,19 @@ func (s *Server) authPinReset(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if !validPIN(input.PIN) {
-		c.JSON(400, gin.H{"error": "weak_pin"})
+
+	// An omitted PIN signs the account in on the strength of the OTP alone and
+	// leaves whatever pin_hash it already had untouched. That is the path for an
+	// account that never set one — it has no keypad to be sent to — and it is no
+	// weaker than the reset it shares an endpoint with, which already hands out
+	// a session to whoever proved control of the identifier.
+	hash, err := hashOptionalPIN(input.PIN)
+	if err != nil {
+		if errors.Is(err, errWeakPIN) {
+			c.JSON(400, gin.H{"error": "weak_pin"})
+			return
+		}
+		c.JSON(500, gin.H{"error": "encryption_failed"})
 		return
 	}
 
@@ -853,16 +892,12 @@ func (s *Server) authPinReset(c *gin.Context) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(input.PIN), bcrypt.DefaultCost)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "encryption_failed"})
-		return
-	}
-
 	updates := map[string]interface{}{
-		"pin_hash":              string(hash),
 		"failed_login_attempts": 0,
 		"login_locked_until":    nil,
+	}
+	if hash != "" {
+		updates["pin_hash"] = hash
 	}
 	deviceID := strings.TrimSpace(input.DeviceID)
 	if deviceID != "" {

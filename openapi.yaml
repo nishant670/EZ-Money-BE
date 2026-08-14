@@ -155,7 +155,7 @@ paths:
           name: mode
           schema:
             type: string
-            enum: [Cash, UPI, Credit Card, Wallets]
+            enum: [Cash, Bank Account, UPI, Credit Card, Wallets]
         - in: query
           name: q
           description: Case-insensitive search across title, merchant, and notes.
@@ -202,6 +202,24 @@ paths:
             minimum: 1
             maximum: 100
             default: 50
+        - in: query
+          name: sort
+          description: >-
+            Result order. Amount sorts rank across the whole filtered set, so a
+            client that groups rows by day has to stop doing so to render them.
+          schema:
+            type: string
+            enum: [newest, oldest, highest, lowest]
+            default: newest
+        - in: query
+          name: uncategorised
+          description: >-
+            Return only entries with no category at all. Misc is excluded — it is
+            a real category the parser and the entry form both file things under
+            deliberately, not an empty one.
+          schema:
+            type: string
+            enum: ["1", "true"]
       responses:
         "200":
           description: Entries
@@ -236,7 +254,7 @@ paths:
           name: mode
           schema:
             type: string
-            enum: [Cash, UPI, Credit Card, Wallets]
+            enum: [Cash, Bank Account, UPI, Credit Card, Wallets]
         - in: query
           name: q
           description: Case-insensitive search across title, merchant, and notes.
@@ -326,7 +344,7 @@ paths:
           name: mode
           schema:
             type: string
-            enum: [Cash, UPI, Credit Card, Wallets]
+            enum: [Cash, Bank Account, UPI, Credit Card, Wallets]
         - in: query
           name: q
           description: Case-insensitive search across title, merchant, and notes.
@@ -373,7 +391,14 @@ paths:
           description: Report failed
   /v1/accounts:
     get:
-      summary: List accounts owned by the authenticated user
+      summary: List accounts owned by the authenticated user, with figures derived from their transactions
+      parameters:
+        - in: query
+          name: tz
+          required: false
+          schema:
+            type: string
+          description: IANA zone deciding which calendar month "this month" is. Defaults to the server's TZ_DEFAULT.
       responses:
         "200":
           description: Accounts
@@ -382,7 +407,9 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Account"
+                  $ref: "#/components/schemas/AccountWithSummary"
+        "500":
+          description: Account activity could not be loaded
     post:
       summary: Create an account/payment source
       requestBody:
@@ -1143,7 +1170,7 @@ components:
       properties:
         period:
           type: object
-          required: [start, end]
+          required: [start, end, previous_start, previous_end, comparison_kind, comparison_label]
           properties:
             start:
               type: string
@@ -1151,9 +1178,35 @@ components:
             end:
               type: string
               format: date
+            previous_start:
+              type: string
+              format: date
+              description: Start of the window every change on this response is measured against.
+            previous_end:
+              type: string
+              format: date
+            comparison_kind:
+              type: string
+              enum: [same_days_previous_month, preceding_period]
+              description: >-
+                How the previous window was chosen. A range starting on the 1st and ending inside
+                the same month compares against the same days of the previous month; any other
+                range compares against the equal-length window immediately before it.
+            comparison_label:
+              type: string
+              description: The comparison stated for display, e.g. "Aug 1-11 vs Jul 1-11".
         summary:
           type: object
-          required: [total_spent, total_income, daily_average, transaction_count]
+          required:
+            [
+              total_spent,
+              total_income,
+              daily_average,
+              transaction_count,
+              previous_total_spent,
+              spend_change,
+              spend_change_comparable,
+            ]
           properties:
             total_spent:
               type: number
@@ -1163,8 +1216,27 @@ components:
               type: number
             transaction_count:
               type: integer
+            previous_total_spent:
+              type: number
+              description: Expense total for the window named by period.previous_start/previous_end.
+            spend_change:
+              type: number
+              description: >-
+                Percent change in total spend against the previous window. Always 0 when
+                spend_change_comparable is false — read that flag first, never this value alone.
+            spend_change_comparable:
+              type: boolean
+              description: >-
+                False when the previous window was too thin to divide by (under ₹500 or fewer
+                than 5 transactions). Show no comparison at all rather than a percentage that
+                describes a near-empty base.
         top_categories:
           type: array
+          description: >-
+            The complete expense breakdown for the window, highest amount first — despite the
+            name, not just the top few. Capped at 25 entries so the payload stays bounded for a
+            user with many custom categories; whatever falls outside the list is still counted in
+            summary.total_spent, which is what an "Other" rollup is derived from.
           items:
             $ref: "#/components/schemas/DashboardCategory"
         top_merchants:
@@ -1201,7 +1273,7 @@ components:
             $ref: "#/components/schemas/DashboardRecurringCandidate"
     DashboardCategory:
       type: object
-      required: [category, amount, percentage, change]
+      required: [category, amount, percentage, change, change_comparable]
       properties:
         category:
           type: string
@@ -1211,6 +1283,14 @@ components:
           type: number
         change:
           type: number
+          description: >-
+            Percentage change against the previous window. Always 0 when change_comparable is
+            false, so clients that only read this field show no trend rather than a false one.
+        change_comparable:
+          type: boolean
+          description: >-
+            False when the previous window held less than the floor needed to divide by
+            (at least 500 rupees and at least 5 transactions in that category).
     DashboardMerchant:
       type: object
       required: [merchant, amount, transaction_count]
@@ -1427,7 +1507,7 @@ components:
           minimum: 1
         mode:
           type: string
-          enum: [Cash, UPI, Credit Card, Wallets]
+          enum: [Cash, Bank Account, UPI, Credit Card, Wallets]
         category:
           type: string
         merchant:
@@ -1520,6 +1600,15 @@ components:
           type: integer
         total_pages:
           type: integer
+        category_counts:
+          type: object
+          description: >-
+            Entries per category across the whole filtered set, counted with the
+            category filter itself omitted — each value answers "how many would I
+            get if I picked this one". Legacy names are folded onto their
+            canonical category. Absent categories are absent, not zero.
+          additionalProperties:
+            type: integer
     MerchantSuggestions:
       type: object
       required: [suggestions]
@@ -1594,8 +1683,66 @@ components:
         balance:
           type: number
           multipleOf: 0.01
+          description: >-
+            Opening balance — what the account held, or on a card owed, before the
+            first logged transaction. Never a current figure on its own.
         is_default:
           type: boolean
+    AccountWithSummary:
+      allOf:
+        - $ref: "#/components/schemas/Account"
+        - type: object
+          required: [summary]
+          properties:
+            summary:
+              $ref: "#/components/schemas/AccountSummary"
+    AccountSummary:
+      type: object
+      description: >-
+        Figures derived from the account's entries. Nothing here is user-entered.
+        Month-to-date runs from the 1st to today, matching the dashboard's default
+        range so the two screens cannot disagree about the same account.
+      required:
+        [
+          spent_this_month,
+          received_this_month,
+          entries_this_month,
+          lifetime_spent,
+          lifetime_received,
+          entries_total,
+        ]
+      properties:
+        spent_this_month:
+          type: number
+        received_this_month:
+          type: number
+        entries_this_month:
+          type: integer
+        lifetime_spent:
+          type: number
+        lifetime_received:
+          type: number
+        entries_total:
+          type: integer
+        last_activity_date:
+          type: string
+          format: date
+          description: Most recent entry date. Absent when the account has never been used.
+        outstanding:
+          type: number
+          description: >-
+            Credit cards only — opening balance plus lifetime spend minus payments
+            and refunds. This, never credit_limit, is what a card row shows as money.
+        credit_utilisation:
+          type: number
+          description: >-
+            Credit cards with a limit only. Percentage of the limit in use; may
+            exceed 100 when the card is over its limit, and is 0 for a card in credit.
+        running_balance:
+          type: number
+          description: >-
+            Non-card accounts with an opening balance only — opening plus money in
+            minus money out. Absent otherwise, because net flow is not a balance.
     BudgetInput:
       type: object
       required: [name, limit_amount]

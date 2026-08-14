@@ -42,8 +42,15 @@ func TestBuildDashboardProducesFiveDeterministicTemplates(t *testing.T) {
 		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
 		Days:          3,
 	}
+	// The previous window has to clear the comparison floor (≥ ₹500 and ≥ 5
+	// transactions, per category too) or the two comparison templates are
+	// correctly withheld. See TestComparisonFloorSuppressesThinBaselines.
 	entries := []models.Entry{
+		dashboardEntry("2026-06-28", "expense", "100", "Food", "Cafe", 1, "Cash"),
+		dashboardEntry("2026-06-28", "expense", "100", "Food", "Cafe", 1, "Cash"),
 		dashboardEntry("2026-06-29", "expense", "100", "Food", "Cafe", 1, "Cash"),
+		dashboardEntry("2026-06-29", "expense", "100", "Food", "Cafe", 1, "Cash"),
+		dashboardEntry("2026-06-30", "expense", "100", "Food", "Cafe", 1, "Cash"),
 		dashboardEntry("2026-06-30", "expense", "100", "Travel", "Metro", 2, "UPI"),
 		dashboardEntry("2026-07-01", "expense", "100", "Food", "Cafe", 1, "Cash"),
 		dashboardEntry("2026-07-02", "expense", "100", "Food", "Cafe", 1, "Cash"),
@@ -292,8 +299,17 @@ func TestBuildDashboardFromDBUsesBoundedRollupQueries(t *testing.T) {
 		t.Fatalf("unexpected summary: %#v", dashboard.Summary)
 	}
 	if len(dashboard.TopCategories) != 2 || dashboard.TopCategories[0].Category != "Food" ||
-		dashboard.TopCategories[0].Amount != 1200 || dashboard.TopCategories[0].Change != 1100 {
+		dashboard.TopCategories[0].Amount != 1200 {
 		t.Fatalf("unexpected categories: %#v", dashboard.TopCategories)
+	}
+	// Food's baseline here is one ₹100 entry. This used to report "1100%
+	// higher" — the four-digit percentage that made Insights unbelievable.
+	// A base that thin now yields no comparison at all.
+	if dashboard.TopCategories[0].ChangeComparable || dashboard.TopCategories[0].Change != 0 {
+		t.Fatalf("expected no comparison off a one-entry baseline: %#v", dashboard.TopCategories[0])
+	}
+	if insightByKind(dashboard.Insights, "period_comparison") != nil {
+		t.Fatalf("expected no period comparison off a ₹300 two-entry baseline: %#v", dashboard.Insights)
 	}
 	if len(dashboard.TopMerchants) != 2 || dashboard.TopMerchants[0].Merchant != "Cafe" ||
 		dashboard.TopMerchants[0].Amount != 1200 || dashboard.TopMerchants[0].TransactionCount != 3 {
@@ -311,6 +327,149 @@ func TestBuildDashboardFromDBUsesBoundedRollupQueries(t *testing.T) {
 			t.Fatalf("dashboard leaked another user's entries: %#v", dashboard.TopCategories)
 		}
 	}
+}
+
+// The donut has to chart the whole period, and an "Other" slice has to be a
+// residual the caller can compute — neither is possible while the breakdown is
+// truncated to five. Both dashboard builders are checked, because a chart that
+// disagrees with itself between the DB and in-memory paths is the drift this
+// file has caught twice already.
+func TestDashboardReturnsEveryCategoryNotJustTheTopFive(t *testing.T) {
+	useSmokeDatabase(t)
+
+	user := models.User{UUID: "breakdown-user", Username: "breakdown-user", IsGuest: true}
+	if err := database.DB.Create(&user).Error; err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	cash := models.Account{UserID: user.ID, Type: "cash", Name: "Cash", IsDefault: true}
+	if err := database.DB.Create(&cash).Error; err != nil {
+		t.Fatalf("failed to create account: %v", err)
+	}
+
+	// Eight categories — the size of the canonical set, which is exactly the
+	// case the old cap of five could not express.
+	amounts := []struct {
+		category string
+		amount   string
+	}{
+		{"Bills", "800"},
+		{"Food & Drinks", "700"},
+		{"Shopping", "600"},
+		{"Transport", "500"},
+		{"Travel", "400"},
+		{"Entertainment", "300"},
+		{"Family/Gifts", "200"},
+		{"Misc", "100"},
+	}
+	entries := make([]models.Entry, 0, len(amounts))
+	for _, item := range amounts {
+		entries = append(entries, dbDashboardEntry(
+			user.ID, cash.ID, "2026-07-02", "expense", item.amount,
+			item.category, "Shop", "Cash", "2026-07-02T09:00:00Z",
+		))
+	}
+	if err := database.DB.Create(&entries).Error; err != nil {
+		t.Fatalf("failed to create entries: %v", err)
+	}
+
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 3, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 28, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          3,
+	}
+
+	fromDB, err := buildDashboardFromDB(user.ID, dateRange)
+	if err != nil {
+		t.Fatalf("failed to build DB dashboard: %v", err)
+	}
+	inMemory := buildDashboard(entries, dateRange)
+
+	for name, dashboard := range map[string]DashboardResponse{"db": fromDB, "memory": inMemory} {
+		if len(dashboard.TopCategories) != len(amounts) {
+			t.Fatalf("%s: expected all %d categories, got %#v", name, len(amounts), dashboard.TopCategories)
+		}
+		if dashboard.TopCategories[0].Category != "Bills" ||
+			dashboard.TopCategories[len(amounts)-1].Category != "Misc" {
+			t.Fatalf("%s: breakdown is not ordered highest first: %#v", name, dashboard.TopCategories)
+		}
+		// The residual the app renders as "Other" must come out at zero when
+		// nothing was truncated, or the donut would not add up to the total it
+		// prints in its centre.
+		charted := 0.0
+		for _, category := range dashboard.TopCategories {
+			charted += category.Amount
+		}
+		if charted != dashboard.Summary.TotalSpent {
+			t.Fatalf("%s: breakdown %.2f does not reconcile with total spent %.2f",
+				name, charted, dashboard.Summary.TotalSpent)
+		}
+	}
+}
+
+// TopCategories widened for the charts. Alerts must not widen with it: the
+// category_increase loop takes the first match, so a small category far down
+// the list could otherwise displace the categories that actually move the
+// total.
+func TestCategoryAlertsStayPinnedToTheLargestCategories(t *testing.T) {
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 3, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 28, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          3,
+	}
+
+	entries := []models.Entry{}
+	// Five large categories, each flat against a baseline that clears the
+	// floor, so none of them raises an alert.
+	for _, category := range []string{"Bills", "Food & Drinks", "Shopping", "Transport", "Travel"} {
+		for day := 28; day <= 30; day++ {
+			entries = append(entries,
+				dashboardEntry(fmtDate(2026, 6, day), "expense", "300", category, "Shop", 1, "Cash"),
+				dashboardEntry(fmtDate(2026, 6, day), "expense", "300", category, "Shop", 1, "Cash"),
+			)
+		}
+		for day := 1; day <= 3; day++ {
+			entries = append(entries,
+				dashboardEntry(fmtDate(2026, 7, day), "expense", "300", category, "Shop", 1, "Cash"),
+				dashboardEntry(fmtDate(2026, 7, day), "expense", "300", category, "Shop", 1, "Cash"),
+			)
+		}
+	}
+	// A sixth, much smaller category that doubled. It clears the floor and it
+	// is a real 100% rise — it is simply not one of the five that matter.
+	for day := 28; day <= 30; day++ {
+		entries = append(entries,
+			dashboardEntry(fmtDate(2026, 6, day), "expense", "100", "Misc", "Shop", 1, "Cash"),
+			dashboardEntry(fmtDate(2026, 6, day), "expense", "100", "Misc", "Shop", 1, "Cash"),
+		)
+	}
+	for day := 1; day <= 3; day++ {
+		entries = append(entries,
+			dashboardEntry(fmtDate(2026, 7, day), "expense", "200", "Misc", "Shop", 1, "Cash"),
+			dashboardEntry(fmtDate(2026, 7, day), "expense", "200", "Misc", "Shop", 1, "Cash"),
+		)
+	}
+
+	dashboard := buildDashboard(entries, dateRange)
+	if len(dashboard.TopCategories) != 6 {
+		t.Fatalf("expected all six categories in the breakdown, got %#v", dashboard.TopCategories)
+	}
+	misc := dashboard.TopCategories[5]
+	if misc.Category != "Misc" || !misc.ChangeComparable || misc.Change != 100 {
+		t.Fatalf("fixture is wrong — Misc should be last and up 100%%: %#v", misc)
+	}
+	if card := insightByKind(dashboard.Insights, "category_increase"); card != nil {
+		t.Fatalf("smallest category raised an alert it could not have raised before: %#v", card)
+	}
+}
+
+func fmtDate(year int, month time.Month, day int) string {
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 }
 
 func TestParseDashboardRangeRejectsInvalidAndOversizedRanges(t *testing.T) {

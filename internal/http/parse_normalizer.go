@@ -6,7 +6,9 @@ import (
 )
 
 const defaultParseMode = "Cash"
-const defaultParseCategory = "Misc"
+
+// defaultParseCategory is the canonical fallback; see internal/http/categories.go.
+const defaultParseCategory = defaultCategory
 
 var confirmableParseFields = []string{"title", "amount", "type", "category", "date"}
 
@@ -405,25 +407,6 @@ func normalizeCategory(
 	entry["category"] = defaultParseCategory
 	missingSet["category"] = true
 	needsConfirmation["category"] = true
-}
-
-func canonicalCategory(value string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "food", "food & drinks", "food and drinks", "dining", "restaurant", "restaurants":
-		return "Food", true
-	case "travel", "transport", "transportation", "cab", "taxi", "uber", "ola", "metro", "train", "flight", "hotel", "hotels", "lodging", "accommodation", "airbnb", "air bnb", "stay":
-		return "Travel", true
-	case "shopping":
-		return "Shopping", true
-	case "bills":
-		return "Bills", true
-	case "family/gifts", "family", "gifts", "gift":
-		return "Family/Gifts", true
-	case "misc", "miscellaneous":
-		return "Misc", true
-	default:
-		return "", false
-	}
 }
 
 func normalizePurposeAndTags(entry map[string]any) {

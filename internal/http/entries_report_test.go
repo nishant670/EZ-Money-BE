@@ -26,33 +26,33 @@ func TestTransactionSummaryReportUsesFiltersAndOwnedRows(t *testing.T) {
 
 	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
 		"title": "Cafe lunch", "type": "expense", "amount": 250, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Food", "merchant": "Cafe",
+		"source": "manual", "mode": "Cash", "category": "Food & Drinks", "merchant": "Cafe",
 		"date": "2026-07-12",
 	})
 	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
 		"title": "Groceries", "type": "expense", "amount": 150, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Food", "merchant": "Market",
+		"source": "manual", "mode": "Cash", "category": "Food & Drinks", "merchant": "Market",
 		"date": "2026-07-20",
 	})
 	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
 		"title": "Salary", "type": "income", "amount": 1000, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Salary", "merchant": "Employer",
+		"source": "manual", "mode": "Cash", "category": "Misc", "merchant": "Employer",
 		"date": "2026-07-31",
 	})
 	createExportEntry(t, router, authResponse.Token, accounts[0].ID, map[string]any{
 		"title": "Metro", "type": "expense", "amount": 90, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Travel", "merchant": "Metro",
+		"source": "manual", "mode": "Cash", "category": "Transport", "merchant": "Metro",
 		"date": "2026-08-01",
 	})
 	createExportEntry(t, router, otherAuth.Token, otherAccounts[0].ID, map[string]any{
 		"title": "Other food", "type": "expense", "amount": 9999, "currency": "INR",
-		"source": "manual", "mode": "Cash", "category": "Food", "merchant": "Other",
+		"source": "manual", "mode": "Cash", "category": "Food & Drinks", "merchant": "Other",
 		"date": "2026-07-12",
 	})
 
 	report := performJSONRequest[TransactionReportResponse](
 		t, router, http.MethodGet,
-		"/v1/reports/transactions/summary?start_date=2026-07-01&end_date=2026-07-31&category=Food",
+		"/v1/reports/transactions/summary?start_date=2026-07-01&end_date=2026-07-31&category=Food+%26+Drinks",
 		authResponse.Token, nil, http.StatusOK,
 	)
 
@@ -60,7 +60,7 @@ func TestTransactionSummaryReportUsesFiltersAndOwnedRows(t *testing.T) {
 		report.Summary.NetCashflow != -400 || report.Summary.TransactionCount != 2 {
 		t.Fatalf("unexpected report summary: %#v", report.Summary)
 	}
-	if len(report.ByCategory) != 1 || report.ByCategory[0].Label != "Food" ||
+	if len(report.ByCategory) != 1 || report.ByCategory[0].Label != "Food & Drinks" ||
 		report.ByCategory[0].Amount != 400 || report.ByCategory[0].TransactionCount != 2 ||
 		report.ByCategory[0].Percentage != 100 {
 		t.Fatalf("unexpected category breakdown: %#v", report.ByCategory)

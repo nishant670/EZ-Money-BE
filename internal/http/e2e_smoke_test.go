@@ -97,7 +97,7 @@ func TestGuestCaptureParseConfirmSaveDashboardSmoke(t *testing.T) {
 	if len(dashboard.RecentTransactions) != 1 || dashboard.RecentTransactions[0].ID != savedEntry.ID {
 		t.Fatalf("dashboard recent transactions did not include saved entry: %#v", dashboard.RecentTransactions)
 	}
-	if len(dashboard.TopCategories) != 1 || dashboard.TopCategories[0].Category != "Food" {
+	if len(dashboard.TopCategories) != 1 || dashboard.TopCategories[0].Category != "Food & Drinks" {
 		t.Fatalf("dashboard category rollup did not include parsed category: %#v", dashboard.TopCategories)
 	}
 }
@@ -131,7 +131,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 			"type":"expense",
 			"currency":"INR",
 			"mode":"Cash",
-			"category":"Food",
+			"category":"Food & Drinks",
 			"merchant":"Tea Stall",
 			"date":"2026-07-12"
 		}`)},
@@ -184,6 +184,10 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.POST("/subscriptions/reminders", server.requireEntitlement(billing.FeatureSubscriptionReminders), server.createSubscriptionReminders)
 	authorized.POST("/feedback", server.createFeedback)
 	authorized.POST("/entries", server.saveEntry)
+	// The list route was missing here, which is why nothing covered listEntries
+	// and why the mode whitelist could disagree with the save validation for as
+	// long as it did.
+	authorized.GET("/entries", server.listEntries)
 	authorized.GET("/entries/export", server.exportEntriesCSV)
 	authorized.GET("/merchants/suggestions", server.listMerchantSuggestions)
 	authorized.GET("/reports/transactions/summary", server.getTransactionSummaryReport)
