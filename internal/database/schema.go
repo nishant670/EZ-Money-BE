@@ -11,6 +11,23 @@ func EnsureRuntimeSchema() error {
 
 func runtimeSchemaStatements() []string {
 	return []string{
+		// Must run before any composite FK that references accounts(user_id, id):
+		// Postgres requires the unique constraint to exist first.
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1
+				FROM pg_constraint
+				WHERE conrelid = 'accounts'::regclass
+					AND conname = 'accounts_user_id_id_unique'
+			) AND to_regclass('accounts_user_id_id_unique') IS NULL THEN
+				ALTER TABLE accounts
+					ADD CONSTRAINT accounts_user_id_id_unique UNIQUE (user_id, id);
+			END IF;
+		EXCEPTION
+			WHEN duplicate_object OR duplicate_table THEN NULL;
+		END
+		$$`,
 		`ALTER TABLE users
 			ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0,
 			ADD COLUMN IF NOT EXISTS login_locked_until TIMESTAMPTZ,
@@ -738,21 +755,6 @@ func runtimeSchemaStatements() []string {
 		`UPDATE entries
 			SET source = LOWER(source)
 			WHERE LOWER(source) IN ('manual', 'text', 'voice')`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1
-				FROM pg_constraint
-				WHERE conrelid = 'accounts'::regclass
-					AND conname = 'accounts_user_id_id_unique'
-			) AND to_regclass('accounts_user_id_id_unique') IS NULL THEN
-				ALTER TABLE accounts
-					ADD CONSTRAINT accounts_user_id_id_unique UNIQUE (user_id, id);
-			END IF;
-		EXCEPTION
-			WHEN duplicate_object OR duplicate_table THEN NULL;
-		END
-		$$`,
 		`ALTER TABLE accounts
 			DROP CONSTRAINT IF EXISTS accounts_type_check`,
 		`ALTER TABLE accounts
