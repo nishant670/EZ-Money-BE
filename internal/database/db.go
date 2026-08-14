@@ -5,12 +5,18 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 var DB *gorm.DB
+
+// connectMaxWait bounds the startup retry loop. Railway's private network
+// (*.railway.internal) needs a few seconds after the container starts before
+// DNS resolves, so the first attempts fail with "no such host".
+const connectMaxWait = 90 * time.Second
 
 func Connect() {
 	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
@@ -28,13 +34,39 @@ func Connect() {
 		dsn = buildPostgresDSN()
 	}
 
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := connectWithRetry(dsn)
 	if err != nil {
-		log.Fatalf("failed to connect to PostgreSQL: %v", err)
+		log.Fatalf("failed to connect to PostgreSQL after %s: %v", connectMaxWait, err)
 	}
 
 	log.Println("connected to PostgreSQL successfully")
 	DB = db
+}
+
+// connectWithRetry dials Postgres until it succeeds or connectMaxWait elapses,
+// backing off between attempts. Misconfiguration still fails, just later; a
+// slow-to-appear network now recovers on its own.
+func connectWithRetry(dsn string) (*gorm.DB, error) {
+	deadline := time.Now().Add(connectMaxWait)
+	delay := time.Second
+
+	for attempt := 1; ; attempt++ {
+		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		if err == nil {
+			return db, nil
+		}
+
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+
+		log.Printf("PostgreSQL not reachable (attempt %d): %v; retrying in %s", attempt, err, delay)
+		time.Sleep(delay)
+
+		if delay < 8*time.Second {
+			delay *= 2
+		}
+	}
 }
 
 func buildPostgresDSN() string {
