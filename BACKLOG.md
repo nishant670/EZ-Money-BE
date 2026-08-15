@@ -87,6 +87,14 @@ Legend:
 - [x] Add account/data deletion path before any public beta.
 - [x] Expose destructive mobile account deletion from Security & Privacy after
   backend deletion covers AI/billing records.
+- [ ] Migrate Google sign-in from `expo-auth-session` to the native
+  `@react-native-google-signin/google-signin` SDK before any release wider than
+  friends testing. The browser flow depends on "Enable custom URI scheme" on the
+  Android OAuth client, which Google marks as not recommended: any app can
+  register the same `ezmoney://` scheme and intercept the redirect. PKCE limits
+  the damage but the native SDK avoids the redirect entirely. Note this changes
+  the ID-token audience, so `GOOGLE_CLIENT_IDS` must switch from the Android
+  client ID to the Web client ID at the same time as the app ships.
 
 ## P1 - Quality Gates
 
