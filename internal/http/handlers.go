@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,6 +152,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/dashboard", s.getDashboard)
 		authorized.GET("/insights", s.requireEntitlement(billing.FeatureAdvancedInsights), s.getInsights)
 		authorized.POST("/recurring-candidates/decision", s.saveRecurringCandidateDecision)
+		authorized.POST("/recurring-candidates/track", s.trackRecurringCandidates)
 
 		// Notifications
 		authorized.GET("/notifications", s.listNotifications)
@@ -223,7 +225,27 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		c.Next()
 	})
 	uploads.Static("/", "./"+uploadDir)
-	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
+	// Railway gates deploys on this route, so it has to fail when Postgres is
+	// gone. A static 200 reports the service healthy while every data route
+	// returns 500, which hides an outage instead of surfacing it.
+	r.GET("/health", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+
+		err := errors.New("database not initialised")
+		if database.DB != nil {
+			var sqlDB *sql.DB
+			if sqlDB, err = database.DB.DB(); err == nil {
+				err = sqlDB.PingContext(ctx)
+			}
+		}
+		if err != nil {
+			log.Printf("[ERROR] health check database ping failed: %v", err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database_unreachable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
 	return r
 }
 
@@ -235,6 +257,13 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/user") ||
 		strings.HasPrefix(path, "/v1/insights") ||
 		strings.HasPrefix(path, "/v1/dashboard") ||
+		// The dashboard hands the app recurring candidates, so the endpoints
+		// that answer for them belong to the same session-authenticated
+		// surface. Without this the static bearer gates them and every
+		// dismiss, snooze and track from the app answers 401 — which is what
+		// happened to the decision endpoint from the day it shipped.
+		strings.HasPrefix(path, "/v1/recurring-candidates") ||
+		strings.HasPrefix(path, "/v1/merchants") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/notifications") ||
 		strings.HasPrefix(path, "/v1/feedback") ||
@@ -1427,7 +1456,6 @@ func loadLocationOrIndia(requested, fallback string) *timepkg.Location {
 	}
 	return timepkg.FixedZone("IST", 5*3600+1800)
 }
-
 
 // publicOrigin resolves the scheme and host the client reached us on. A
 // TLS-terminating proxy leaves Request.TLS nil, so relying on it alone would
