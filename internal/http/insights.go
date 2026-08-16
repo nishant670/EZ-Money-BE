@@ -1129,10 +1129,35 @@ func suppressReviewedRecurringCandidates(userID uint, dashboard *DashboardRespon
 	if dashboard == nil || len(dashboard.RecurringCandidates) == 0 {
 		return nil
 	}
+	filtered, err := filterReviewedRecurringCandidates(userID, dashboard.RecurringCandidates, rangeEnd)
+	if err != nil {
+		return err
+	}
+	dashboard.RecurringCandidates = filtered
+	dashboard.Insights = replaceRecurringInsight(dashboard.Insights, filtered)
+	return nil
+}
+
+// filterReviewedRecurringCandidates drops the candidates the user has already
+// answered for — dismissed, tracked, or snoozed past the end of the range —
+// along with any that a live subscription already covers.
+//
+// The dashboard and the one-tap track endpoint both need exactly this list:
+// the card offers what comes back from here, so tracking has to resolve the
+// same keys against the same set or the count on the card and the number of
+// subscriptions created would disagree.
+func filterReviewedRecurringCandidates(
+	userID uint,
+	candidates []DashboardRecurringCandidate,
+	rangeEnd time.Time,
+) ([]DashboardRecurringCandidate, error) {
+	if len(candidates) == 0 {
+		return []DashboardRecurringCandidate{}, nil
+	}
 
 	var decisions []models.RecurringCandidateDecision
 	if err := database.DB.Where("user_id = ?", userID).Find(&decisions).Error; err != nil {
-		return err
+		return nil, err
 	}
 	decisionByKey := map[string]models.RecurringCandidateDecision{}
 	for _, decision := range decisions {
@@ -1141,11 +1166,11 @@ func suppressReviewedRecurringCandidates(userID uint, dashboard *DashboardRespon
 
 	var subscriptions []models.Subscription
 	if err := database.DB.Where("user_id = ? AND status IN ?", userID, []string{"active", "paused"}).Find(&subscriptions).Error; err != nil {
-		return err
+		return nil, err
 	}
 
-	filtered := make([]DashboardRecurringCandidate, 0, len(dashboard.RecurringCandidates))
-	for _, candidate := range dashboard.RecurringCandidates {
+	filtered := make([]DashboardRecurringCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
 		if candidate.CandidateKey == "" {
 			candidate.CandidateKey = recurringCandidateKey(candidate.Label, candidate.Category)
 		}
@@ -1155,9 +1180,9 @@ func suppressReviewedRecurringCandidates(userID uint, dashboard *DashboardRespon
 		decision, exists := decisionByKey[candidate.CandidateKey]
 		if exists {
 			switch decision.Decision {
-			case "dismissed", "tracked":
+			case recurringDecisionDismissed, recurringDecisionTracked:
 				continue
-			case "snoozed":
+			case recurringDecisionSnoozed:
 				if decision.SnoozedUntil == nil || !decision.SnoozedUntil.Before(rangeEnd) {
 					continue
 				}
@@ -1165,9 +1190,7 @@ func suppressReviewedRecurringCandidates(userID uint, dashboard *DashboardRespon
 		}
 		filtered = append(filtered, candidate)
 	}
-	dashboard.RecurringCandidates = filtered
-	dashboard.Insights = replaceRecurringInsight(dashboard.Insights, filtered)
-	return nil
+	return filtered, nil
 }
 
 func replaceRecurringInsight(cards []InsightCard, candidates []DashboardRecurringCandidate) []InsightCard {

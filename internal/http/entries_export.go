@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -44,10 +45,10 @@ func (s *Server) exportEntriesCSV(c *gin.Context) {
 	userID := val.(uint)
 
 	format := strings.TrimSpace(strings.ToLower(c.DefaultQuery("format", "csv")))
-	if format != "csv" {
+	if format != "csv" && format != "pdf" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"error":  "invalid_filters",
-			"fields": gin.H{"format": "must be csv"},
+			"fields": gin.H{"format": "must be csv or pdf"},
 		})
 		return
 	}
@@ -80,6 +81,22 @@ func (s *Server) exportEntriesCSV(c *gin.Context) {
 		return
 	}
 
+	if format == "pdf" {
+		// The statement claims the range the filters actually described, not a
+		// month the server chose — the two formats come off one query, so
+		// anything else would be a document disagreeing with the CSV beside it.
+		location := loadLocationOrIndia(c.Query("tz"), s.cfg.TZDefault)
+		pdf := buildStatementPDF(
+			entries,
+			statementPeriodLabel(c.Query("start_date"), c.Query("end_date")),
+			time.Now().In(location),
+		)
+		c.Header("Content-Type", "application/pdf")
+		c.Header("Content-Disposition", `attachment; filename="finnri-statement.pdf"`)
+		c.Data(http.StatusOK, "application/pdf", pdf)
+		return
+	}
+
 	body, err := entriesCSV(entries)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_export_entries"})
@@ -89,6 +106,38 @@ func (s *Server) exportEntriesCSV(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="finnri-entries.csv"`)
 	c.String(http.StatusOK, body)
+}
+
+/*
+statementPeriodLabel says what the document covers, in the words the filters
+gave it.
+
+An unbounded export is a real thing to ask for — "everything I have ever
+logged" — and it has to be labelled as that rather than as a month that was
+never requested.
+*/
+func statementPeriodLabel(startDate, endDate string) string {
+	start := strings.TrimSpace(startDate)
+	end := strings.TrimSpace(endDate)
+	switch {
+	case start == "" && end == "":
+		return "All transactions"
+	case start == "":
+		return "Up to " + prettyStatementDate(end)
+	case end == "":
+		return "From " + prettyStatementDate(start)
+	case start == end:
+		return prettyStatementDate(start)
+	}
+	return prettyStatementDate(start) + " to " + prettyStatementDate(end)
+}
+
+func prettyStatementDate(value string) string {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return value
+	}
+	return parsed.Format("2 Jan 2006")
 }
 
 func entriesCSV(entries []models.Entry) (string, error) {

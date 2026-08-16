@@ -902,5 +902,20 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE split_settlements
 			ADD CONSTRAINT split_settlements_direction_check
 			CHECK (direction IN ('friend_paid_user', 'user_paid_friend'))`,
+		// The monthly review's once-per-month guarantee lives in this index
+		// rather than in the job that writes through it.
+		`CREATE TABLE IF NOT EXISTS monthly_reviews (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			month CHAR(7) NOT NULL,
+			total_spent NUMERIC(19,2) NOT NULL DEFAULT 0,
+			transaction_count INTEGER NOT NULL DEFAULT 0,
+			notification_id BIGINT REFERENCES notifications(id) ON DELETE SET NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_monthly_review_once
+			ON monthly_reviews (user_id, month)`,
+		`CREATE INDEX IF NOT EXISTS idx_monthly_reviews_notification
+			ON monthly_reviews (notification_id)`,
 	}
 }
