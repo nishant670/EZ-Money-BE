@@ -27,6 +27,7 @@ func main() {
 		&models.Feedback{},
 		&models.Budget{},
 		&models.BudgetAlert{},
+		&models.MonthlyReview{},
 		&models.Subscription{},
 		&models.SubscriptionReminder{},
 		&models.SubscriptionOccurrence{},
@@ -47,6 +48,7 @@ func main() {
 	cfg := config.Load()
 	httpserver.StartMaintenanceJobs(cfg)
 	httpserver.StartSubscriptionAutomation(cfg)
+	httpserver.StartMonthlyReviewJob(cfg)
 	r := httpserver.NewServer(cfg)
 	log.Printf("listening on :%s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {

@@ -6,6 +6,56 @@ info:
 servers:
   - url: http://localhost:8080
 paths:
+  /v1/monthly-review:
+    get:
+      summary: Return the review of a completed calendar month
+      description: >-
+        The story behind the monthly review notification, recomputed from the
+        ledger rather than replayed from what was sent — a month can still be
+        edited after it closes, and the ledger is the truth. Only months that
+        have already ended are reviewable.
+      parameters:
+        - in: query
+          name: month
+          description: "`YYYY-MM`. Defaults to the most recently completed month."
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}$"
+        - in: query
+          name: tz
+          schema:
+            type: string
+            default: Asia/Kolkata
+      responses:
+        "200":
+          description: The month's review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonthlyReview"
+        "422":
+          description: The month is malformed, or has not finished yet
+  /v1/monthly-review/send:
+    post:
+      summary: Emit this user's review notification for the completed month
+      description: >-
+        The same emission the scheduled job performs, for the calling user only,
+        and equally idempotent — a second call in the same month sends nothing.
+        It exists because the job's trigger is a date, so without it the only way
+        to see what the 1st produces is to wait for it.
+      responses:
+        "200":
+          description: Whether a review was sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  month:
+                    type: string
+                  sent:
+                    type: boolean
+                    description: False when the month was already reviewed, or held too little to review.
   /v1/dashboard:
     get:
       summary: Return the deterministic spending dashboard for a date range
@@ -63,6 +113,27 @@ paths:
                 $ref: "#/components/schemas/RecurringCandidateDecision"
         "422":
           description: Invalid decision fields
+  /v1/recurring-candidates/track:
+    post:
+      summary: Create subscriptions for detected recurring candidates in one call
+      description: >-
+        Candidate figures are recomputed server-side; the request only names
+        keys. An empty or omitted candidate_keys tracks every current candidate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrackRecurringCandidatesInput"
+      responses:
+        "200":
+          description: Subscriptions created and candidates marked tracked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackRecurringCandidatesResponse"
+        "422":
+          description: Invalid date range
   /v1/user:
     delete:
       summary: Permanently delete the authenticated user and owned data
@@ -81,7 +152,14 @@ paths:
           description: Delete failed
   /v1/parse:
     post:
-      summary: Parse audio/text to structured expense/income JSON
+      summary: Parse audio/text into a transaction draft, or answer a question about the ledger
+      description: >-
+        One channel, two directions. The parser classifies the input as a
+        capture or a question. A capture returns a draft entry with
+        `stage: "draft"`. A question returns `stage: "answer"` and a
+        `LedgerAnswer` whose figures are computed from the database — the model
+        never produces a number. Clients must branch on `stage`: an answer must
+        never be turned into a transaction.
       requestBody:
         required: true
         content:
@@ -99,11 +177,13 @@ paths:
                   default: Asia/Kolkata
       responses:
         "200":
-          description: Parsed entry
+          description: A transaction draft, or an answer to a question about recorded transactions
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+                oneOf:
+                  - $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+                  - $ref: "#/components/schemas/LedgerAnswerResponse"
         "422":
           description: Could not parse
   /v1/entries:
@@ -233,14 +313,22 @@ paths:
           description: Database error
   /v1/entries/export:
     get:
-      summary: Export filtered transaction entries as CSV
+      summary: Export filtered transaction entries as CSV or as a statement PDF
+      description: >-
+        Both formats come off the same filtered query. The PDF is titled with
+        the range the filters describe rather than a month chosen by the server.
       parameters:
         - in: query
           name: format
           schema:
             type: string
-            enum: [csv]
+            enum: [csv, pdf]
             default: csv
+        - in: query
+          name: tz
+          description: IANA zone used only to timestamp the PDF's "Generated" line.
+          schema:
+            type: string
         - in: query
           name: type
           schema:
@@ -1390,6 +1478,44 @@ components:
           format: date
         review_due:
           type: boolean
+    TrackRecurringCandidatesInput:
+      type: object
+      properties:
+        candidate_keys:
+          type: array
+          items:
+            type: string
+          description: Candidate keys to track. Empty or omitted tracks all current candidates.
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+    TrackRecurringCandidatesResponse:
+      type: object
+      required: [tracked, skipped]
+      properties:
+        tracked:
+          type: array
+          items:
+            type: object
+            required: [candidate_key, subscription]
+            properties:
+              candidate_key:
+                type: string
+              subscription:
+                $ref: "#/components/schemas/Subscription"
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [candidate_key, reason]
+            properties:
+              candidate_key:
+                type: string
+              reason:
+                type: string
     RecurringCandidateDecisionInput:
       type: object
       required: [decision]
@@ -1475,8 +1601,207 @@ components:
           type: number
           minimum: 0
           maximum: 1
+    MonthlyReview:
+      type: object
+      required: [month, label, previous_label, start_date, end_date, available, summary]
+      properties:
+        month:
+          type: string
+          example: "2026-08"
+        label:
+          type: string
+          example: August 2026
+        previous_label:
+          type: string
+          description: The month every change on this response is measured against.
+          example: July
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        available:
+          type: boolean
+          description: False when the month held too little to describe. The screen says so rather than rendering a story about nothing.
+        summary:
+          type: object
+          description: The same summary shape `/v1/dashboard` returns, over the whole month.
+          properties:
+            total_spent:
+              type: number
+            total_income:
+              type: number
+            daily_average:
+              type: number
+            transaction_count:
+              type: integer
+            previous_total_spent:
+              type: number
+            spend_change:
+              type: number
+            spend_change_comparable:
+              type: boolean
+              description: False when the previous month was too thin to divide by; `spend_change` is 0 and must not be shown.
+        top_categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardCategory"
+        top_merchants:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardMerchant"
+        daily_spending:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardDailySpend"
+        biggest_change:
+          type: object
+          nullable: true
+          description: >-
+            The category that moved the most *rupees*, not the most percent —
+            ranking on percentage always crowns the smallest category. Absent
+            when nothing moved far enough to be a month's story.
+          properties:
+            category:
+              type: string
+            amount:
+              type: number
+            previous_amount:
+              type: number
+            change:
+              type: number
+              description: Only meaningful when `comparable` is true.
+            comparable:
+              type: boolean
+              description: False when the previous month was too thin to divide by.
+            direction:
+              type: string
+              enum: [higher, lower]
+        busiest_day:
+          nullable: true
+          $ref: "#/components/schemas/DashboardDailySpend"
+        notified_at:
+          type: string
+          format: date-time
+          description: Set when the review notification for this month has already been sent.
     ExpenseOrIncomeEntry:
       $ref: ./schemas/expense_entry.schema.json
+    LedgerAnswerResponse:
+      type: object
+      required: [stage, intent, source_text, answer]
+      properties:
+        stage:
+          type: string
+          enum: [answer]
+        intent:
+          type: string
+          enum: [question]
+        source_text:
+          type: string
+        answer:
+          $ref: "#/components/schemas/LedgerAnswer"
+        credits_charged:
+          type: integer
+        credits_remaining_today:
+          type: integer
+        credits_remaining_total:
+          type: integer
+        plan_code:
+          type: string
+    LedgerAnswer:
+      type: object
+      required: [status, metric, currency, transaction_count, period, breakdown, suggestions, filters]
+      properties:
+        status:
+          type: string
+          enum: [answered, no_data, unsupported]
+          description: >-
+            `no_data` means the query was valid and matched nothing.
+            `unsupported` means the question cannot be answered from the ledger;
+            it always carries a message and never carries an amount.
+        metric:
+          type: string
+          enum: [spend_total, income_total, net, count, average, largest, breakdown, unsupported]
+        amount:
+          type: [number, "null"]
+          description: Major units. Null for a count and for any answer that is not `answered`. Clients format it; the API never sends a currency symbol.
+        currency:
+          type: string
+        transaction_count:
+          type: integer
+        subject:
+          type: string
+          description: What the question was about, in the ledger's own vocabulary — a canonical category, a merchant, a payment mode.
+        entry_type:
+          type: string
+          enum: [expense, income]
+        period:
+          type: object
+          required: [kind, label]
+          properties:
+            kind:
+              type: string
+            label:
+              type: string
+              description: The period in words, to be shown beside the number so the window the answer covers is always stated.
+            start_date:
+              type: string
+              format: date
+            end_date:
+              type: string
+              format: date
+        group_by:
+          type: string
+          enum: [category, merchant, month, none]
+        breakdown:
+          type: array
+          items:
+            type: object
+            required: [label, amount, transaction_count, percentage]
+            properties:
+              label:
+                type: string
+              amount:
+                type: number
+              transaction_count:
+                type: integer
+              percentage:
+                type: number
+        largest_entry:
+          type: object
+          properties:
+            entry_id:
+              type: integer
+            title:
+              type: string
+            merchant:
+              type: string
+            category:
+              type: string
+            amount:
+              type: number
+            date:
+              type: string
+              format: date
+        reason:
+          type: string
+          enum: [forecast, advice, non_ledger, splits, budgets, too_complex]
+        message:
+          type: string
+          description: Server-authored explanation for an unsupported question. Never model prose.
+        suggestions:
+          type: array
+          items:
+            type: string
+        filters:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            The exact `GET /v1/entries` query parameters the figures were
+            computed over. Clients hand these straight to the transaction list so
+            the rows behind an answer are the rows it counted.
     FinalEntry:
       $ref: ./schemas/final_entry.schema.json
     UpdateEntry:

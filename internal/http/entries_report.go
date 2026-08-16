@@ -111,11 +111,11 @@ func buildTransactionSummaryReport(query *gorm.DB) (TransactionReportResponse, e
 	if err != nil {
 		return TransactionReportResponse{}, err
 	}
-	categories, err := loadTransactionReportBreakdown(query, "category", summary.TotalExpense)
+	categories, err := loadTransactionReportBreakdown(query, "category", "expense", summary.TotalExpense)
 	if err != nil {
 		return TransactionReportResponse{}, err
 	}
-	merchants, err := loadTransactionReportBreakdown(query, "merchant", summary.TotalExpense)
+	merchants, err := loadTransactionReportBreakdown(query, "merchant", "expense", summary.TotalExpense)
 	if err != nil {
 		return TransactionReportResponse{}, err
 	}
@@ -162,7 +162,13 @@ func loadTransactionReportSummary(query *gorm.DB) (TransactionReportSummary, err
 	}, nil
 }
 
-func loadTransactionReportBreakdown(query *gorm.DB, column string, totalExpense float64) ([]TransactionReportBreakdown, error) {
+// loadTransactionReportBreakdown ranks the filtered rows by one column.
+//
+// entryType is a parameter rather than a hardcoded "expense" because the parse
+// channel asks the same question of income — "where did my money come from last
+// month" is the same query with the sign flipped, and a breakdown that silently
+// only ever counted expenses would answer it with an empty list.
+func loadTransactionReportBreakdown(query *gorm.DB, column, entryType string, total float64) ([]TransactionReportBreakdown, error) {
 	expression := "CASE WHEN TRIM(entries.category) = '' THEN 'Uncategorized' ELSE TRIM(entries.category) END"
 	fallback := "Uncategorized"
 	if column == "merchant" {
@@ -173,7 +179,7 @@ func loadTransactionReportBreakdown(query *gorm.DB, column string, totalExpense 
 	var rows []transactionReportRow
 	if err := query.Session(&gorm.Session{}).
 		Select(expression+" AS label, LOWER("+expression+") AS key, COALESCE(SUM(entries.amount), 0) AS amount, COUNT(*) AS transaction_count").
-		Where("LOWER(entries.type) = ?", "expense").
+		Where("LOWER(entries.type) = ?", entryType).
 		Group(expression).
 		Order("amount DESC").
 		Limit(10).
@@ -188,7 +194,7 @@ func loadTransactionReportBreakdown(query *gorm.DB, column string, totalExpense 
 			Key:              key,
 			Label:            label,
 			Amount:           row.Amount,
-			Percentage:       safePercentage(row.Amount, totalExpense),
+			Percentage:       safePercentage(row.Amount, total),
 			TransactionCount: row.TransactionCount,
 		})
 	}

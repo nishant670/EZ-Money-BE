@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"net/url"
 	"strconv"
 	"strings"
 	timepkg "time"
@@ -29,10 +30,32 @@ func filteredEntriesQueryOmitting(
 	c *gin.Context,
 	omitCategory bool,
 ) (*gorm.DB, map[string]string) {
+	return buildFilteredEntriesQuery(userID, c.Request.URL.Query(), omitCategory)
+}
+
+// buildFilteredEntriesQuery is where every predicate actually lives.
+//
+// It takes url.Values rather than the request because the parse channel's
+// question path is not a request for a list — it is a request for a *number*
+// about one — and the number has to be computed over exactly the rows the list
+// would show. Answering "₹4,820 on food this month" from one set of predicates
+// and then opening a list built from another is the specific failure mode M3
+// exists to avoid: a card and the transactions behind it disagreeing. So the
+// question resolves itself into the same query parameters the list takes, and
+// both sides run them through this function.
+//
+// c.Query reads from the URL query string and nothing else, so routing the gin
+// path through here is an exact equivalence rather than an approximation.
+func buildFilteredEntriesQuery(
+	userID uint,
+	values url.Values,
+	omitCategory bool,
+) (*gorm.DB, map[string]string) {
+	get := values.Get
 	fields := map[string]string{}
 	query := database.DB.Model(&models.Entry{}).Where("entries.user_id = ?", userID)
 
-	if t := strings.TrimSpace(c.Query("type")); t != "" && !strings.EqualFold(t, "all") {
+	if t := strings.TrimSpace(get("type")); t != "" && !strings.EqualFold(t, "all") {
 		if !strings.EqualFold(t, "expense") && !strings.EqualFold(t, "income") {
 			fields["type"] = "must be expense or income"
 		} else {
@@ -40,7 +63,7 @@ func filteredEntriesQueryOmitting(
 		}
 	}
 
-	if cat := strings.TrimSpace(c.Query("category")); cat != "" && !omitCategory {
+	if cat := strings.TrimSpace(get("category")); cat != "" && !omitCategory {
 		query = query.Where("LOWER(entries.category) = LOWER(?)", cat)
 	}
 
@@ -51,7 +74,7 @@ func filteredEntriesQueryOmitting(
 	// manual entry defaults to — a real category people budget against, not an
 	// empty one. This matches needsTransactionReview in the app rather than
 	// inventing a second meaning for the same word.
-	if uncategorised := strings.TrimSpace(c.Query("uncategorised")); uncategorised != "" {
+	if uncategorised := strings.TrimSpace(get("uncategorised")); uncategorised != "" {
 		switch uncategorised {
 		case "1", "true":
 			query = query.Where(
@@ -63,7 +86,7 @@ func filteredEntriesQueryOmitting(
 		}
 	}
 
-	if mode := strings.TrimSpace(c.Query("mode")); mode != "" {
+	if mode := strings.TrimSpace(get("mode")); mode != "" {
 		// Resolved rather than matched against a second list, so whatever may be
 		// saved may be searched for — and an alias like "bank" finds the
 		// "Bank Account" rows it means.
@@ -73,7 +96,7 @@ func filteredEntriesQueryOmitting(
 			fields["mode"] = modeMessage()
 		}
 	}
-	if accountID := strings.TrimSpace(c.Query("account_id")); accountID != "" {
+	if accountID := strings.TrimSpace(get("account_id")); accountID != "" {
 		parsed, err := strconv.ParseUint(accountID, 10, 32)
 		if err != nil || parsed == 0 {
 			fields["account_id"] = "must be a positive integer"
@@ -83,7 +106,7 @@ func filteredEntriesQueryOmitting(
 	}
 
 	var minAmount, maxAmount *models.Money
-	if minStr := c.Query("min_amount"); minStr != "" {
+	if minStr := get("min_amount"); minStr != "" {
 		min, err := models.ParseMoney(minStr)
 		if err != nil {
 			fields["min_amount"] = err.Error()
@@ -93,7 +116,7 @@ func filteredEntriesQueryOmitting(
 		}
 	}
 
-	if maxStr := c.Query("max_amount"); maxStr != "" {
+	if maxStr := get("max_amount"); maxStr != "" {
 		max, err := models.ParseMoney(maxStr)
 		if err != nil {
 			fields["max_amount"] = err.Error()
@@ -106,7 +129,7 @@ func filteredEntriesQueryOmitting(
 		fields["max_amount"] = "must be greater than or equal to min_amount"
 	}
 
-	startDate := c.Query("start_date")
+	startDate := get("start_date")
 	if startDate != "" {
 		if _, err := timepkg.Parse("2006-01-02", startDate); err != nil {
 			fields["start_date"] = "must use YYYY-MM-DD"
@@ -115,7 +138,7 @@ func filteredEntriesQueryOmitting(
 		}
 	}
 
-	endDate := c.Query("end_date")
+	endDate := get("end_date")
 	if endDate != "" {
 		if _, err := timepkg.Parse("2006-01-02", endDate); err != nil {
 			fields["end_date"] = "must use YYYY-MM-DD"
@@ -127,10 +150,10 @@ func filteredEntriesQueryOmitting(
 		fields["end_date"] = "must be on or after start_date"
 	}
 
-	if tag := strings.TrimSpace(c.Query("tag")); tag != "" {
+	if tag := strings.TrimSpace(get("tag")); tag != "" {
 		query = applyEntryTagFilter(query, tag)
 	}
-	if search := strings.TrimSpace(c.Query("q")); search != "" {
+	if search := strings.TrimSpace(get("q")); search != "" {
 		if len(search) > 200 {
 			fields["q"] = "must not exceed 200 characters"
 		} else {

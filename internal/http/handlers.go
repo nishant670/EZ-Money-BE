@@ -149,6 +149,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Insights
+		authorized.GET("/monthly-review", s.getMonthlyReview)
+		authorized.POST("/monthly-review/send", s.sendMonthlyReviewNow)
 		authorized.GET("/dashboard", s.getDashboard)
 		authorized.GET("/insights", s.requireEntitlement(billing.FeatureAdvancedInsights), s.getInsights)
 		authorized.POST("/recurring-candidates/decision", s.saveRecurringCandidateDecision)
@@ -269,12 +271,45 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/feedback") ||
 		strings.HasPrefix(path, "/v1/budgets") ||
 		strings.HasPrefix(path, "/v1/subscriptions") ||
+		// Not covered by the line above: "/v1/subscription-occurrences" does
+		// not have "/v1/subscriptions" as a prefix. Home's autopay review card
+		// — Confirm and Correct/revert — and the pending-occurrence fetch all
+		// answered 401 wherever AUTH_BEARER is set, which is every deployed
+		// environment and the local .env.
+		strings.HasPrefix(path, "/v1/subscription-occurrences") ||
+		// Push registration. With this gated, no device token was ever stored,
+		// so every push the server has tried to send had nobody to send it to
+		// — including the monthly review this list was widened for.
+		strings.HasPrefix(path, "/v1/push-devices") ||
+		strings.HasPrefix(path, "/v1/upload") ||
+		strings.HasPrefix(path, "/v1/reports") ||
+		strings.HasPrefix(path, "/v1/monthly-review") ||
 		strings.HasPrefix(path, "/v1/split") ||
 		strings.HasPrefix(path, "/v1/tools") ||
 		strings.HasPrefix(path, "/v1/billing") ||
 		strings.HasPrefix(path, "/v1/ai") ||
 		strings.HasPrefix(path, "/v1/parse")
 }
+
+// staticBearerGuardedPrefixes is the deliberate half of the list above.
+//
+// The prefix list has now drifted twice — M1 found the recurring-candidate
+// endpoints had answered 401 since the day they shipped, and M4 found three
+// more the same way. It drifts because it is written as "what to let through",
+// so a new route is gated by *omission*: nobody adding an endpoint thinks to
+// come here, and the failure is invisible until someone runs the app against a
+// backend with AUTH_BEARER set.
+//
+// This inverts it. Everything under /v1 must skip the static bearer unless it
+// is named here, and TestEverySessionRouteSkipsTheStaticBearer walks the
+// registered routes and fails when something new is not. A route that genuinely
+// should be gated is now a deliberate line in this list rather than an
+// oversight in the other one.
+//
+// It contains only /v1/admin, which carries its own admin bearer — meaning the
+// static bearer currently gates nothing that is not separately authenticated.
+// That is worth a decision on its own and is deliberately not made here.
+var staticBearerGuardedPrefixes = []string{"/v1/admin"}
 
 func (s *Server) handleParse(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timepkg.Duration(s.cfg.ReqTimeoutSec)*timepkg.Second)
@@ -430,6 +465,27 @@ func (s *Server) handleParse(c *gin.Context) {
 		return
 	}
 
+	// The two directions split here, before any draft normalisation runs. A
+	// question is not a transaction with empty fields — normalising it as one
+	// would file it under Misc, flag five fields for confirmation and hand the
+	// app a draft it must not save.
+	if parsedIntent(parsedObj) == parseIntentQuestion {
+		s.answerParsedQuestion(c, answeredQuestionRequest{
+			userID:        c.MustGet("userID").(uint),
+			transcript:    transcript,
+			tz:            tz,
+			rawQuery:      parsedObj["query"],
+			creditService: creditService,
+			usageEventID:  usageEvent.ID,
+			subject:       subject,
+			actionCode:    actionCode,
+			inputChars:    utf8.RuneCountInString(transcript),
+			responseBytes: len(parsed),
+			audioSize:     audioSize,
+		})
+		return
+	}
+
 	normalizeParsedDraft(parsedObj, transcript)
 	if !parsedDraftHasTransactionSignal(parsedObj) {
 		inputChars := utf8.RuneCountInString(transcript)
@@ -493,8 +549,42 @@ func (s *Server) handleParse(c *gin.Context) {
 		return
 	}
 
-	inputChars := utf8.RuneCountInString(transcript)
-	responseBytes := len(parsed)
+	credits, err := s.finalizeParseSuccess(
+		creditService,
+		usageEvent.ID,
+		subject,
+		actionCode,
+		utf8.RuneCountInString(transcript),
+		len(parsed),
+		audioSize,
+	)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "credit_finalization_failed"})
+		return
+	}
+	for key, value := range credits {
+		parsedObj[key] = value
+	}
+	c.JSON(200, parsedObj)
+}
+
+// finalizeParseSuccess settles the credit reservation for a completed provider
+// call and returns the credit fields every parse response carries.
+//
+// Both directions charge the same action. The reservation is made before the
+// text is read, so at that point nobody — not the app, not this handler, not
+// the model — knows yet whether the user is recording an expense or asking
+// about one. Billing a question differently would mean reserving twice, or
+// reserving after the provider call and letting an over-limit user through.
+func (s *Server) finalizeParseSuccess(
+	creditService *billing.CreditService,
+	usageEventID uint,
+	subject billing.CreditSubject,
+	actionCode ai.ActionCode,
+	inputChars int,
+	responseBytes int,
+	audioSize int64,
+) (map[string]any, error) {
 	providerUsage := billing.ProviderUsage{
 		Status:        billing.UsageStatusSucceeded,
 		Provider:      "openai",
@@ -507,19 +597,19 @@ func (s *Server) handleParse(c *gin.Context) {
 		providerUsage.SecondaryProvider = "openai"
 		providerUsage.SecondaryModel = s.cfg.OpenAIWhisper
 	}
-	finalized, err := creditService.FinalizeUsage(usageEvent.ID, providerUsage)
+	finalized, err := creditService.FinalizeUsage(usageEventID, providerUsage)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "credit_finalization_failed"})
-		return
+		return nil, err
 	}
 	s.recordAIProviderSuccess()
 	s.logCostControlAlerts()
 	status, _ := creditService.CheckAllowance(subject, actionCode)
-	parsedObj["credits_charged"] = finalized.FinalCredits
-	parsedObj["credits_remaining_today"] = status.DailyRemaining
-	parsedObj["credits_remaining_total"] = status.AvailableCredits
-	parsedObj["plan_code"] = status.PlanCode
-	c.JSON(200, parsedObj)
+	return map[string]any{
+		"credits_charged":         finalized.FinalCredits,
+		"credits_remaining_today": status.DailyRemaining,
+		"credits_remaining_total": status.AvailableCredits,
+		"plan_code":               status.PlanCode,
+	}, nil
 }
 
 func parseCreditSubject(c *gin.Context) (billing.CreditSubject, bool) {
