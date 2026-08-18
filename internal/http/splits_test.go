@@ -578,3 +578,474 @@ func TestEntryUpdateAndDeleteManageLinkedSplitAtomically(t *testing.T) {
 		t.Fatalf("expected deleting entry to remove linked split bill, got %#v", bills)
 	}
 }
+
+func TestSplitGroupKindAndDefaultSplitAreSharedWithMembers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	owner, ownerToken := createPaidBillingTestUserSession(t)
+	_, memberToken := createPaidBillingTestUserSession(t)
+
+	friend := performJSONRequest[models.SplitFriend](
+		t, router, http.MethodPost, "/v1/split/friends", ownerToken,
+		map[string]any{"name": "Priya", "email": "priya@example.com"}, http.StatusCreated,
+	)
+
+	group := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPost, "/v1/split/groups", ownerToken,
+		map[string]any{"name": "Home", "kind": "home", "friend_ids": []uint{friend.ID}},
+		http.StatusCreated,
+	)
+	if group.Kind != "home" {
+		t.Fatalf("expected the selected group kind to be stored, got %q", group.Kind)
+	}
+	if group.DefaultSplit != nil {
+		t.Fatalf("expected a new group to carry no default split, got %#v", group.DefaultSplit)
+	}
+
+	performJSONRequest[map[string]any](
+		t, router, http.MethodPost, "/v1/split/groups", ownerToken,
+		map[string]any{"name": "Nowhere", "kind": "vacation", "friend_ids": []uint{}},
+		http.StatusUnprocessableEntity,
+	)
+
+	friendSlot := fmt.Sprintf("%d", friend.ID)
+	performJSONRequest[map[string]any](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/groups/%d/default-split", group.ID), ownerToken,
+		map[string]any{"default_split": map[string]any{
+			"payer": "owner",
+			"tab":   "percentages",
+			"participants": []map[string]any{
+				{"slot": "owner", "weight": "60"},
+				{"slot": friendSlot, "weight": "30"},
+			},
+		}},
+		http.StatusUnprocessableEntity,
+	)
+
+	saved := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/groups/%d/default-split", group.ID), ownerToken,
+		map[string]any{"default_split": map[string]any{
+			"payer": "owner",
+			"tab":   "percentages",
+			"participants": []map[string]any{
+				{"slot": "owner", "weight": "60"},
+				{"slot": friendSlot, "weight": "40"},
+			},
+		}},
+		http.StatusOK,
+	)
+	if saved.DefaultSplit == nil || saved.DefaultSplit.Tab != "percentages" ||
+		len(saved.DefaultSplit.Participants) != 2 {
+		t.Fatalf("unexpected saved default split: %#v", saved.DefaultSplit)
+	}
+
+	// The invitee joins, which is where the owner's friend row becomes linked to
+	// their account — the link a member needs to find their own slot.
+	invite := performJSONRequest[splitGroupInviteResponse](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/split/groups/%d/invite-link", group.ID), ownerToken,
+		nil, http.StatusOK,
+	)
+	accepted := performJSONRequest[splitGroupInviteAcceptResponse](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/split/invites/%s/accept", invite.Token), memberToken,
+		nil, http.StatusOK,
+	)
+	if accepted.Friend.LinkedUserID == nil {
+		t.Fatalf("expected invite acceptance to link the friend row to the joining user")
+	}
+
+	memberGroups := performJSONRequest[[]models.SplitGroup](
+		t, router, http.MethodGet, "/v1/split/groups", memberToken, nil, http.StatusOK,
+	)
+	var seen *models.SplitGroup
+	for index := range memberGroups {
+		if memberGroups[index].ID == group.ID {
+			seen = &memberGroups[index]
+		}
+	}
+	if seen == nil {
+		t.Fatalf("expected the member to see the shared group")
+	}
+	if seen.Kind != "home" {
+		t.Fatalf("expected the member to see the group kind, got %q", seen.Kind)
+	}
+	if seen.DefaultSplit == nil || seen.DefaultSplit.Payer != "owner" ||
+		seen.DefaultSplit.Tab != "percentages" {
+		t.Fatalf("expected the member to see the shared default split, got %#v", seen.DefaultSplit)
+	}
+	if seen.OwnerName == "" {
+		t.Fatalf("expected the member to be told who owns the group")
+	}
+	if seen.ViewerFriendID == nil || *seen.ViewerFriendID != accepted.Friend.ID {
+		t.Fatalf("expected the member to be told which slot is theirs, got %#v", seen.ViewerFriendID)
+	}
+
+	// A member can change the default: it describes how the group divides its
+	// costs, not a preference of whoever created the group.
+	memberSaved := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/groups/%d/default-split", group.ID), memberToken,
+		map[string]any{"default_split": map[string]any{
+			"payer": friendSlot,
+			"tab":   "shares",
+			"participants": []map[string]any{
+				{"slot": "owner", "weight": "2"},
+				{"slot": friendSlot, "weight": "1"},
+			},
+		}},
+		http.StatusOK,
+	)
+	if memberSaved.DefaultSplit == nil || memberSaved.DefaultSplit.Payer != friendSlot {
+		t.Fatalf("expected the member's change to be stored, got %#v", memberSaved.DefaultSplit)
+	}
+
+	ownerView := performJSONRequest[[]models.SplitGroup](
+		t, router, http.MethodGet, "/v1/split/groups", ownerToken, nil, http.StatusOK,
+	)
+	if len(ownerView) == 0 || ownerView[0].DefaultSplit == nil ||
+		ownerView[0].DefaultSplit.Tab != "shares" {
+		t.Fatalf("expected the owner to see the member's change, got %#v", ownerView)
+	}
+	if ownerView[0].ViewerFriendID != nil {
+		t.Fatalf("the owner is never one of their own friend rows, got %#v", ownerView[0].ViewerFriendID)
+	}
+	if ownerView[0].OwnerName == "" || owner.ID != ownerView[0].UserID {
+		t.Fatalf("unexpected owner view: %#v", ownerView[0])
+	}
+
+	cleared := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/groups/%d/default-split", group.ID), ownerToken,
+		map[string]any{"default_split": nil}, http.StatusOK,
+	)
+	if cleared.DefaultSplit != nil {
+		t.Fatalf("expected the default split to be cleared, got %#v", cleared.DefaultSplit)
+	}
+}
+
+func TestAddingExistingFriendToGroupInvitesAndPreservesTheirLedger(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	owner, ownerToken := createPaidBillingTestUserSession(t)
+	partner, partnerToken := createPaidBillingTestUserSession(t)
+	partnerEmail := "partner@example.com"
+	if err := database.DB.Model(&partner).Update("email", partnerEmail).Error; err != nil {
+		t.Fatalf("failed to set partner email: %v", err)
+	}
+
+	// The friend the owner has been splitting against, saved with the address
+	// the partner's account uses.
+	friend := performJSONRequest[models.SplitFriend](
+		t, router, http.MethodPost, "/v1/split/friends", ownerToken,
+		map[string]any{"name": "Wife", "email": partnerEmail}, http.StatusCreated,
+	)
+	// Somebody with no way to be reached at all.
+	unreachable := performJSONRequest[models.SplitFriend](
+		t, router, http.MethodPost, "/v1/split/friends", ownerToken,
+		map[string]any{"name": "Flatmate"}, http.StatusCreated,
+	)
+
+	group := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPost, "/v1/split/groups", ownerToken,
+		map[string]any{
+			"name":       "Couple",
+			"kind":       "couple",
+			"friend_ids": []uint{friend.ID, unreachable.ID},
+		},
+		http.StatusCreated,
+	)
+
+	statuses := map[uint]string{}
+	for _, invited := range group.MemberInvites {
+		statuses[invited.FriendID] = invited.Status
+	}
+	if statuses[friend.ID] != models.SplitMemberInviteNotified {
+		t.Fatalf("expected the added friend to be notified, got %q", statuses[friend.ID])
+	}
+	if statuses[unreachable.ID] != models.SplitMemberInviteNoContact {
+		t.Fatalf("expected a friend with no contact details to be reported as unreachable, got %q",
+			statuses[unreachable.ID])
+	}
+
+	var notification models.Notification
+	if err := database.DB.Where("user_id = ? AND type = ?", partner.ID, "split.group_invite.received").
+		First(&notification).Error; err != nil {
+		t.Fatalf("expected the added member to be notified: %v", err)
+	}
+
+	// Adding somebody is not the same as letting them in.
+	beforeAccept := performJSONRequest[[]models.SplitGroup](
+		t, router, http.MethodGet, "/v1/split/groups", partnerToken, nil, http.StatusOK,
+	)
+	for _, visible := range beforeAccept {
+		if visible.ID == group.ID {
+			t.Fatalf("the group must stay invisible until the invite is accepted")
+		}
+	}
+
+	// The owner keeps splitting against her in the meantime.
+	performJSONRequest[models.SplitBill](
+		t, router, http.MethodPost, "/v1/split/bills", ownerToken,
+		map[string]any{
+			"title":        "Groceries",
+			"total_amount": "1000.00",
+			"currency":     "INR",
+			"date":         "2026-08-01",
+			"group_id":     group.ID,
+			"participants": []map[string]any{
+				{
+					"friend_id":    friend.ID,
+					"share_amount": "400.00",
+					"direction":    splitDirectionFriendOwesUser,
+				},
+			},
+		},
+		http.StatusCreated,
+	)
+
+	invite := performJSONRequest[splitGroupInviteResponse](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/split/groups/%d/invite-link", group.ID), ownerToken,
+		nil, http.StatusOK,
+	)
+	accepted := performJSONRequest[splitGroupInviteAcceptResponse](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/split/invites/%s/accept", invite.Token), partnerToken,
+		nil, http.StatusOK,
+	)
+	if accepted.Friend.ID != friend.ID {
+		t.Fatalf("acceptance must reuse the friend row already carrying her expenses, got %d want %d",
+			accepted.Friend.ID, friend.ID)
+	}
+
+	var friendRows int64
+	if err := database.DB.Model(&models.SplitFriend{}).
+		Where("user_id = ? AND email = ?", owner.ID, partnerEmail).
+		Count(&friendRows).Error; err != nil {
+		t.Fatalf("failed to count friend rows: %v", err)
+	}
+	if friendRows != 1 {
+		t.Fatalf("expected acceptance to leave one friend row, found %d", friendRows)
+	}
+
+	// The invite has been used, so it should not still be pending.
+	pending := performJSONRequest[[]splitGroupDirectInviteResponse](
+		t, router, http.MethodGet, fmt.Sprintf("/v1/split/groups/%d/invites", group.ID), ownerToken,
+		nil, http.StatusOK,
+	)
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending invites after acceptance, got %#v", pending)
+	}
+
+	afterAccept := performJSONRequest[[]models.SplitGroup](
+		t, router, http.MethodGet, "/v1/split/groups", partnerToken, nil, http.StatusOK,
+	)
+	seen := false
+	for _, visible := range afterAccept {
+		if visible.ID == group.ID {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("expected the group to appear once the invite is accepted")
+	}
+
+	partnerBills := performJSONRequest[[]models.SplitBill](
+		t, router, http.MethodGet, "/v1/split/bills", partnerToken, nil, http.StatusOK,
+	)
+	if len(partnerBills) != 1 || partnerBills[0].Title != "Groceries" {
+		t.Fatalf("expected the expense recorded before acceptance to be visible, got %#v", partnerBills)
+	}
+
+	// Saving the same roster again must not re-notify anyone.
+	if err := database.DB.Where("user_id = ?", partner.ID).Delete(&models.Notification{}).Error; err != nil {
+		t.Fatalf("failed to clear notifications: %v", err)
+	}
+	resaved := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/groups/%d", group.ID), ownerToken,
+		map[string]any{
+			"name":       "Couple",
+			"kind":       "couple",
+			"friend_ids": []uint{friend.ID, unreachable.ID},
+		},
+		http.StatusOK,
+	)
+	if len(resaved.MemberInvites) != 0 {
+		t.Fatalf("expected no invites for an unchanged roster, got %#v", resaved.MemberInvites)
+	}
+	var repeatNotifications int64
+	if err := database.DB.Model(&models.Notification{}).
+		Where("user_id = ?", partner.ID).
+		Count(&repeatNotifications).Error; err != nil {
+		t.Fatalf("failed to count notifications: %v", err)
+	}
+	if repeatNotifications != 0 {
+		t.Fatalf("expected no repeat notification, got %d", repeatNotifications)
+	}
+}
+
+func TestAddingFriendWithoutAnAccountRaisesAnInviteToShare(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	_, ownerToken := createPaidBillingTestUserSession(t)
+
+	friend := performJSONRequest[models.SplitFriend](
+		t, router, http.MethodPost, "/v1/split/friends", ownerToken,
+		map[string]any{"name": "Arjun", "email": "arjun@example.com"}, http.StatusCreated,
+	)
+	group := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPost, "/v1/split/groups", ownerToken,
+		map[string]any{"name": "Goa", "kind": "trip", "friend_ids": []uint{friend.ID}},
+		http.StatusCreated,
+	)
+
+	if len(group.MemberInvites) != 1 ||
+		group.MemberInvites[0].Status != models.SplitMemberInviteLinkNeeded {
+		t.Fatalf("expected an invite the owner has to share, got %#v", group.MemberInvites)
+	}
+
+	pending := performJSONRequest[[]splitGroupDirectInviteResponse](
+		t, router, http.MethodGet, fmt.Sprintf("/v1/split/groups/%d/invites", group.ID), ownerToken,
+		nil, http.StatusOK,
+	)
+	if len(pending) != 1 || pending[0].URL == "" {
+		t.Fatalf("expected one shareable pending invite, got %#v", pending)
+	}
+}
+
+func TestPendingInvitesSurfaceUntilAcceptedThenReadTheNotification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	_, ownerToken := createPaidBillingTestUserSession(t)
+	partner, partnerToken := createPaidBillingTestUserSession(t)
+	partnerEmail := "join-me@example.com"
+	if err := database.DB.Model(&partner).Update("email", partnerEmail).Error; err != nil {
+		t.Fatalf("failed to set partner email: %v", err)
+	}
+
+	friend := performJSONRequest[models.SplitFriend](
+		t, router, http.MethodPost, "/v1/split/friends", ownerToken,
+		map[string]any{"name": "Partner", "email": partnerEmail}, http.StatusCreated,
+	)
+	group := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPost, "/v1/split/groups", ownerToken,
+		map[string]any{"name": "Couple", "kind": "couple", "friend_ids": []uint{friend.ID}},
+		http.StatusCreated,
+	)
+
+	pending := performJSONRequest[[]splitPendingInviteResponse](
+		t, router, http.MethodGet, "/v1/split/pending-invites", partnerToken, nil, http.StatusOK,
+	)
+	if len(pending) != 1 {
+		t.Fatalf("expected one invite waiting on the invitee, got %#v", pending)
+	}
+	if pending[0].GroupName != "Couple" || pending[0].OwnerName == "" || pending[0].Token == "" {
+		t.Fatalf("an invite prompt needs the group, who sent it, and a token: %#v", pending[0])
+	}
+
+	// Nobody else is being asked to join.
+	ownerPending := performJSONRequest[[]splitPendingInviteResponse](
+		t, router, http.MethodGet, "/v1/split/pending-invites", ownerToken, nil, http.StatusOK,
+	)
+	if len(ownerPending) != 0 {
+		t.Fatalf("the owner should not be invited to their own group, got %#v", ownerPending)
+	}
+
+	// "Check later" changes nothing on the server: the notification stays
+	// unread and the invite keeps being offered.
+	var unread int64
+	if err := database.DB.Model(&models.Notification{}).
+		Where("user_id = ? AND read_at IS NULL", partner.ID).
+		Count(&unread).Error; err != nil {
+		t.Fatalf("failed to count unread notifications: %v", err)
+	}
+	if unread != 1 {
+		t.Fatalf("expected the invite notification to be waiting unread, got %d", unread)
+	}
+
+	performJSONRequest[splitGroupInviteAcceptResponse](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/split/invites/%s/accept", pending[0].Token),
+		partnerToken, nil, http.StatusOK,
+	)
+
+	afterAccept := performJSONRequest[[]splitPendingInviteResponse](
+		t, router, http.MethodGet, "/v1/split/pending-invites", partnerToken, nil, http.StatusOK,
+	)
+	if len(afterAccept) != 0 {
+		t.Fatalf("an accepted invite must stop being offered, got %#v", afterAccept)
+	}
+
+	var stillUnread int64
+	if err := database.DB.Model(&models.Notification{}).
+		Where("user_id = ? AND type = ? AND read_at IS NULL", partner.ID, "split.group_invite.received").
+		Count(&stillUnread).Error; err != nil {
+		t.Fatalf("failed to count unread notifications: %v", err)
+	}
+	if stillUnread != 0 {
+		t.Fatalf("accepting should mark the invite notification read, %d still unread", stillUnread)
+	}
+
+	joined := performJSONRequest[[]models.SplitGroup](
+		t, router, http.MethodGet, "/v1/split/groups", partnerToken, nil, http.StatusOK,
+	)
+	seen := false
+	for _, visible := range joined {
+		if visible.ID == group.ID {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("accepting from the prompt should grant access to the group")
+	}
+}
+
+func TestInviteeOnNoPaidPlanCanSeeAndAcceptAnInvite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	_, ownerToken := createPaidBillingTestUserSession(t)
+	// Deliberately not a paid session: being invited is not using the feature,
+	// and an invitation must never arrive as a bill.
+	invitee, inviteeToken := createBillingTestUserSession(t)
+	inviteeEmail := "unpaid-invitee@example.com"
+	if err := database.DB.Model(&invitee).Update("email", inviteeEmail).Error; err != nil {
+		t.Fatalf("failed to set invitee email: %v", err)
+	}
+
+	friend := performJSONRequest[models.SplitFriend](
+		t, router, http.MethodPost, "/v1/split/friends", ownerToken,
+		map[string]any{"name": "Invitee", "email": inviteeEmail}, http.StatusCreated,
+	)
+	group := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPost, "/v1/split/groups", ownerToken,
+		map[string]any{"name": "Couple", "kind": "couple", "friend_ids": []uint{friend.ID}},
+		http.StatusCreated,
+	)
+
+	pending := performJSONRequest[[]splitPendingInviteResponse](
+		t, router, http.MethodGet, "/v1/split/pending-invites", inviteeToken, nil, http.StatusOK,
+	)
+	if len(pending) != 1 {
+		t.Fatalf("an unpaid invitee must still be shown the invite, got %#v", pending)
+	}
+
+	details := performJSONRequest[splitGroupInviteDetailsResponse](
+		t, router, http.MethodGet, fmt.Sprintf("/v1/split/invites/%s", pending[0].Token),
+		inviteeToken, nil, http.StatusOK,
+	)
+	if details.Group.ID != group.ID {
+		t.Fatalf("an unpaid invitee must be able to read who invited them: %#v", details)
+	}
+
+	accepted := performJSONRequest[splitGroupInviteAcceptResponse](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/split/invites/%s/accept", pending[0].Token),
+		inviteeToken, nil, http.StatusOK,
+	)
+	if accepted.Group.ID != group.ID {
+		t.Fatalf("an unpaid invitee must be able to accept: %#v", accepted)
+	}
+}

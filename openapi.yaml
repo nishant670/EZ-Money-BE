@@ -1031,6 +1031,52 @@ paths:
           description: Group archived
         "404":
           description: Group not found
+  /v1/split/groups/{id}/default-split:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    put:
+      summary: Set the group-wide default split
+      description: >-
+        Open to any active member of the group, not just the owner: the default
+        describes how the group divides its costs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SplitGroupDefaultSplitInput"
+      responses:
+        "200":
+          description: Default split updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitGroup"
+        "404":
+          description: Group not found
+        "422":
+          description: Invalid default split payload
+  /v1/split/pending-invites:
+    get:
+      summary: List split group invites waiting on the caller
+      description: >-
+        Invites addressed to the signed-in user that are still worth acting on.
+        Backs the in-app prompt shown when the app opens. Not gated by the split
+        ledger entitlement: seeing and accepting an invitation is free on any
+        plan.
+      responses:
+        "200":
+          description: Pending invites
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PendingSplitGroupInvite"
   /v1/split/bills:
     post:
       summary: Create a split bill with friend shares
@@ -1134,6 +1180,362 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SplitBalance"
+  /v1/accounts/{id}/statements:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+        description: Credit card account id
+    get:
+      summary: List a credit card's billing history, newest first
+      responses:
+        "200":
+          description: Statements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CardStatement"
+        "404":
+          description: Card not found
+    post:
+      summary: Create or update the bill for one statement date
+      description: >
+        Upserts on (user, account, statement_date), so re-submitting a month
+        corrects it rather than creating a second bill. The cycle window is
+        derived from the card's statement day, and the due date is derived from
+        its due day unless supplied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardStatementInput"
+      responses:
+        "200":
+          description: Statement updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardStatement"
+        "201":
+          description: Statement created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardStatement"
+        "404":
+          description: Card not found
+        "422":
+          description: Invalid statement fields
+  /v1/statements/upcoming:
+    get:
+      summary: Every unsettled bill across all cards, soonest due first
+      responses:
+        "200":
+          description: Upcoming statements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CardStatement"
+  /v1/statements/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    get:
+      summary: One statement with its payments and a fresh reconciliation
+      responses:
+        "200":
+          description: Statement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardStatement"
+        "404":
+          description: Statement not found
+    delete:
+      summary: Delete a statement and the unitemized entry it owns
+      description: >
+        Real transactions in the cycle are untouched — they are the user's
+        record of their own spending, not the statement's property.
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Statement not found
+  /v1/statements/{id}/payments:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Record a full or partial payment against a statement
+      description: >
+        Logs a payment the user made in their bank's app; Finnri never moves
+        money. Partial payments are repeated calls. When from_account_id is
+        given, one expense entry is written on that bank account carrying
+        purpose_type "card_payment", which dashboard totals exclude.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardStatementPaymentInput"
+      responses:
+        "201":
+          description: Payment recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardStatement"
+        "404":
+          description: Statement not found
+        "409":
+          description: Statement has no amount yet
+        "422":
+          description: Invalid payment fields
+  /v1/statements/{id}/payments/{paymentId}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+      - in: path
+        name: paymentId
+        required: true
+        schema:
+          type: integer
+    delete:
+      summary: Reverse a logged payment and the bank entry it created
+      responses:
+        "200":
+          description: Payment removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardStatement"
+        "404":
+          description: Payment not found
+  /v1/statements/{id}/diff:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Compare parsed statement lines against the ledger for that cycle
+      description: >
+        Stateless — nothing is stored. Returns matched, missing, extra and
+        ignored buckets. Bill payments are classified into `ignored` and never
+        offered for import: Finnri tracks payments on the statement rather than
+        as card entries, so importing one would reduce the card's outstanding a
+        second time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatementLinesInput"
+      responses:
+        "200":
+          description: The diff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatementDiff"
+        "404":
+          description: Statement not found
+        "422":
+          description: Invalid lines
+  /v1/statements/{id}/import:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Create entries for the lines the user selected
+      description: >
+        Idempotent per line — re-importing the same statement cannot duplicate
+        a transaction. Re-reconciles afterwards, which is what shrinks the
+        unitemized bucket.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatementLinesInput"
+      responses:
+        "200":
+          description: Import result with the fresh reconciliation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported:
+                    type: integer
+                  reconciliation:
+                    $ref: "#/components/schemas/CardStatementReconciliation"
+        "404":
+          description: Statement not found
+        "422":
+          description: Invalid lines
+  /v1/statements/{id}/upload:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Read a statement PDF and return the diff
+      description: >
+        The file and password live for the duration of the request only.
+        Neither is written to disk, stored, or logged, and there is deliberately
+        no way to remember a password. Card numbers are masked out of the
+        extracted text before parsing, so no full PAN travels with the parsed
+        rows. The response carries the parsed lines for the client to review and
+        pass to the import endpoint — there is no server-side parsed statement.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                password:
+                  type: string
+                  description: Used once to decrypt, then discarded. Never stored.
+      responses:
+        "200":
+          description: The diff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatementDiff"
+        "404":
+          description: Statement not found
+        "422":
+          description: >
+            invalid_statement_pdf, statement_password_required,
+            statement_password_incorrect, statement_unreadable, or
+            no_transactions_found
+  /v1/accounts/{id}/emi-plans:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+        description: Credit card account id
+    get:
+      summary: List EMI plans on a credit card
+      responses:
+        "200":
+          description: Plans, each with derived progress
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CardEMIPlan"
+        "404":
+          description: Card not found
+    post:
+      summary: Convert a purchase on this card to instalments
+      description: >
+        Blocks the full principal against the card's limit straight away and
+        releases it a slice at a time as each instalment's principal is paid.
+        Passing source_entry_id converts a purchase already in the ledger; that
+        entry is removed, because the card bills instalments rather than the
+        purchase and leaving it would double-count the spend.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardEMIPlanInput"
+      responses:
+        "201":
+          description: Plan created with its instalment schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardEMIPlan"
+        "404":
+          description: Card not found
+        "422":
+          description: Invalid plan fields
+  /v1/emi-plans/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    get:
+      summary: One EMI plan with its full instalment schedule
+      responses:
+        "200":
+          description: Plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardEMIPlan"
+        "404":
+          description: Plan not found
+    delete:
+      summary: Delete a plan and the instalment entries it generated
+      description: >
+        Removes only entries this plan wrote. Transactions the user recorded
+        themselves are untouched.
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Plan not found
+  /v1/emi-plans/{id}/foreclose:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Pay a plan off early, releasing all remaining principal at once
+      description: >
+        Cancels every instalment still scheduled. Instalments already billed
+        are kept — they sit on a statement the user still owes, and cancelling
+        them would erase a charge the bank has made.
+      responses:
+        "200":
+          description: Plan foreclosed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardEMIPlan"
+        "404":
+          description: Plan not found
+        "409":
+          description: Plan is not active
   /v1/tools/emi/calculate:
     post:
       summary: Calculate EMI summary and amortization schedule
@@ -2118,6 +2520,392 @@ components:
             updated_at:
               type: string
               format: date-time
+    CardStatementInput:
+      type: object
+      required: [statement_date, total_due]
+      properties:
+        statement_date:
+          type: string
+          format: date
+        due_date:
+          type: string
+          format: date
+          description: Derived from the card's due day when omitted. Must be after the statement date.
+        total_due:
+          oneOf:
+            - type: number
+              minimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        minimum_due:
+          oneOf:
+            - type: number
+              minimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        currency:
+          type: string
+          enum: [INR]
+        source:
+          type: string
+          enum: [manual, sms, email]
+        notes:
+          type: string
+    CardStatementPaymentInput:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          oneOf:
+            - type: number
+              exclusiveMinimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        paid_on:
+          type: string
+          format: date
+          description: Defaults to today.
+        method:
+          type: string
+          maxLength: 24
+        from_account_id:
+          type: [integer, "null"]
+          description: Bank account the money left. Cannot be the card being paid.
+        note:
+          type: string
+    CardStatementPayment:
+      type: object
+      required: [id, user_id, statement_id, account_id, amount, paid_on]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        statement_id:
+          type: integer
+        account_id:
+          type: integer
+        from_account_id:
+          type: [integer, "null"]
+        bank_entry_id:
+          type: [integer, "null"]
+        amount:
+          type: number
+        paid_on:
+          type: string
+          format: date
+        method:
+          type: string
+        note:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    CardStatementReconciliation:
+      type: object
+      description: >
+        What the bill can and cannot account for. When state is "balanced",
+        itemized_total + unitemized_amount + previous_unpaid == statement_total.
+      required: [cycle_start, cycle_end, itemized_total, statement_total, gap, state]
+      properties:
+        cycle_start:
+          type: string
+          format: date
+        cycle_end:
+          type: string
+          format: date
+        itemized_total:
+          type: number
+          description: Net spend on the card inside the cycle, excluding the unitemized entry.
+        entries_count:
+          type: integer
+        previous_unpaid:
+          type: number
+          description: Unpaid remainder of the previous statement, rolled into this bill.
+        statement_total:
+          type: number
+        unitemized_amount:
+          type: number
+          description: Billed but not explained by the ledger; held as a real expense entry.
+        gap:
+          type: number
+          description: Signed. Positive when the bank knows more than Finnri does.
+        state:
+          type: string
+          enum: [balanced, under, over]
+    CardStatement:
+      type: object
+      required: [id, user_id, account_id, cycle_start, cycle_end, statement_date, due_date, total_due, paid_amount, status]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        account_id:
+          type: integer
+        cycle_start:
+          type: string
+          format: date
+        cycle_end:
+          type: string
+          format: date
+        statement_date:
+          type: string
+          format: date
+        due_date:
+          type: string
+          format: date
+        total_due:
+          type: number
+        minimum_due:
+          type: number
+        paid_amount:
+          type: number
+        remaining_due:
+          type: number
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [draft, unpaid, partial, paid]
+          description: >
+            "draft" is a placeholder opened on the statement day before the
+            amount is known. "overdue" is never stored — read is_overdue.
+        is_overdue:
+          type: boolean
+        days_to_due:
+          type: integer
+          description: Negative once the due date has passed.
+        source:
+          type: string
+          enum: [manual, sms, email]
+        unitemized_entry_id:
+          type: [integer, "null"]
+        notes:
+          type: string
+        reconciliation:
+          $ref: "#/components/schemas/CardStatementReconciliation"
+        payments:
+          type: array
+          items:
+            $ref: "#/components/schemas/CardStatementPayment"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    StatementLine:
+      type: object
+      required: [date, amount]
+      properties:
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+        amount:
+          type: number
+          description: Always positive. Direction comes from `type`.
+        type:
+          type: string
+          enum: [expense, income]
+          default: expense
+        kind:
+          type: string
+          enum: [spend, refund, payment, fee, interest, emi]
+          description: Derived by the server, not supplied.
+    StatementLinesInput:
+      type: object
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/StatementLine"
+    StatementDiff:
+      type: object
+      properties:
+        matched:
+          type: array
+          items:
+            type: object
+            properties:
+              line:
+                $ref: "#/components/schemas/StatementLine"
+              entry:
+                type: object
+              day_gap:
+                type: integer
+                description: Days between the statement line and the ledger entry.
+              similarity:
+                type: number
+                description: Description overlap, 0..1. A tie-breaker only.
+        missing:
+          type: array
+          description: On the statement, not in Finnri. These are importable.
+          items:
+            $ref: "#/components/schemas/StatementLine"
+        extra:
+          type: array
+          description: In Finnri, not billed. Shown for review, never auto-deleted.
+          items:
+            type: object
+        ignored:
+          type: array
+          description: Bill payments — real, but never importable as card entries.
+          items:
+            $ref: "#/components/schemas/StatementLine"
+        summary:
+          type: object
+          properties:
+            statement_lines:
+              type: integer
+            matched_count:
+              type: integer
+            missing_count:
+              type: integer
+            extra_count:
+              type: integer
+            ignored_count:
+              type: integer
+            missing_amount:
+              type: number
+            extra_amount:
+              type: number
+    CardEMIPlanInput:
+      type: object
+      required: [title, principal, tenure_months, purchased_on]
+      properties:
+        title:
+          type: string
+          maxLength: 120
+        merchant:
+          type: string
+          maxLength: 120
+        category:
+          type: string
+          maxLength: 80
+        principal:
+          description: The purchase amount, and the amount blocked at the start.
+          oneOf:
+            - type: number
+              exclusiveMinimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        annual_rate_pct:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Zero for a no-cost EMI, where every instalment is pure principal.
+        tenure_months:
+          type: integer
+          minimum: 1
+          maximum: 360
+        purchased_on:
+          type: string
+          format: date
+        first_installment:
+          type: string
+          format: date
+          description: Defaults to one month after the purchase.
+        source_entry_id:
+          type: [integer, "null"]
+          description: An already-logged purchase to convert. The entry is removed.
+        notes:
+          type: string
+    CardEMIInstallment:
+      type: object
+      required: [id, plan_id, seq, due_date, amount, principal_part, interest_part, status]
+      properties:
+        id:
+          type: integer
+        plan_id:
+          type: integer
+        account_id:
+          type: integer
+        seq:
+          type: integer
+        due_date:
+          type: string
+          format: date
+        amount:
+          type: number
+          description: Principal plus interest — what the statement bills.
+        principal_part:
+          type: number
+          description: The only part that releases limit.
+        interest_part:
+          type: number
+        status:
+          type: string
+          enum: [scheduled, billed, paid]
+          description: >
+            scheduled — blocking the limit. billed — on a statement, so inside
+            that bill's total and no longer counted as blocked. paid — the
+            statement was settled and the principal is released.
+        statement_id:
+          type: [integer, "null"]
+        entry_id:
+          type: [integer, "null"]
+    CardEMIPlanProgress:
+      type: object
+      properties:
+        installments_total:
+          type: integer
+        installments_paid:
+          type: integer
+        principal_remaining:
+          type: number
+        principal_repaid:
+          type: number
+        blocked_principal:
+          type: number
+          description: The part still holding limit — scheduled instalments only.
+        amount_remaining:
+          type: number
+        next_due_date:
+          type: string
+          format: date
+        next_amount:
+          type: number
+    CardEMIPlan:
+      allOf:
+        - $ref: "#/components/schemas/CardEMIPlanInput"
+        - type: object
+          required: [id, account_id, monthly_amount, status]
+          properties:
+            id:
+              type: integer
+            account_id:
+              type: integer
+            monthly_amount:
+              type: number
+              description: Principal plus interest, from the amortisation schedule.
+            total_interest:
+              type: number
+            currency:
+              type: string
+            status:
+              type: string
+              enum: [active, closed, foreclosed]
+            installments:
+              type: array
+              items:
+                $ref: "#/components/schemas/CardEMIInstallment"
+            progress:
+              $ref: "#/components/schemas/CardEMIPlanProgress"
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
     SubscriptionInput:
       type: object
       required: [name, amount, next_due_date]
@@ -2270,11 +3058,96 @@ components:
       properties:
         name:
           type: string
+        kind:
+          type: string
+          enum: [trip, home, couple, other]
+          default: other
+          description: >-
+            What the group is for. Only a trip offers trip dates on the group
+            screen. Shared with every member.
         friend_ids:
           type: array
           minItems: 1
           items:
             type: integer
+    PendingSplitGroupInvite:
+      type: object
+      required: [id, token, group_id, group_name, owner_name, created_at]
+      properties:
+        id:
+          type: integer
+        token:
+          type: string
+          description: Invite token to POST to /v1/split/invites/{token}/accept.
+        group_id:
+          type: integer
+        group_name:
+          type: string
+        owner_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    SplitGroupMemberInvite:
+      type: object
+      required: [friend_id, name, status]
+      properties:
+        friend_id:
+          type: integer
+        name:
+          type: string
+        status:
+          type: string
+          enum: [notified, invite_created, no_contact]
+          description: >-
+            notified — they have a Finnri account and an invite is waiting in
+            it. invite_created — no account yet, so the link has to be shared.
+            no_contact — the friend has no email or phone, so nobody could be
+            reached.
+    SplitGroupDefaultSplitShare:
+      type: object
+      required: [slot]
+      properties:
+        slot:
+          type: string
+          description: >-
+            "owner" for the group owner, otherwise a group member's friend id as
+            a string.
+        weight:
+          type: string
+          description: >-
+            Percentage or share count, depending on tab. Omitted when tab is
+            "equally".
+    SplitGroupDefaultSplit:
+      type: object
+      required: [payer, tab, participants]
+      description: >-
+        The split every new expense in the group starts from, shared by all
+        members. Slots are anchored on the group owner rather than the viewer so
+        the stored default names the same people for everybody. Any active
+        member may change it.
+      properties:
+        payer:
+          type: string
+        full_amount:
+          type: boolean
+          description: The payer is owed the whole expense and carries none of it.
+        tab:
+          type: string
+          enum: [equally, percentages, shares]
+        participants:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/SplitGroupDefaultSplitShare"
+    SplitGroupDefaultSplitInput:
+      type: object
+      properties:
+        default_split:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/SplitGroupDefaultSplit"
+          description: Null clears the group's default and restores the equal split.
     SplitGroupMember:
       type: object
       required: [id, user_id, group_id, friend_id]
@@ -2291,7 +3164,7 @@ components:
           $ref: "#/components/schemas/SplitFriend"
     SplitGroup:
       type: object
-      required: [id, user_id, name, archived, created_at, updated_at]
+      required: [id, user_id, name, archived, kind, created_at, updated_at]
       properties:
         id:
           type: integer
@@ -2301,6 +3174,30 @@ components:
           type: string
         archived:
           type: boolean
+        kind:
+          type: string
+          enum: [trip, home, couple, other]
+        default_split:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/SplitGroupDefaultSplit"
+        owner_name:
+          type: string
+          description: Display name of the member who owns the group.
+        member_invites:
+          type: array
+          description: >-
+            What happened to the people just added, returned only on a create or
+            update. Adding somebody raises an invite; they still see nothing
+            until they accept it.
+          items:
+            $ref: "#/components/schemas/SplitGroupMemberInvite"
+        viewer_friend_id:
+          type: integer
+          nullable: true
+          description: >-
+            Which of the group's member friend rows is the caller. Absent for
+            the owner, who is always the "owner" slot.
         members:
           type: array
           items:

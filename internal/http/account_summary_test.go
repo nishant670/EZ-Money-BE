@@ -43,7 +43,7 @@ func TestSummariseAccountReportsCreditCardOutstandingNotTheLimit(t *testing.T) {
 		LifetimeReceived: 5000, // a payment against the card
 	}
 
-	summary := summariseAccount(account, totals)
+	summary := summariseAccount(account, totals, cardStatementContext{}, testToday)
 
 	if summary.Outstanding == nil {
 		t.Fatal("credit card summary has no outstanding figure")
@@ -64,7 +64,7 @@ func TestSummariseAccountReportsCreditCardOutstandingNotTheLimit(t *testing.T) {
 
 func TestSummariseAccountOmitsUtilisationWithoutALimit(t *testing.T) {
 	account := models.Account{ID: 8, Type: "credit_card"}
-	summary := summariseAccount(account, accountLedgerTotals{LifetimeSpent: 3000})
+	summary := summariseAccount(account, accountLedgerTotals{LifetimeSpent: 3000}, cardStatementContext{}, testToday)
 
 	if summary.Outstanding == nil || *summary.Outstanding != 3000 {
 		t.Fatalf("outstanding = %v, want 3000", summary.Outstanding)
@@ -79,7 +79,7 @@ func TestSummariseAccountOmitsUtilisationWithoutALimit(t *testing.T) {
 func TestSummariseAccountClampsNegativeUtilisationButNotOverLimit(t *testing.T) {
 	inCredit := summariseAccount(
 		models.Account{Type: "credit_card", CreditLimit: mustMoney(t, "10000")},
-		accountLedgerTotals{LifetimeReceived: 500},
+		accountLedgerTotals{LifetimeReceived: 500}, cardStatementContext{}, testToday,
 	)
 	if inCredit.CreditUtilisation == nil || *inCredit.CreditUtilisation != 0 {
 		t.Fatalf("utilisation for a card in credit = %v, want 0", inCredit.CreditUtilisation)
@@ -87,7 +87,7 @@ func TestSummariseAccountClampsNegativeUtilisationButNotOverLimit(t *testing.T) 
 
 	overLimit := summariseAccount(
 		models.Account{Type: "credit_card", CreditLimit: mustMoney(t, "10000")},
-		accountLedgerTotals{LifetimeSpent: 12000},
+		accountLedgerTotals{LifetimeSpent: 12000}, cardStatementContext{}, testToday,
 	)
 	if overLimit.CreditUtilisation == nil || *overLimit.CreditUtilisation != 120 {
 		t.Fatalf("utilisation over the limit = %v, want 120", overLimit.CreditUtilisation)
@@ -99,7 +99,7 @@ func TestSummariseAccountRunsABalanceOnlyFromAnOpeningBalance(t *testing.T) {
 
 	withOpening := summariseAccount(
 		models.Account{Type: "bank", Balance: mustMoney(t, "12000")},
-		totals,
+		totals, cardStatementContext{}, testToday,
 	)
 	if withOpening.RunningBalance == nil || *withOpening.RunningBalance != 68000 {
 		t.Fatalf("running balance = %v, want 68000 (12000 + 60000 - 4000)", withOpening.RunningBalance)
@@ -107,7 +107,7 @@ func TestSummariseAccountRunsABalanceOnlyFromAnOpeningBalance(t *testing.T) {
 
 	// Without an opening balance a running balance is net flow wearing a
 	// balance's clothes, so none is published.
-	withoutOpening := summariseAccount(models.Account{Type: "bank"}, totals)
+	withoutOpening := summariseAccount(models.Account{Type: "bank"}, totals, cardStatementContext{}, testToday)
 	if withoutOpening.RunningBalance != nil {
 		t.Fatalf("running balance without an opening balance = %v, want none", *withoutOpening.RunningBalance)
 	}
@@ -302,3 +302,7 @@ func TestAccountSummaryMatchesDashboardAccountSpending(t *testing.T) {
 		t.Fatalf("expected 2000 spent this month, got %v", dashboardAmount)
 	}
 }
+
+// testToday fixes the date these summaries are computed against, so a test
+// cannot start failing because the calendar moved.
+const testToday = "2026-08-18"

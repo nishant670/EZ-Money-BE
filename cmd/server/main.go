@@ -31,6 +31,11 @@ func main() {
 		&models.Subscription{},
 		&models.SubscriptionReminder{},
 		&models.SubscriptionOccurrence{},
+		&models.CardStatement{},
+		&models.CardStatementPayment{},
+		&models.CardStatementReminder{},
+		&models.CardEMIPlan{},
+		&models.CardEMIInstallment{},
 		&models.PushDevice{},
 		&models.SplitFriend{},
 		&models.SplitGroup{},
@@ -48,6 +53,7 @@ func main() {
 	cfg := config.Load()
 	httpserver.StartMaintenanceJobs(cfg)
 	httpserver.StartSubscriptionAutomation(cfg)
+	httpserver.StartCardStatementAutomation(cfg)
 	httpserver.StartMonthlyReviewJob(cfg)
 	r := httpserver.NewServer(cfg)
 	log.Printf("listening on :%s", cfg.Port)

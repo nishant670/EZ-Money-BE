@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -40,7 +41,26 @@ type splitParticipantInput struct {
 
 type splitGroupInput struct {
 	Name      string `json:"name"`
+	Kind      string `json:"kind"`
 	FriendIDs []uint `json:"friend_ids"`
+}
+
+type splitGroupDefaultSplitInput struct {
+	// A nil DefaultSplit clears the group's default and sends every expense
+	// back to the equal split.
+	DefaultSplit *splitGroupDefaultSplitBody `json:"default_split"`
+}
+
+type splitGroupDefaultSplitBody struct {
+	Payer        string                             `json:"payer"`
+	FullAmount   bool                               `json:"full_amount"`
+	Tab          string                             `json:"tab"`
+	Participants []splitGroupDefaultSplitShareInput `json:"participants"`
+}
+
+type splitGroupDefaultSplitShareInput struct {
+	Slot   string `json:"slot"`
+	Weight string `json:"weight"`
 }
 
 type splitGroupDirectInviteInput struct {
@@ -112,6 +132,18 @@ type splitGroupDirectInviteResponse struct {
 	Status           string            `json:"status"`
 	Group            models.SplitGroup `json:"group"`
 	CreatedAt        time.Time         `json:"created_at"`
+}
+
+// splitPendingInviteResponse is one invite waiting on the signed-in user, which
+// is what the in-app prompt needs to ask "join this group?" without a second
+// round trip for the group's name or who sent it.
+type splitPendingInviteResponse struct {
+	ID        uint      `json:"id"`
+	Token     string    `json:"token"`
+	GroupID   uint      `json:"group_id"`
+	GroupName string    `json:"group_name"`
+	OwnerName string    `json:"owner_name"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type splitGroupInviteDetailsResponse struct {
@@ -187,27 +219,41 @@ func (s *Server) acceptSplitGroupInvite(c *gin.Context) {
 	var member models.SplitGroupMember
 	var userMember models.SplitGroupUserMember
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		query := tx.Where("user_id = ? AND archived = ?", owner.ID, false)
-		identityQuery, identityArgs := splitInviteUserIdentityQuery(user)
-		if identityQuery != "" {
-			query = query.Where(identityQuery, identityArgs...)
-		} else {
-			query = query.Where("name = ?", displayNameForUser(user))
-		}
-		err := query.First(&friend).Error
-		if err != nil && err != gorm.ErrRecordNotFound {
+		found, err := resolveSplitGroupFriendForUser(tx, owner, group, user)
+		if err != nil {
 			return err
 		}
-		if err == gorm.ErrRecordNotFound {
+		if found != nil {
+			friend = *found
+		}
+		if found == nil {
 			friend = models.SplitFriend{
-				UserID: owner.ID,
-				Name:   displayNameForUser(user),
-				Email:  stringFromPointer(user.Email),
-				Phone:  stringFromPointer(user.Phone),
+				UserID:       owner.ID,
+				Name:         displayNameForUser(user),
+				Email:        stringFromPointer(user.Email),
+				Phone:        stringFromPointer(user.Phone),
+				LinkedUserID: &user.ID,
 			}
 			if err := tx.Create(&friend).Error; err != nil {
 				return err
 			}
+		} else if friend.LinkedUserID == nil || *friend.LinkedUserID != user.ID {
+			// The row already existed from before the link was recorded, or was
+			// written by hand. Accepting the invite is the moment we know for
+			// certain which account stands behind it.
+			friend.LinkedUserID = &user.ID
+			if err := tx.Save(&friend).Error; err != nil {
+				return err
+			}
+		}
+
+		// The invite has done its job; leaving it pending would keep it in the
+		// owner's "pending invites" list after the person is already in.
+		if err := tx.Model(&models.SplitGroupDirectInvite{}).
+			Where("group_id = ? AND status = ?", group.ID, "pending").
+			Where("invited_user_id = ? OR friend_id = ?", user.ID, friend.ID).
+			Update("status", "accepted").Error; err != nil {
+			return err
 		}
 
 		err = tx.Where("user_id = ? AND group_id = ? AND friend_id = ?", owner.ID, group.ID, friend.ID).
@@ -253,6 +299,14 @@ func (s *Server) acceptSplitGroupInvite(c *gin.Context) {
 		return
 	}
 
+	// Accepting is reading: the invite prompt, the notifications screen and a
+	// deep link all land here, and none of them should leave the invitation
+	// sitting unread afterwards.
+	_ = database.DB.Model(&models.Notification{}).
+		Where("user_id = ? AND type = ? AND read_at IS NULL", userID, "split.group_invite.received").
+		Where("action_url = ?", fmt.Sprintf("/invite/split/%s", strings.TrimSpace(c.Param("token")))).
+		Update("read_at", time.Now()).Error
+
 	_ = createNotification(
 		owner.ID,
 		"split.group_invite.accepted",
@@ -263,11 +317,95 @@ func (s *Server) acceptSplitGroupInvite(c *gin.Context) {
 
 	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
 	applySplitGroupViewerPermissions(&group, userID)
+	_ = decorateSplitGroupForViewer(database.DB, &group, userID)
 	c.JSON(http.StatusOK, splitGroupInviteAcceptResponse{
 		Group:  group,
 		Friend: friend,
 		Member: member,
 	})
+}
+
+// resolveSplitGroupFriendForUser decides which of the owner's friend rows the
+// arriving user already is.
+//
+// Order matters, strongest evidence first. Guessing wrongly is not a cosmetic
+// slip: the owner has usually been splitting against that row for weeks, and a
+// miss strands every one of those expenses on an orphan while the person joins
+// under a fresh row with a zero balance.
+func resolveSplitGroupFriendForUser(
+	tx *gorm.DB,
+	owner models.User,
+	group models.SplitGroup,
+	user models.User,
+) (*models.SplitFriend, error) {
+	ownerFriends := func() *gorm.DB {
+		return tx.Where("user_id = ? AND archived = ?", owner.ID, false)
+	}
+
+	// 1. A recorded link is certain.
+	var linked models.SplitFriend
+	err := ownerFriends().Where("linked_user_id = ?", user.ID).First(&linked).Error
+	if err == nil {
+		return &linked, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+
+	// 2. An invite raised by adding this person to the group names the row
+	//    outright — the only signal that survives a friend saved as "Wife" with
+	//    no contact details of her own.
+	inviteQuery := tx.Where("group_id = ? AND friend_id IS NOT NULL", group.ID)
+	if targetQuery, targetArgs := splitInviteTargetIdentityQuery(user); targetQuery != "" {
+		// Also matched on the address the invite was sent to, so somebody who
+		// signed up after being added still lands on their own row.
+		inviteQuery = inviteQuery.Where(
+			tx.Where("invited_user_id = ?", user.ID).Or(targetQuery, targetArgs...),
+		)
+	} else {
+		inviteQuery = inviteQuery.Where("invited_user_id = ?", user.ID)
+	}
+	var directInvite models.SplitGroupDirectInvite
+	err = inviteQuery.Order("created_at desc").First(&directInvite).Error
+	if err == nil && directInvite.FriendID != nil {
+		var invited models.SplitFriend
+		if err := ownerFriends().First(&invited, *directInvite.FriendID).Error; err == nil {
+			return &invited, nil
+		} else if err != gorm.ErrRecordNotFound {
+			return nil, err
+		}
+	} else if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+
+	// 3. The email or phone the owner saved against the row.
+	if identityQuery, identityArgs := splitInviteUserIdentityQuery(user); identityQuery != "" {
+		var byIdentity models.SplitFriend
+		err := ownerFriends().Where(identityQuery, identityArgs...).First(&byIdentity).Error
+		if err == nil {
+			return &byIdentity, nil
+		}
+		if err != gorm.ErrRecordNotFound {
+			return nil, err
+		}
+	}
+
+	// 4. Last resort: the name, and only among this group's own members, where
+	//    a same-name collision with some unrelated friend cannot happen.
+	var byName models.SplitFriend
+	err = ownerFriends().
+		Where("name = ?", displayNameForUser(user)).
+		Where("id IN (?)", tx.Model(&models.SplitGroupMember{}).
+			Select("friend_id").
+			Where("group_id = ?", group.ID)).
+		First(&byName).Error
+	if err == nil {
+		return &byName, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	return nil, nil
 }
 
 func loadActiveSplitGroupInvite(c *gin.Context) (models.SplitGroupInvite, models.SplitGroup, models.User, bool) {
@@ -445,6 +583,78 @@ func (s *Server) createSplitGroupDirectInvite(c *gin.Context) {
 	c.JSON(http.StatusCreated, response)
 }
 
+// listPendingSplitGroupInvites returns the invites addressed to the caller.
+//
+// The owner-facing list answers "who have I invited"; this answers "who wants me
+// in their group", which is the question the app has to ask on every launch to
+// stop an invite from living only in a notifications screen nobody opens.
+func (s *Server) listPendingSplitGroupInvites(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+
+	var invites []models.SplitGroupDirectInvite
+	if err := database.DB.
+		Preload("Group").
+		Preload("Invite").
+		Where("invited_user_id = ? AND status = ?", userID, "pending").
+		Order("created_at desc").
+		Find(&invites).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_pending_split_group_invites"})
+		return
+	}
+
+	joinedGroupIDs, err := activeSharedSplitGroupIDs(database.DB, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_pending_split_group_invites"})
+		return
+	}
+	joined := map[uint]bool{}
+	for _, groupID := range joinedGroupIDs {
+		joined[groupID] = true
+	}
+
+	ownerNames := map[uint]string{}
+	responses := make([]splitPendingInviteResponse, 0, len(invites))
+	seenGroups := map[uint]bool{}
+	for _, invite := range invites {
+		// An invite is only worth surfacing while it can still do something:
+		// the group has to exist, be live, be one the caller has not already
+		// joined, and have an active link behind it.
+		if invite.Group.ID == 0 || invite.Group.Archived || joined[invite.GroupID] {
+			continue
+		}
+		if invite.Invite.ID == 0 || invite.Invite.Status != "active" || invite.Invite.Token == "" {
+			continue
+		}
+		if invite.Invite.ExpiresAt != nil && invite.Invite.ExpiresAt.Before(time.Now()) {
+			continue
+		}
+		// Two invites for the same group (email and phone) are one question.
+		if seenGroups[invite.GroupID] {
+			continue
+		}
+		seenGroups[invite.GroupID] = true
+
+		if _, ok := ownerNames[invite.Group.UserID]; !ok {
+			var owner models.User
+			if err := database.DB.First(&owner, invite.Group.UserID).Error; err != nil {
+				continue
+			}
+			ownerNames[invite.Group.UserID] = displayNameForUser(owner)
+		}
+
+		responses = append(responses, splitPendingInviteResponse{
+			ID:        invite.ID,
+			Token:     invite.Invite.Token,
+			GroupID:   invite.GroupID,
+			GroupName: invite.Group.Name,
+			OwnerName: ownerNames[invite.Group.UserID],
+			CreatedAt: invite.CreatedAt,
+		})
+	}
+
+	c.JSON(http.StatusOK, responses)
+}
+
 func (s *Server) listSplitGroupDirectInvites(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	groupID, ok := parseUintParam(c, "id")
@@ -603,18 +813,30 @@ func (s *Server) createSplitGroup(c *gin.Context) {
 	}
 
 	var group models.SplitGroup
+	var addedFriendIDs []uint
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		group = models.SplitGroup{UserID: userID, Name: strings.TrimSpace(input.Name)}
+		group = models.SplitGroup{
+			UserID: userID,
+			Name:   strings.TrimSpace(input.Name),
+			Kind:   normalizedSplitGroupKind(input.Kind),
+		}
 		if err := tx.Create(&group).Error; err != nil {
 			return err
 		}
-		return createSplitGroupMembers(tx, userID, group.ID, input.FriendIDs)
+		added, err := createSplitGroupMembers(tx, userID, group.ID, input.FriendIDs)
+		addedFriendIDs = added
+		return err
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_group"})
 		return
 	}
+	// Invites are raised after the group is committed: a notification that
+	// cannot be rolled back must not be sent for a group that never existed.
+	memberInvites := inviteSplitGroupMembersForOwner(userID, group, addedFriendIDs)
 	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
 	applySplitGroupViewerPermissions(&group, userID)
+	_ = decorateSplitGroupForViewer(database.DB, &group, userID)
+	group.MemberInvites = memberInvites
 	c.JSON(http.StatusCreated, group)
 }
 
@@ -643,6 +865,10 @@ func (s *Server) listSplitGroups(c *gin.Context) {
 		return
 	}
 	applySplitGroupListViewerPermissions(groups, userID)
+	if err := decorateSplitGroupsForViewer(database.DB, groups, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_groups"})
+		return
+	}
 	c.JSON(http.StatusOK, groups)
 }
 
@@ -671,18 +897,42 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 	}
 
 	var group models.SplitGroup
+	var addedFriendIDs []uint
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := ownedSplitGroups(tx, userID).Where("id = ?", id).First(&group).Error; err != nil {
 			return err
 		}
 		group.Name = strings.TrimSpace(input.Name)
+		group.Kind = normalizedSplitGroupKind(input.Kind)
 		if err := tx.Save(&group).Error; err != nil {
 			return err
+		}
+		var existingFriendIDs []uint
+		if err := tx.Model(&models.SplitGroupMember{}).
+			Where("user_id = ? AND group_id = ?", userID, group.ID).
+			Pluck("friend_id", &existingFriendIDs).Error; err != nil {
+			return err
+		}
+		// The roster is rewritten wholesale, so "who is new" has to be read
+		// before the old rows go, not after.
+		existing := map[uint]bool{}
+		for _, friendID := range existingFriendIDs {
+			existing[friendID] = true
 		}
 		if err := tx.Where("user_id = ? AND group_id = ?", userID, group.ID).Delete(&models.SplitGroupMember{}).Error; err != nil {
 			return err
 		}
-		return createSplitGroupMembers(tx, userID, group.ID, input.FriendIDs)
+		added, err := createSplitGroupMembers(tx, userID, group.ID, input.FriendIDs)
+		if err != nil {
+			return err
+		}
+		addedFriendIDs = nil
+		for _, friendID := range added {
+			if !existing[friendID] {
+				addedFriendIDs = append(addedFriendIDs, friendID)
+			}
+		}
+		return nil
 	}); err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
@@ -691,9 +941,192 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_group"})
 		return
 	}
+	memberInvites := inviteSplitGroupMembersForOwner(userID, group, addedFriendIDs)
 	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
 	applySplitGroupViewerPermissions(&group, userID)
+	_ = decorateSplitGroupForViewer(database.DB, &group, userID)
+	group.MemberInvites = memberInvites
 	c.JSON(http.StatusOK, group)
+}
+
+// updateSplitGroupDefaultSplit sets the split every new expense in the group
+// starts from. Unlike renaming or re-membering a group, this is open to any
+// active member: the default describes how the group divides its costs, and the
+// people living under it are the ones who know when it changes.
+func (s *Server) updateSplitGroupDefaultSplit(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var input splitGroupDefaultSplitInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+
+	var group models.SplitGroup
+	if err := database.DB.Preload("Members.Friend").
+		Where("id = ? AND archived = ?", id, false).
+		First(&group).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return
+	}
+
+	accessible, err := viewerCanAccessSplitGroup(database.DB, group, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_group_default_split"})
+		return
+	}
+	if !accessible {
+		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+		return
+	}
+
+	memberFriendIDs := map[string]bool{}
+	for _, member := range group.Members {
+		memberFriendIDs[strconv.FormatUint(uint64(member.FriendID), 10)] = true
+	}
+
+	normalized, fields := normalizeSplitGroupDefaultSplit(input.DefaultSplit, memberFriendIDs)
+	if len(fields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group_default_split", "fields": fields})
+		return
+	}
+
+	// A map update rather than a struct one: clearing the default writes NULL,
+	// and GORM would read a typed nil pointer in a struct as "leave it alone".
+	if err := database.DB.Model(&models.SplitGroup{ID: group.ID}).
+		Updates(map[string]any{"default_split": normalized}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_group_default_split"})
+		return
+	}
+
+	// Re-read into a fresh struct: scanning a NULL default split leaves the
+	// destination pointer untouched, so reusing `group` would hand back the
+	// value that was just cleared.
+	var saved models.SplitGroup
+	if err := database.DB.Preload("Members.Friend").First(&saved, group.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_group_default_split"})
+		return
+	}
+	applySplitGroupViewerPermissions(&saved, userID)
+	_ = decorateSplitGroupForViewer(database.DB, &saved, userID)
+	c.JSON(http.StatusOK, saved)
+}
+
+func viewerCanAccessSplitGroup(db *gorm.DB, group models.SplitGroup, viewerUserID uint) (bool, error) {
+	if group.UserID == viewerUserID {
+		return true, nil
+	}
+	var count int64
+	err := db.Model(&models.SplitGroupUserMember{}).
+		Where("group_id = ? AND user_id = ? AND status = ?", group.ID, viewerUserID, "active").
+		Count(&count).Error
+	return count > 0, err
+}
+
+var splitGroupDefaultSplitTabs = map[string]bool{"equally": true, "percentages": true, "shares": true}
+
+// normalizeSplitGroupDefaultSplit validates a default split against the group's
+// actual roster and returns the value to store, or the fields that were wrong.
+//
+// The weights are checked here rather than at expense time on purpose: a
+// default whose percentages do not reach 100 would otherwise sit in settings
+// looking saved and fail on every expense that tried to use it.
+func normalizeSplitGroupDefaultSplit(
+	body *splitGroupDefaultSplitBody,
+	memberFriendIDs map[string]bool,
+) (*models.SplitGroupDefaultSplit, map[string]string) {
+	if body == nil {
+		return nil, nil
+	}
+
+	fields := map[string]string{}
+	validSlot := func(slot string) bool {
+		return slot == models.SplitGroupDefaultSplitOwnerSlot || memberFriendIDs[slot]
+	}
+
+	payer := strings.TrimSpace(body.Payer)
+	if payer == "" {
+		payer = models.SplitGroupDefaultSplitOwnerSlot
+	}
+	if !validSlot(payer) {
+		fields["payer"] = "must be the group owner or a group member"
+	}
+
+	tab := strings.ToLower(strings.TrimSpace(body.Tab))
+	if tab == "" {
+		tab = "equally"
+	}
+	if !splitGroupDefaultSplitTabs[tab] {
+		fields["tab"] = "must be one of equally, percentages, shares"
+	}
+
+	if len(body.Participants) == 0 {
+		fields["participants"] = "must include at least one person"
+	}
+
+	seen := map[string]bool{}
+	participants := make([]models.SplitGroupDefaultSplitShare, 0, len(body.Participants))
+	weightTotal := 0.0
+	for index, participant := range body.Participants {
+		slot := strings.TrimSpace(participant.Slot)
+		if !validSlot(slot) {
+			fields[fmt.Sprintf("participants[%d].slot", index)] = "must be the group owner or a group member"
+			continue
+		}
+		if seen[slot] {
+			fields[fmt.Sprintf("participants[%d].slot", index)] = "duplicate participant"
+			continue
+		}
+		seen[slot] = true
+
+		weight := strings.TrimSpace(participant.Weight)
+		if tab == "equally" {
+			// An equal split carries no weights; storing them would leave stale
+			// numbers to reappear when someone switches tabs later.
+			participants = append(participants, models.SplitGroupDefaultSplitShare{Slot: slot})
+			continue
+		}
+		parsed, err := strconv.ParseFloat(weight, 64)
+		if err != nil || parsed <= 0 {
+			fields[fmt.Sprintf("participants[%d].weight", index)] = "must be a positive number"
+			continue
+		}
+		weightTotal += parsed
+		participants = append(participants, models.SplitGroupDefaultSplitShare{Slot: slot, Weight: weight})
+	}
+
+	if tab == "percentages" && len(fields) == 0 && math.Abs(weightTotal-100) > 0.009 {
+		fields["participants"] = "percentages must add up to 100"
+	}
+
+	if len(fields) > 0 {
+		return nil, fields
+	}
+	return &models.SplitGroupDefaultSplit{
+		Payer:        payer,
+		FullAmount:   body.FullAmount,
+		Tab:          tab,
+		Participants: participants,
+	}, nil
+}
+
+func inviteSplitGroupMembersForOwner(
+	ownerID uint,
+	group models.SplitGroup,
+	addedFriendIDs []uint,
+) []models.SplitGroupMemberInvite {
+	if len(addedFriendIDs) == 0 {
+		return nil
+	}
+	var owner models.User
+	if err := database.DB.First(&owner, ownerID).Error; err != nil {
+		return nil
+	}
+	return inviteSplitGroupMembers(database.DB, owner, group, addedFriendIDs)
 }
 
 func (s *Server) archiveSplitGroup(c *gin.Context) {
@@ -1175,6 +1608,16 @@ func (input splitFriendInput) apply(friend *models.SplitFriend) {
 	friend.Phone = strings.TrimSpace(input.Phone)
 }
 
+var splitGroupKinds = map[string]bool{"trip": true, "home": true, "couple": true, "other": true}
+
+func normalizedSplitGroupKind(kind string) string {
+	normalized := strings.ToLower(strings.TrimSpace(kind))
+	if normalized == "" {
+		return "other"
+	}
+	return normalized
+}
+
 func (input splitGroupInput) validate() map[string]string {
 	fields := map[string]string{}
 	if strings.TrimSpace(input.Name) == "" {
@@ -1182,6 +1625,9 @@ func (input splitGroupInput) validate() map[string]string {
 	}
 	if len(strings.TrimSpace(input.Name)) > 120 {
 		fields["name"] = "must not exceed 120 characters"
+	}
+	if !splitGroupKinds[normalizedSplitGroupKind(input.Kind)] {
+		fields["kind"] = "must be one of trip, home, couple, other"
 	}
 	seen := map[uint]bool{}
 	for index, friendID := range input.FriendIDs {
@@ -1417,6 +1863,85 @@ func validateSplitGroupFriends(userID uint, friendIDs []uint) (gin.H, error) {
 	return fields, nil
 }
 
+// decorateSplitGroupsForViewer fills in the two things a shared group cannot
+// answer from its own row: who owns it, and which of its member friend rows is
+// the person reading it. The default split names people by the owner's friend
+// ids, so without the second answer a member could not tell which slot is
+// theirs.
+func decorateSplitGroupsForViewer(db *gorm.DB, groups []models.SplitGroup, viewerUserID uint) error {
+	if len(groups) == 0 {
+		return nil
+	}
+
+	ownerIDs := map[uint]bool{}
+	friendIDs := []uint{}
+	for index := range groups {
+		ownerIDs[groups[index].UserID] = true
+		for _, member := range groups[index].Members {
+			friendIDs = append(friendIDs, member.FriendID)
+		}
+	}
+
+	ownerNames := map[uint]string{}
+	if len(ownerIDs) > 0 {
+		ids := make([]uint, 0, len(ownerIDs))
+		for ownerID := range ownerIDs {
+			ids = append(ids, ownerID)
+		}
+		var owners []models.User
+		if err := db.Where("id IN ?", ids).Find(&owners).Error; err != nil {
+			return err
+		}
+		for _, owner := range owners {
+			ownerNames[owner.ID] = displayNameForUser(owner)
+		}
+	}
+
+	viewerFriendIDs := map[uint]bool{}
+	if len(friendIDs) > 0 {
+		var linked []uint
+		if err := db.Model(&models.SplitFriend{}).
+			Where("id IN ? AND linked_user_id = ?", friendIDs, viewerUserID).
+			Pluck("id", &linked).Error; err != nil {
+			return err
+		}
+		for _, friendID := range linked {
+			viewerFriendIDs[friendID] = true
+		}
+	}
+
+	for index := range groups {
+		group := &groups[index]
+		group.OwnerName = ownerNames[group.UserID]
+		group.ViewerFriendID = nil
+		// The owner is never one of their own friend rows, so they are always
+		// the owner slot and never a member slot.
+		if group.UserID == viewerUserID {
+			continue
+		}
+		for _, member := range group.Members {
+			if viewerFriendIDs[member.FriendID] {
+				friendID := member.FriendID
+				group.ViewerFriendID = &friendID
+				break
+			}
+		}
+	}
+	return nil
+}
+
+func decorateSplitGroupForViewer(db *gorm.DB, group *models.SplitGroup, viewerUserID uint) error {
+	if group == nil {
+		return nil
+	}
+	groups := []models.SplitGroup{*group}
+	if err := decorateSplitGroupsForViewer(db, groups, viewerUserID); err != nil {
+		return err
+	}
+	*group = groups[0]
+	return nil
+}
+
 func applySplitGroupViewerPermissions(group *models.SplitGroup, viewerUserID uint) {
 	if group == nil {
 		return
@@ -1524,7 +2049,7 @@ func createEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *e
 		groupID = &group.ID
 	}
 	if groupID != nil {
-		if err := createSplitGroupMembers(tx, userID, *groupID, friendIDs); err != nil {
+		if _, err := createSplitGroupMembers(tx, userID, *groupID, friendIDs); err != nil {
 			return err
 		}
 	}
@@ -1580,9 +2105,13 @@ func deleteEntrySplitBills(tx *gorm.DB, userID, entryID uint) error {
 		Delete(&models.SplitBill{}).Error
 }
 
-func createSplitGroupMembers(tx *gorm.DB, userID, groupID uint, friendIDs []uint) error {
+// createSplitGroupMembers returns the friends it actually added, so the caller
+// can invite exactly those people and nobody gets told twice when a group is
+// saved again with the same roster.
+func createSplitGroupMembers(tx *gorm.DB, userID, groupID uint, friendIDs []uint) ([]uint, error) {
 	seen := map[uint]bool{}
 	members := make([]models.SplitGroupMember, 0, len(friendIDs))
+	added := make([]uint, 0, len(friendIDs))
 	for _, friendID := range friendIDs {
 		if friendID == 0 || seen[friendID] {
 			continue
@@ -1592,7 +2121,7 @@ func createSplitGroupMembers(tx *gorm.DB, userID, groupID uint, friendIDs []uint
 		if err := tx.Model(&models.SplitGroupMember{}).
 			Where("user_id = ? AND group_id = ? AND friend_id = ?", userID, groupID, friendID).
 			Count(&count).Error; err != nil {
-			return err
+			return nil, err
 		}
 		if count > 0 {
 			continue
@@ -1602,11 +2131,165 @@ func createSplitGroupMembers(tx *gorm.DB, userID, groupID uint, friendIDs []uint
 			GroupID:  groupID,
 			FriendID: friendID,
 		})
+		added = append(added, friendID)
 	}
 	if len(members) == 0 {
+		return added, nil
+	}
+	return added, tx.Create(&members).Error
+}
+
+// splitFriendUser finds the account behind a friend row: the recorded link
+// first, then the email or phone the owner saved. Returns nil when the row
+// stands for somebody who has no Finnri account, or none we can identify.
+func splitFriendUser(db *gorm.DB, friend models.SplitFriend) (*models.User, error) {
+	if friend.LinkedUserID != nil {
+		var linked models.User
+		err := db.First(&linked, *friend.LinkedUserID).Error
+		if err == nil {
+			return &linked, nil
+		}
+		if err != gorm.ErrRecordNotFound {
+			return nil, err
+		}
+	}
+
+	email := strings.ToLower(strings.TrimSpace(friend.Email))
+	phone := strings.TrimSpace(friend.Phone)
+	if email == "" && phone == "" {
+		return nil, nil
+	}
+
+	query := db
+	switch {
+	case email != "" && phone != "":
+		query = query.Where("LOWER(email) = ? OR phone = ?", email, phone)
+	case email != "":
+		query = query.Where("LOWER(email) = ?", email)
+	default:
+		query = query.Where("phone = ?", phone)
+	}
+	var matched models.User
+	err := query.First(&matched).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &matched, nil
+}
+
+// inviteSplitGroupMembers raises an invite for each person just added to a
+// group and tells whoever has an account about it.
+//
+// Adding somebody to a group has always been a private bookkeeping act — the
+// owner can split against a friend who has never heard of Finnri. What it must
+// not do is leave that person unaware that a group now exists in their name, so
+// every added friend either gets an invite they can accept or is reported back
+// as someone the owner has to reach themselves. Membership still only follows
+// acceptance; nothing here grants sight of the group.
+func inviteSplitGroupMembers(
+	db *gorm.DB,
+	owner models.User,
+	group models.SplitGroup,
+	friendIDs []uint,
+) []models.SplitGroupMemberInvite {
+	if len(friendIDs) == 0 {
 		return nil
 	}
-	return tx.Create(&members).Error
+
+	results := make([]models.SplitGroupMemberInvite, 0, len(friendIDs))
+	var invite models.SplitGroupInvite
+	inviteLoaded := false
+
+	for _, friendID := range friendIDs {
+		var friend models.SplitFriend
+		if err := db.Where("user_id = ?", owner.ID).First(&friend, friendID).Error; err != nil {
+			continue
+		}
+
+		result := models.SplitGroupMemberInvite{
+			FriendID: friend.ID,
+			Name:     fallbackSplitFriendName(friend),
+			Status:   models.SplitMemberInviteNoContact,
+		}
+
+		targetEmail := strings.ToLower(strings.TrimSpace(friend.Email))
+		targetPhone := strings.TrimSpace(friend.Phone)
+		invitedUser, err := splitFriendUser(db, friend)
+		if err != nil {
+			results = append(results, result)
+			continue
+		}
+		// Somebody the owner listed as a friend but who turns out to be the
+		// owner's own account cannot be invited to their own group.
+		if invitedUser != nil && invitedUser.ID == owner.ID {
+			invitedUser = nil
+		}
+		if invitedUser != nil {
+			if targetEmail == "" {
+				targetEmail = strings.ToLower(strings.TrimSpace(stringFromPointer(invitedUser.Email)))
+			}
+			if targetPhone == "" {
+				targetPhone = strings.TrimSpace(stringFromPointer(invitedUser.Phone))
+			}
+		}
+		if targetEmail == "" && targetPhone == "" {
+			results = append(results, result)
+			continue
+		}
+
+		if !inviteLoaded {
+			loaded, inviteErr := getOrCreateActiveSplitGroupInvite(db, owner.ID, group.ID)
+			if inviteErr != nil {
+				results = append(results, result)
+				continue
+			}
+			invite = loaded
+			inviteLoaded = true
+		}
+
+		var invitedUserID *uint
+		if invitedUser != nil {
+			invitedUserID = &invitedUser.ID
+		}
+		directInvite, inviteErr := getOrCreateSplitGroupDirectInvite(
+			db, owner.ID, group.ID, invite.ID, targetEmail, targetPhone, invitedUserID,
+		)
+		if inviteErr != nil {
+			results = append(results, result)
+			continue
+		}
+		if directInvite.FriendID == nil || *directInvite.FriendID != friend.ID {
+			directInvite.FriendID = &friend.ID
+			_ = db.Save(&directInvite).Error
+		}
+
+		result.Status = models.SplitMemberInviteLinkNeeded
+		if invitedUser != nil {
+			// Record the link now that we know who this row stands for; it is
+			// what lets the group tell them apart from the owner's other
+			// friends when they accept.
+			if friend.LinkedUserID == nil || *friend.LinkedUserID != invitedUser.ID {
+				_ = db.Model(&models.SplitFriend{}).
+					Where("id = ?", friend.ID).
+					Update("linked_user_id", invitedUser.ID).Error
+			}
+			if err := createNotification(
+				invitedUser.ID,
+				"split.group_invite.received",
+				fmt.Sprintf("Join %s on Finnri", group.Name),
+				fmt.Sprintf("%s added you to a split group.", displayNameForUser(owner)),
+				fmt.Sprintf("/invite/split/%s", invite.Token),
+			); err == nil {
+				result.Status = models.SplitMemberInviteNotified
+			}
+		}
+		results = append(results, result)
+	}
+
+	return results
 }
 
 func normalizedSplitCurrency(currency string) string {
@@ -1773,6 +2456,26 @@ func stringFromPointer(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
+}
+
+// splitInviteTargetIdentityQuery is the same identity test as
+// splitInviteUserIdentityQuery, against the address an invite was sent to
+// rather than the columns of a friend row.
+func splitInviteTargetIdentityQuery(user models.User) (string, []any) {
+	parts := []string{}
+	args := []any{}
+	if user.Email != nil && strings.TrimSpace(*user.Email) != "" {
+		parts = append(parts, "LOWER(target_email) = ?")
+		args = append(args, strings.ToLower(strings.TrimSpace(*user.Email)))
+	}
+	if user.Phone != nil && strings.TrimSpace(*user.Phone) != "" {
+		parts = append(parts, "target_phone = ?")
+		args = append(args, strings.TrimSpace(*user.Phone))
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
 }
 
 func splitInviteUserIdentityQuery(user models.User) (string, []any) {

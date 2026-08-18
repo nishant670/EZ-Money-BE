@@ -148,6 +148,25 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.PUT("/accounts/:id", s.updateAccount)
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
+		// Credit card statements
+		authorized.GET("/accounts/:id/statements", s.listCardStatements)
+		authorized.POST("/accounts/:id/statements", s.saveCardStatement)
+		authorized.GET("/statements/upcoming", s.listUpcomingStatements)
+		authorized.GET("/statements/:id", s.getCardStatement)
+		authorized.DELETE("/statements/:id", s.deleteCardStatement)
+		authorized.POST("/statements/:id/payments", s.recordCardStatementPayment)
+		authorized.DELETE("/statements/:id/payments/:paymentId", s.deleteCardStatementPayment)
+		authorized.POST("/statements/:id/diff", s.diffCardStatement)
+		authorized.POST("/statements/:id/import", s.importCardStatementLines)
+		authorized.POST("/statements/:id/upload", s.uploadCardStatementPDF)
+
+		// Card EMI plans
+		authorized.GET("/accounts/:id/emi-plans", s.listCardEMIPlans)
+		authorized.POST("/accounts/:id/emi-plans", s.createCardEMIPlan)
+		authorized.GET("/emi-plans/:id", s.getCardEMIPlan)
+		authorized.POST("/emi-plans/:id/foreclose", s.forecloseCardEMIPlan)
+		authorized.DELETE("/emi-plans/:id", s.deleteCardEMIPlan)
+
 		// Insights
 		authorized.GET("/monthly-review", s.getMonthlyReview)
 		authorized.POST("/monthly-review/send", s.sendMonthlyReviewNow)
@@ -186,6 +205,18 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/push-devices", s.registerPushDevice)
 		authorized.DELETE("/push-devices", s.unregisterPushDevice)
 
+		// Being invited is not using the feature. These three sit outside the
+		// split entitlement on purpose: somebody has to be able to see who
+		// invited them and say yes, whatever plan they are on, or an invitation
+		// becomes a bill before it is even an answer. Keep them here even if the
+		// split ledger is later put behind a paid plan.
+		invites := authorized.Group("/split")
+		{
+			invites.GET("/pending-invites", s.listPendingSplitGroupInvites)
+			invites.GET("/invites/:token", s.getSplitGroupInvite)
+			invites.POST("/invites/:token/accept", s.acceptSplitGroupInvite)
+		}
+
 		// Split ledger
 		split := authorized.Group("/split", s.requireEntitlement(billing.FeatureSplitLedger))
 		{
@@ -196,6 +227,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 			split.POST("/groups", s.createSplitGroup)
 			split.GET("/groups", s.listSplitGroups)
 			split.PUT("/groups/:id", s.updateSplitGroup)
+			split.PUT("/groups/:id/default-split", s.updateSplitGroupDefaultSplit)
 			split.DELETE("/groups/:id", s.archiveSplitGroup)
 			split.POST("/groups/:id/invite-link", s.createSplitGroupInvite)
 			split.GET("/groups/:id/invites", s.listSplitGroupDirectInvites)
@@ -210,8 +242,6 @@ func NewServer(cfg *config.Config) *gin.Engine {
 			split.GET("/settlements", s.listSplitSettlements)
 			split.GET("/activity", s.listSplitActivity)
 			split.GET("/balances", s.listSplitBalances)
-			split.GET("/invites/:token", s.getSplitGroupInvite)
-			split.POST("/invites/:token/accept", s.acceptSplitGroupInvite)
 		}
 
 		// Financial tools
@@ -267,6 +297,12 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/recurring-candidates") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
+		// Statements nested under a card are covered by the line above, but
+		// the top-level ones are not: "/v1/statements/:id" and
+		// "/v1/statements/upcoming" do not have "/v1/accounts" as a prefix.
+		strings.HasPrefix(path, "/v1/statements") ||
+		// Same for EMI plans addressed by their own id.
+		strings.HasPrefix(path, "/v1/emi-plans") ||
 		strings.HasPrefix(path, "/v1/notifications") ||
 		strings.HasPrefix(path, "/v1/feedback") ||
 		strings.HasPrefix(path, "/v1/budgets") ||
@@ -1626,7 +1662,14 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_load_account_activity"})
 		return
 	}
-	c.JSON(200, summariseAccounts(accounts, totals))
+	// Credit cards prefer their latest bill over the ledger's own arithmetic.
+	statements, err := loadCardStatementContexts(userID, creditCardIDs(accounts))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_card_statements"})
+		return
+	}
+	today := truncateDate(timepkg.Now().In(location)).Format(apiDateLayout)
+	c.JSON(200, summariseAccounts(accounts, totals, statements, today))
 }
 
 func (s *Server) updateAccount(c *gin.Context) {

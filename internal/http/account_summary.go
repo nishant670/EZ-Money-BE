@@ -46,8 +46,20 @@ type accountSummary struct {
 
 	// Credit cards only. Outstanding is what is owed; utilisation is a
 	// percentage of the limit and may exceed 100 when the card is over it.
+	//
+	// Both are retained in their original shape for clients that already read
+	// them, but once a card has a real statement they are sourced from it
+	// rather than from the ledger — see Limit below.
 	Outstanding       *float64 `json:"outstanding,omitempty"`
 	CreditUtilisation *float64 `json:"credit_utilisation,omitempty"`
+
+	// Credit cards only. The full limit breakdown a card screen leads with,
+	// including what EMI plans have blocked and where the outstanding figure
+	// came from.
+	Limit *cardLimitSummary `json:"limit,omitempty"`
+
+	// Credit cards with at least one priced statement. The bill to pay.
+	CurrentStatement *currentStatementSummary `json:"current_statement,omitempty"`
 
 	// Everything else, and only when an opening balance was actually entered:
 	// opening + money in - money out.
@@ -120,7 +132,7 @@ func loadAccountLedgerTotals(userID uint, monthStart, monthEnd string) (map[uint
 
 // summariseAccount turns one account's raw totals into the figures a screen can
 // render without doing arithmetic of its own.
-func summariseAccount(account models.Account, totals accountLedgerTotals) accountSummary {
+func summariseAccount(account models.Account, totals accountLedgerTotals, statement cardStatementContext, today string) accountSummary {
 	summary := accountSummary{
 		SpentThisMonth:    totals.SpentThisMonth,
 		ReceivedThisMonth: totals.ReceivedThisMonth,
@@ -134,20 +146,44 @@ func summariseAccount(account models.Account, totals accountLedgerTotals) accoun
 	opening := account.Balance.Float64()
 
 	if normalizeAccountType(account.Type) == "credit_card" {
-		// A card's opening balance is what was already owed when it was added.
-		// Spending adds to the debt; payments and refunds arrive as income
-		// entries against the card and reduce it.
-		outstanding := opening + totals.LifetimeSpent - totals.LifetimeReceived
-		summary.Outstanding = &outstanding
+		// The ledger's own answer: opening balance plus everything spent,
+		// less everything credited back. Used only when the card has no
+		// statement to do better.
+		ledgerOutstanding := models.Money(0)
+		ledgerOutstanding += account.Balance
+		ledgerOutstanding += models.Money(totals.LifetimeSpent * 100)
+		ledgerOutstanding -= models.Money(totals.LifetimeReceived * 100)
 
-		if limit := account.CreditLimit.Float64(); limit > 0 {
-			utilisation := outstanding / limit * 100
-			// Over 100% is real and worth showing. Below 0% is a card in
-			// credit, which no bar can express — report it as unused.
+		input := cardLimitInput{
+			CreditLimit:         account.CreditLimit,
+			LedgerOutstanding:   ledgerOutstanding,
+			EMIBlockedPrincipal: statement.EMIBlockedPrincipal,
+		}
+		if statement.Latest != nil {
+			input.HasStatement = true
+			input.StatementTotalDue = statement.Latest.TotalDue
+			input.StatementPaid = statement.Latest.PaidAmount
+			input.SpendAfterStatement = statement.SpendAfterStatement
+		}
+
+		limit := summariseCardLimit(input)
+		summary.Limit = &limit
+
+		// Kept in their original float shape so existing clients keep working
+		// while they migrate to `limit`.
+		outstanding := limit.Outstanding.Float64()
+		summary.Outstanding = &outstanding
+		if limit.UtilisationPct != nil {
+			utilisation := *limit.UtilisationPct
 			if utilisation < 0 {
 				utilisation = 0
 			}
 			summary.CreditUtilisation = &utilisation
+		}
+
+		if statement.Latest != nil {
+			current := summariseCurrentStatement(*statement.Latest, today)
+			summary.CurrentStatement = &current
 		}
 		return summary
 	}
@@ -163,13 +199,29 @@ func summariseAccount(account models.Account, totals accountLedgerTotals) accoun
 }
 
 // summariseAccounts pairs each account with its derived figures.
-func summariseAccounts(accounts []models.Account, totals map[uint]accountLedgerTotals) []accountWithSummary {
+func summariseAccounts(
+	accounts []models.Account,
+	totals map[uint]accountLedgerTotals,
+	statements map[uint]cardStatementContext,
+	today string,
+) []accountWithSummary {
 	summarised := make([]accountWithSummary, 0, len(accounts))
 	for _, account := range accounts {
 		summarised = append(summarised, accountWithSummary{
 			Account: account,
-			Summary: summariseAccount(account, totals[account.ID]),
+			Summary: summariseAccount(account, totals[account.ID], statements[account.ID], today),
 		})
 	}
 	return summarised
+}
+
+// creditCardIDs picks out the accounts worth loading statements for.
+func creditCardIDs(accounts []models.Account) []uint {
+	ids := make([]uint, 0, len(accounts))
+	for _, account := range accounts {
+		if normalizeAccountType(account.Type) == "credit_card" {
+			ids = append(ids, account.ID)
+		}
+	}
+	return ids
 }

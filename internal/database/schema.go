@@ -849,6 +849,11 @@ func runtimeSchemaStatements() []string {
 			WHERE target_phone <> '' AND status = 'pending'`,
 		`CREATE INDEX IF NOT EXISTS idx_split_group_direct_invites_invited_user
 			ON split_group_direct_invites (invited_user_id, status, created_at DESC)`,
+		`ALTER TABLE split_group_direct_invites
+			ADD COLUMN IF NOT EXISTS friend_id BIGINT REFERENCES split_friends(id) ON DELETE SET NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_split_group_direct_invites_friend
+			ON split_group_direct_invites (friend_id)
+			WHERE friend_id IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS split_group_user_members (
 			id BIGSERIAL PRIMARY KEY,
 			group_id BIGINT NOT NULL REFERENCES split_groups(id) ON DELETE CASCADE,
@@ -870,6 +875,31 @@ func runtimeSchemaStatements() []string {
 			ON split_group_user_members (group_id, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_group_user_members_user_active
 			ON split_group_user_members (user_id, status, group_id)`,
+		`ALTER TABLE split_friends
+			ADD COLUMN IF NOT EXISTS linked_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_split_friends_linked_user
+			ON split_friends (linked_user_id)
+			WHERE linked_user_id IS NOT NULL`,
+		// Backfill the friend-to-user link for groups that were shared before
+		// the column existed. Matching on a verified email or phone is the same
+		// rule invite acceptance already uses to decide which friend row stands
+		// for an arriving user.
+		`UPDATE split_friends
+			SET linked_user_id = users.id
+			FROM users
+			WHERE split_friends.linked_user_id IS NULL
+				AND (
+					(split_friends.email <> '' AND LOWER(split_friends.email) = LOWER(users.email))
+					OR (split_friends.phone <> '' AND split_friends.phone = users.phone)
+				)`,
+		`ALTER TABLE split_groups
+			ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'other'`,
+		`ALTER TABLE split_groups
+			ADD COLUMN IF NOT EXISTS default_split TEXT`,
+		`ALTER TABLE split_groups
+			DROP CONSTRAINT IF EXISTS split_groups_kind_check`,
+		`ALTER TABLE split_groups
+			ADD CONSTRAINT split_groups_kind_check CHECK (kind IN ('trip', 'home', 'couple', 'other'))`,
 		`CREATE INDEX IF NOT EXISTS idx_split_bills_user_date
 			ON split_bills (user_id, date DESC, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_participants_user_friend
@@ -917,5 +947,72 @@ func runtimeSchemaStatements() []string {
 			ON monthly_reviews (user_id, month)`,
 		`CREATE INDEX IF NOT EXISTS idx_monthly_reviews_notification
 			ON monthly_reviews (notification_id)`,
+		// Credit card statements. AutoMigrate creates the columns; the
+		// constraints and partial indexes below are the parts it cannot
+		// express, and the unique index is what makes statement parsing
+		// re-runnable without producing duplicate bills.
+		`ALTER TABLE accounts
+			ADD COLUMN IF NOT EXISTS statement_day INTEGER NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS reminder_days_before INTEGER NOT NULL DEFAULT 3,
+			ADD COLUMN IF NOT EXISTS autopay_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_statement_once
+			ON card_statements (user_id, account_id, statement_date)`,
+		`CREATE INDEX IF NOT EXISTS idx_card_statements_account_date
+			ON card_statements (account_id, statement_date DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_card_statements_due
+			ON card_statements (due_date)
+			WHERE status <> 'paid'`,
+		`ALTER TABLE card_statements
+			DROP CONSTRAINT IF EXISTS card_statements_amounts_non_negative`,
+		`ALTER TABLE card_statements
+			ADD CONSTRAINT card_statements_amounts_non_negative
+			CHECK (total_due >= 0 AND minimum_due >= 0 AND paid_amount >= 0)`,
+		`ALTER TABLE card_statements
+			DROP CONSTRAINT IF EXISTS card_statements_cycle_ordered`,
+		`ALTER TABLE card_statements
+			ADD CONSTRAINT card_statements_cycle_ordered
+			CHECK (cycle_end >= cycle_start AND due_date > statement_date)`,
+		`ALTER TABLE card_statements
+			DROP CONSTRAINT IF EXISTS card_statements_status_check`,
+		`ALTER TABLE card_statements
+			ADD CONSTRAINT card_statements_status_check
+			CHECK (status IN ('draft', 'unpaid', 'partial', 'paid'))`,
+		`CREATE INDEX IF NOT EXISTS idx_card_statement_payments_statement
+			ON card_statement_payments (statement_id, paid_on DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_card_statement_payments_user
+			ON card_statement_payments (user_id, paid_on DESC)`,
+		`ALTER TABLE card_statement_payments
+			DROP CONSTRAINT IF EXISTS card_statement_payments_amount_positive`,
+		`ALTER TABLE card_statement_payments
+			ADD CONSTRAINT card_statement_payments_amount_positive CHECK (amount > 0)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_statement_reminder_once
+			ON card_statement_reminders (user_id, statement_id, kind)`,
+		// Card EMI plans. The instalment status vocabulary is what stops the
+		// same principal reducing the limit twice — see the migration.
+		`CREATE INDEX IF NOT EXISTS idx_card_emi_plans_account
+			ON card_emi_plans (account_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_card_emi_plans_user
+			ON card_emi_plans (user_id, status)`,
+		`ALTER TABLE card_emi_plans
+			DROP CONSTRAINT IF EXISTS card_emi_plans_status_check`,
+		`ALTER TABLE card_emi_plans
+			ADD CONSTRAINT card_emi_plans_status_check
+			CHECK (status IN ('active', 'closed', 'foreclosed'))`,
+		`ALTER TABLE card_emi_plans
+			DROP CONSTRAINT IF EXISTS card_emi_plans_principal_positive`,
+		`ALTER TABLE card_emi_plans
+			ADD CONSTRAINT card_emi_plans_principal_positive CHECK (principal > 0)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_emi_installment_once
+			ON card_emi_installments (plan_id, seq)`,
+		`CREATE INDEX IF NOT EXISTS idx_card_emi_installments_blocked
+			ON card_emi_installments (account_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_card_emi_installments_due
+			ON card_emi_installments (due_date)
+			WHERE status = 'scheduled'`,
+		`ALTER TABLE card_emi_installments
+			DROP CONSTRAINT IF EXISTS card_emi_installments_status_check`,
+		`ALTER TABLE card_emi_installments
+			ADD CONSTRAINT card_emi_installments_status_check
+			CHECK (status IN ('scheduled', 'billed', 'paid'))`,
 	}
 }
