@@ -85,3 +85,60 @@ func TestAccountInputUsesFixedPointMoney(t *testing.T) {
 		t.Fatal("expected excess precision to fail")
 	}
 }
+
+// The app sends the whole account back on every edit. Card statement settings
+// must survive an edit that says nothing about them — StatementDay is inferred
+// once from the user's first bill, and losing it takes the card's billing
+// cycle with it.
+func TestAccountUpdateLeavesStatementSettingsAloneWhenOmitted(t *testing.T) {
+	account := models.Account{
+		Type: "credit_card", Name: "HDFC Regalia",
+		StatementDay: 5, ReminderDaysBefore: 7, AutopayEnabled: true,
+	}
+
+	input := accountInput{Type: "credit_card", Name: "HDFC Regalia Gold"}
+	input.apply(&account)
+
+	if account.StatementDay != 5 {
+		t.Errorf("statement day = %d, want 5", account.StatementDay)
+	}
+	if account.ReminderDaysBefore != 7 {
+		t.Errorf("reminder days = %d, want 7", account.ReminderDaysBefore)
+	}
+	if !account.AutopayEnabled {
+		t.Error("autopay was switched off by an unrelated edit")
+	}
+}
+
+func TestAccountUpdateAppliesStatementSettingsWhenGiven(t *testing.T) {
+	account := models.Account{Type: "credit_card", Name: "HDFC Regalia", StatementDay: 5}
+
+	statementDay := 18
+	reminderDays := 2
+	autopay := true
+	input := accountInput{
+		Type: "credit_card", Name: "HDFC Regalia",
+		StatementDay: &statementDay, ReminderDaysBefore: &reminderDays, AutopayEnabled: &autopay,
+	}
+	input.apply(&account)
+
+	if account.StatementDay != 18 || account.ReminderDaysBefore != 2 || !account.AutopayEnabled {
+		t.Fatalf("settings not applied: %+v", account)
+	}
+}
+
+func TestAccountStatementSettingsAreValidated(t *testing.T) {
+	badDay := 32
+	badReminder := 45
+	fields := accountInput{
+		Type: "credit_card", Name: "Card",
+		StatementDay: &badDay, ReminderDaysBefore: &badReminder,
+	}.validate()
+
+	if fields["statement_day"] == "" {
+		t.Error("statement day 32 was accepted")
+	}
+	if fields["reminder_days_before"] == "" {
+		t.Error("reminder lead of 45 days was accepted")
+	}
+}

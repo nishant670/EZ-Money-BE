@@ -199,6 +199,12 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.GET("/insights", server.requireEntitlement(billing.FeatureAdvancedInsights), server.getInsights)
 	authorized.POST("/recurring-candidates/decision", server.saveRecurringCandidateDecision)
 	authorized.POST("/recurring-candidates/track", server.trackRecurringCandidates)
+	// Mirrors handlers.go: the invite endpoints are deliberately outside the
+	// split entitlement, so the smoke router has to keep them outside it too.
+	invites := authorized.Group("/split")
+	invites.GET("/pending-invites", server.listPendingSplitGroupInvites)
+	invites.GET("/invites/:token", server.getSplitGroupInvite)
+	invites.POST("/invites/:token/accept", server.acceptSplitGroupInvite)
 	split := authorized.Group("/split", server.requireEntitlement(billing.FeatureSplitLedger))
 	split.POST("/friends", server.createSplitFriend)
 	split.GET("/friends", server.listSplitFriends)
@@ -207,6 +213,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	split.POST("/groups", server.createSplitGroup)
 	split.GET("/groups", server.listSplitGroups)
 	split.PUT("/groups/:id", server.updateSplitGroup)
+	split.PUT("/groups/:id/default-split", server.updateSplitGroupDefaultSplit)
 	split.DELETE("/groups/:id", server.archiveSplitGroup)
 	split.POST("/groups/:id/invite-link", server.createSplitGroupInvite)
 	split.GET("/groups/:id/invites", server.listSplitGroupDirectInvites)
@@ -221,8 +228,6 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	split.GET("/settlements", server.listSplitSettlements)
 	split.GET("/activity", server.listSplitActivity)
 	split.GET("/balances", server.listSplitBalances)
-	split.GET("/invites/:token", server.getSplitGroupInvite)
-	split.POST("/invites/:token/accept", server.acceptSplitGroupInvite)
 	authorized.POST("/tools/emi/calculate", server.calculateEMI)
 	return router
 }
@@ -267,6 +272,11 @@ func useSmokeDatabase(t *testing.T) {
 		&models.Subscription{},
 		&models.SubscriptionReminder{},
 		&models.SubscriptionOccurrence{},
+		&models.CardStatement{},
+		&models.CardStatementPayment{},
+		&models.CardStatementReminder{},
+		&models.CardEMIPlan{},
+		&models.CardEMIInstallment{},
 		&models.RecurringCandidateDecision{},
 		&models.PushDevice{},
 		&models.SplitFriend{},

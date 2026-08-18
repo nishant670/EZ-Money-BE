@@ -10,6 +10,12 @@ Legend:
 - `[x]` Done in the current codebase and/or docs.
 - `[ ]` Not done, not verified, or still conflicting with the docs.
 
+## Deferred, scoped elsewhere
+
+- [ ] Push notification delivery — `createNotification` writes a row and nothing
+      sends it, so every notification is in-app only. Scoped in
+      `docs/PUSH_NOTIFICATION_DELIVERY_PLAN.md`.
+
 ## Current Status
 
 - Mobile app is the active MVP surface: `EZ-Money/`.

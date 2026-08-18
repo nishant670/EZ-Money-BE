@@ -430,6 +430,10 @@ func normalizePurposeAndTags(entry map[string]any) {
 		entry["purpose_type"] = "reimbursable"
 	case "donation":
 		entry["purpose_type"] = "donation"
+	// Settling a card bill, not buying anything. Kept out of spending and
+	// income totals by notCardPaymentClause in insights.go.
+	case "card_payment", "credit_card_payment", "bill_payment":
+		entry["purpose_type"] = cardPaymentPurposeType
 	case "emi", "no_cost_emi", "no-cost emi", "installment", "instalment":
 		entry["purpose_type"] = "normal_spend"
 		appendTag(entry, "EMI")

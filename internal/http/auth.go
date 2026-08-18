@@ -760,6 +760,17 @@ func (s *Server) authGoogle(c *gin.Context) {
 			if deviceID != "" {
 				updates["device_id"] = deviceID
 			}
+			// Accounts created before Google's name was read are still carrying
+			// `User_2c9f4a1b`; this is where they get their name. A username the
+			// person chose is left exactly as it is.
+			if isGeneratedUsername(user.Username) {
+				if named := googleUsername(tx, identity); !isGeneratedUsername(named) {
+					updates["username"] = named
+				}
+			}
+			if user.ProfileImage == "" && identity.Picture != "" {
+				updates["profile_image"] = identity.Picture
+			}
 			if err := tx.Model(&user).Updates(updates).Error; err != nil {
 				return err
 			}
@@ -781,6 +792,14 @@ func (s *Server) authGoogle(c *gin.Context) {
 			if deviceID != "" {
 				updates["device_id"] = deviceID
 			}
+			if isGeneratedUsername(existing.Username) {
+				if named := googleUsername(tx, identity); !isGeneratedUsername(named) {
+					updates["username"] = named
+				}
+			}
+			if existing.ProfileImage == "" && identity.Picture != "" {
+				updates["profile_image"] = identity.Picture
+			}
 			if err := tx.Model(&existing).Updates(updates).Error; err != nil {
 				return err
 			}
@@ -796,7 +815,9 @@ func (s *Server) authGoogle(c *gin.Context) {
 				user.GoogleSubject = &googleSubject
 				user.IsGuest = false
 				user.BiometricsEnabled = input.BiometricsEnabled
-				user.Username = "User_" + generateUUID()[:8]
+				// A guest is named `Guest_59d8f84f`, so there is nothing here
+				// worth keeping either way.
+				user.Username = googleUsername(tx, identity)
 				if identity.Picture != "" {
 					user.ProfileImage = identity.Picture
 				}
@@ -816,7 +837,7 @@ func (s *Server) authGoogle(c *gin.Context) {
 			IsGuest:           false,
 			BiometricsEnabled: input.BiometricsEnabled,
 			DeviceID:          deviceIDPtr,
-			Username:          "User_" + generateUUID()[:8],
+			Username:          googleUsername(tx, identity),
 			ProfileImage:      identity.Picture,
 		}
 		return tx.Create(&user).Error
