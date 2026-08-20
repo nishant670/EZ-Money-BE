@@ -503,3 +503,146 @@ func newParseAudioContext(size int) (*gin.Context, *httptest.ResponseRecorder) {
 	context.Request = request
 	return context, response
 }
+
+// The end-to-end version of the split failure: the exact sentence that used to
+// come back as "I could not turn that into a clean transaction", answered by a
+// model doing the two things it reliably does with an unknown group — a
+// participant of nulls and a hint field it named itself.
+func TestParseHandlerKeepsGroupSplitCapture(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	schema, err := gojsonschema.NewSchema(
+		gojsonschema.NewReferenceLoader("file://../../schemas/expense_entry.schema.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		cfg:       &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		validator: schema,
+		parser: fixtureParser{result: []byte(`{
+			"title":"Rent advance","amount":10000,"type":"expense","currency":"INR",
+			"mode":"UPI","category":"Bills","merchant":"Landlord","date":"2026-08-19",
+			"purpose_type":"normal_spend","tags":[],"split_candidate":true,
+			"split_candidate_details":{
+				"group_name":"bubu-dudu",
+				"participants":[{"friend_name":null,"share_amount":null,"direction":null}],
+				"missing_fields":["participant_shares"]
+			},
+			"confidence":{"amount":0.98},"needs_confirmation":{},
+			"missing_fields":[],"clarifications":[]
+		}`)},
+	}
+
+	form := url.Values{"hint_text": {
+		"I paid 10000 as an advance payment to landlord for rented house, paid by UPI. split this expense in the group bubu-dudu",
+	}}
+	request := httptest.NewRequest("POST", "/v1/parse", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = request
+	attachParseCreditUser(t, context)
+
+	server.handleParse(context)
+
+	body := response.Body.String()
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, body)
+	}
+	for _, expected := range []string{
+		`"amount":10000`,
+		`"mode":"UPI"`,
+		`"split_candidate":true`,
+		`"group_name":"bubu-dudu"`,
+		`"participants":[]`,
+		`"missing_fields":["share_amount"]`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("response missing %q: %s", expected, body)
+		}
+	}
+}
+
+// A candidate block that is not even an object cannot be coerced. Dropping it
+// is still better than dropping the transaction it was attached to.
+func TestParseHandlerRecoversDraftByDroppingUnreadableCandidate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	schema, err := gojsonschema.NewSchema(
+		gojsonschema.NewReferenceLoader("file://../../schemas/expense_entry.schema.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		cfg:       &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		validator: schema,
+		parser: fixtureParser{result: []byte(`{
+			"title":"House rent","amount":10000,"type":"expense","currency":"INR",
+			"mode":"UPI","category":"Bills","merchant":"Landlord","date":"2026-08-19",
+			"tags":[],"subscription_candidate":"monthly on the first",
+			"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]
+		}`)},
+	}
+
+	form := url.Values{"hint_text": {"paid 10000 house rent by upi, happens every month"}}
+	request := httptest.NewRequest("POST", "/v1/parse", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = request
+	attachParseCreditUser(t, context)
+
+	server.handleParse(context)
+
+	body := response.Body.String()
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, body)
+	}
+	if !strings.Contains(body, `"amount":10000`) || !strings.Contains(body, `"subscription_candidate":null`) {
+		t.Fatalf("draft was not recovered: %s", body)
+	}
+	if !strings.Contains(body, "could not read the recurring details") {
+		t.Fatalf("the dropped block was not explained: %s", body)
+	}
+}
+
+// "Paid my HDFC credit card bill" is a purpose the normalizer has always
+// emitted and the schema never allowed, so the whole capture 422'd.
+func TestParseHandlerAcceptsCardBillPayment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	schema, err := gojsonschema.NewSchema(
+		gojsonschema.NewReferenceLoader("file://../../schemas/expense_entry.schema.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		cfg:       &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		validator: schema,
+		parser: fixtureParser{result: []byte(`{
+			"title":"HDFC card","amount":24500,"type":"expense","currency":"INR",
+			"mode":"Bank Account","account_hint":"HDFC bank","category":"Bills",
+			"merchant":"HDFC","purpose_type":"credit_card_payment","tags":[],
+			"date":"2026-08-19","confidence":{},"needs_confirmation":{},
+			"missing_fields":[],"clarifications":[]
+		}`)},
+	}
+
+	form := url.Values{"hint_text": {"paid 24500 HDFC credit card bill from my bank account"}}
+	request := httptest.NewRequest("POST", "/v1/parse", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = request
+	attachParseCreditUser(t, context)
+
+	server.handleParse(context)
+
+	body := response.Body.String()
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, body)
+	}
+	if !strings.Contains(body, `"purpose_type":"card_payment"`) {
+		t.Fatalf("card bill purpose was not preserved: %s", body)
+	}
+}
