@@ -74,6 +74,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0030_add_google_subject_to
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0031_remove_transaction_self_notifications.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0032_canonicalize_entry_categories.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0033_canonicalize_subscription_categories.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0039_correct_account_derived_payment_modes.sql
 ```
 
 ## Auth verification

@@ -62,3 +62,34 @@ func modeMessage() string {
 	return "must be " + strings.Join(canonicalModes[:len(canonicalModes)-1], ", ") +
 		", or " + canonicalModes[len(canonicalModes)-1]
 }
+
+// paymentModeForAccountType is the server-side account→mode contract. Entry
+// clients may omit mode when account_id already carries enough truth.
+//
+// A debit card draws from a bank balance, so its canonical payment rail is
+// Bank Account; the linked account still retains type=debit_card for account-
+// level reporting. "other" cannot be inferred honestly and must include an
+// explicit canonical mode in the request.
+func paymentModeForAccountType(accountType string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(accountType)) {
+	case "cash":
+		return "Cash", true
+	case "bank", "debit_card":
+		return "Bank Account", true
+	case "upi":
+		return "UPI", true
+	case "credit_card":
+		return "Credit Card", true
+	case "wallet":
+		return "Wallets", true
+	default:
+		return "", false
+	}
+}
+
+func resolveEntryMode(mode, accountType string) (string, bool) {
+	if strings.TrimSpace(mode) != "" {
+		return canonicalMode(mode)
+	}
+	return paymentModeForAccountType(accountType)
+}

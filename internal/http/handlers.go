@@ -122,6 +122,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/export", s.exportEntriesCSV)
 		authorized.GET("/merchants/suggestions", s.listMerchantSuggestions)
+		authorized.GET("/categories", s.listCategories)
 		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)
@@ -296,6 +297,7 @@ func skipsStaticBearer(path string) bool {
 		// happened to the decision endpoint from the day it shipped.
 		strings.HasPrefix(path, "/v1/recurring-candidates") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
+		strings.HasPrefix(path, "/v1/categories") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		// Statements nested under a card are covered by the line above, but
 		// the top-level ones are not: "/v1/statements/:id" and
@@ -828,15 +830,25 @@ func (s *Server) saveEntry(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
-	if input.AccountID != nil {
-		if ok, err := userOwnsAccount(userID, *input.AccountID); err != nil {
-			c.JSON(500, gin.H{"error": "account_lookup_failed"})
-			return
-		} else if !ok {
+	var account models.Account
+	if err := database.DB.Where("user_id = ? AND id = ?", userID, *input.AccountID).First(&account).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
 			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
-			return
+		} else {
+			c.JSON(500, gin.H{"error": "account_lookup_failed"})
 		}
+		return
 	}
+	resolvedMode, ok := resolveEntryMode(input.Mode, account.Type)
+	if !ok {
+		message := modeMessage()
+		if strings.TrimSpace(input.Mode) == "" {
+			message = "is required when account type is other"
+		}
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": message}})
+		return
+	}
+	input.Mode = resolvedMode
 	if fields, err := validateEntrySplitReferences(userID, input.Split); err != nil {
 		c.JSON(500, gin.H{"error": "split_lookup_failed"})
 		return
@@ -1052,10 +1064,6 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.Date != nil {
 		date = *input.Date
 	}
-	if fields := validateEntryValues(amount, title, entryType, currency, source, mode, category, date); len(fields) > 0 {
-		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
-		return
-	}
 	if !input.AccountID.Set {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "is required"}})
 		return
@@ -1068,11 +1076,32 @@ func (s *Server) updateEntry(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must be a positive integer"}})
 		return
 	}
-	if ok, err := userOwnsAccount(userID, *input.AccountID.Value); err != nil {
-		c.JSON(500, gin.H{"error": "account_lookup_failed"})
+	var account models.Account
+	if err := database.DB.Where("user_id = ? AND id = ?", userID, *input.AccountID.Value).First(&account).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+		} else {
+			c.JSON(500, gin.H{"error": "account_lookup_failed"})
+		}
 		return
-	} else if !ok {
-		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+	}
+	if input.Mode != nil {
+		resolvedMode, ok := resolveEntryMode(*input.Mode, account.Type)
+		if !ok {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": modeMessage()}})
+			return
+		}
+		mode = resolvedMode
+	} else if resolvedMode, ok := paymentModeForAccountType(account.Type); ok {
+		// Re-derive even when the account is unchanged. This repairs a legacy
+		// bank/debit entry's false Credit Card mode on its next explicit edit.
+		mode = resolvedMode
+	} else if entry.AccountID == nil || *entry.AccountID != account.ID {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": "is required when account type is other"}})
+		return
+	}
+	if fields := validateEntryValues(amount, title, entryType, currency, source, mode, category, date); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
 	if input.Split.Set {
@@ -1122,9 +1151,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.Source != nil {
 		entry.Source = strings.ToLower(strings.TrimSpace(*input.Source))
 	}
-	if input.Mode != nil {
-		entry.Mode = *input.Mode
-	}
+	entry.Mode = mode
 	if input.CardNetwork != nil {
 		entry.CardNetwork = *input.CardNetwork
 	}

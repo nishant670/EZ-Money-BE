@@ -2,10 +2,14 @@ package http
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 // The canonical list, the JSON schema the parser response is validated against,
@@ -171,5 +175,60 @@ func TestCategoryAliasesResolveToCanonicalMembers(t *testing.T) {
 		if allowed[alias] {
 			t.Errorf("alias %q duplicates a canonical category and is redundant", alias)
 		}
+	}
+}
+
+// The endpoint exists so that clients do not have to keep a list of their own.
+// Both the mobile app and the web app kept one, and the web app's had drifted to
+// a different eight values by the time anyone noticed. These tests fail if the
+// served list stops matching the canonical one, which is the only thing that
+// makes "read it from the API" better than "copy it and hope".
+func TestCategoriesEndpointServesCanonicalList(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	auth := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{
+			"device_id": "categories-test-device",
+		}, http.StatusOK,
+	)
+
+	response := performJSONRequest[CategoriesResponse](
+		t, router, http.MethodGet, "/v1/categories", auth.Token, nil, http.StatusOK,
+	)
+
+	if strings.Join(response.Categories, "|") != strings.Join(canonicalCategories, "|") {
+		t.Fatalf("served categories drifted from canonicalCategories\n served: %v\n  code:  %v",
+			response.Categories, canonicalCategories)
+	}
+	if response.Default != defaultCategory {
+		t.Fatalf("served default category = %q, want %q", response.Default, defaultCategory)
+	}
+
+	// Every served value must survive a round trip through the save path, or a
+	// picker built from this list can still offer something the API rewrites.
+	for _, category := range response.Categories {
+		resolved, ok := categoryForSave(category)
+		if !ok {
+			t.Fatalf("served category %q is rejected by categoryForSave", category)
+		}
+		if resolved != category {
+			t.Fatalf("served category %q is rewritten to %q on save", category, resolved)
+		}
+	}
+}
+
+func TestCategoriesEndpointRequiresAuthentication(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	request := httptest.NewRequest(http.MethodGet, "/v1/categories", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated /v1/categories status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
 }
