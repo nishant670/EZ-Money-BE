@@ -572,17 +572,34 @@ func (s *Server) handleParse(c *gin.Context) {
 		for _, e := range res.Errors() {
 			d = append(d, e.String())
 		}
-		inputChars := utf8.RuneCountInString(transcript)
-		responseBytes := len(parsed)
-		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status:        billing.UsageStatusFailedAfterProvider,
-			ErrorCode:     "schema_invalid",
-			InputChars:    &inputChars,
-			ResponseBytes: &responseBytes,
-			AudioBytes:    optionalInt64(audioSize),
-		})
-		c.JSON(422, gin.H{"error": "schema_invalid", "details": d, "transcript": transcript})
-		return
+		// The credit is already spent, so a draft that trips the schema is
+		// worth one more attempt before it becomes nothing. Almost every
+		// failure that survives the normalizer is in an optional block — a
+		// split hint, a subscription hint — attached to a transaction that is
+		// itself perfectly readable. Dropping the block costs the hint and
+		// keeps the capture; refusing the draft costs both.
+		repaired, dropped, recovered := s.repairInvalidParsedDraft(parsedObj)
+		if !recovered {
+			log.Printf("parse schema_invalid: %v", d)
+			inputChars := utf8.RuneCountInString(transcript)
+			responseBytes := len(parsed)
+			_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+				Status:        billing.UsageStatusFailedAfterProvider,
+				ErrorCode:     "schema_invalid",
+				InputChars:    &inputChars,
+				ResponseBytes: &responseBytes,
+				AudioBytes:    optionalInt64(audioSize),
+			})
+			c.JSON(422, gin.H{
+				"error":      "schema_invalid",
+				"message":    "I heard the words but could not turn them into a transaction.",
+				"details":    d,
+				"transcript": transcript,
+			})
+			return
+		}
+		log.Printf("parse schema_invalid recovered by dropping %v: %v", dropped, d)
+		parsed = repaired
 	}
 
 	credits, err := s.finalizeParseSuccess(
@@ -602,6 +619,68 @@ func (s *Server) handleParse(c *gin.Context) {
 		parsedObj[key] = value
 	}
 	c.JSON(200, parsedObj)
+}
+
+// parseDraftRepairs lists the optional blocks to try removing, narrowest first,
+// when a normalised draft still fails the schema.
+var parseDraftRepairs = [][]string{
+	{"split_candidate_details"},
+	{"subscription_candidate"},
+	{"split_candidate_details", "subscription_candidate"},
+}
+
+// repairInvalidParsedDraft retries validation without the optional candidate
+// blocks and, on the first combination that passes, commits it onto the draft.
+//
+// It reports which blocks it dropped so the caller can log what was lost. The
+// user is told through `clarifications` — the same channel the review sheet
+// already uses to ask about anything the parse was unsure of — rather than
+// through silence.
+func (s *Server) repairInvalidParsedDraft(entry map[string]any) ([]byte, []string, bool) {
+	for _, fields := range parseDraftRepairs {
+		attempt := make(map[string]any, len(entry))
+		for key, value := range entry {
+			attempt[key] = value
+		}
+		dropped := []string{}
+		for _, field := range fields {
+			if attempt[field] == nil {
+				continue
+			}
+			attempt[field] = nil
+			dropped = append(dropped, field)
+			switch field {
+			case "split_candidate_details":
+				attempt["split_candidate"] = nil
+				attempt["clarifications"] = appendUniqueAnyString(
+					attempt["clarifications"],
+					"I could not read the split details. Turn on Split and pick the group or friends.",
+				)
+			case "subscription_candidate":
+				attempt["recurring_candidate"] = nil
+				attempt["clarifications"] = appendUniqueAnyString(
+					attempt["clarifications"],
+					"I could not read the recurring details. Set them up here if this repeats.",
+				)
+			}
+		}
+		if len(dropped) == 0 {
+			continue
+		}
+		repaired, err := json.Marshal(attempt)
+		if err != nil {
+			continue
+		}
+		result, err := s.validator.Validate(gojsonschema.NewBytesLoader(repaired))
+		if err != nil || !result.Valid() {
+			continue
+		}
+		for key, value := range attempt {
+			entry[key] = value
+		}
+		return repaired, dropped, true
+	}
+	return nil, nil, false
 }
 
 // finalizeParseSuccess settles the credit reservation for a completed provider

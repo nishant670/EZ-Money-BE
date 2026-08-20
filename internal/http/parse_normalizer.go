@@ -49,6 +49,7 @@ var allowedSplitParticipantFields = map[string]bool{
 
 func normalizeParsedDraft(entry map[string]any, transcript string) {
 	normalizeParseAliases(entry)
+	sanitizeParsedDraftFields(entry)
 	entry["stage"] = "draft"
 	entry["source_text"] = transcript
 
@@ -102,13 +103,29 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 		entry["confidence"] = map[string]any{}
 	}
 	normalizeConfidence(entry["confidence"].(map[string]any))
-	if _, ok := entry["clarifications"].([]any); !ok {
-		entry["clarifications"] = []any{}
-	}
+	entry["clarifications"] = normalizeClarifications(entry["clarifications"])
 
 	normalizeSubscriptionDraft(entry)
 	normalizeSplitDraft(entry)
 	pruneKeys(entry, allowedParseRootFields)
+}
+
+// sanitizeParsedDraftFields coerces the loose shapes a model reaches for on the
+// root fields — "10,000" for an amount, "12:33 AM" for a time, "yes" for a
+// boolean — before anything downstream reads them.
+//
+// It runs first for a reason beyond tidiness: parsedDraftHasTransactionSignal
+// asks whether an amount is a positive number, so an amount that arrived as a
+// string used to make a real capture look like idle chatter.
+func sanitizeParsedDraftFields(entry map[string]any) {
+	for _, field := range []string{"title", "merchant", "note", "account_hint", "tag"} {
+		normalizeOptionalString(entry, field)
+	}
+	normalizeOptionalAmount(entry, "amount")
+	normalizeOptionalDate(entry, "date")
+	normalizeParseTime(entry)
+	normalizeOptionalBool(entry, "recurring_candidate")
+	normalizeOptionalBool(entry, "split_candidate")
 }
 
 func normalizeInvestmentType(entry map[string]any, needsConfirmation map[string]any, missingSet map[string]bool) {
@@ -227,12 +244,31 @@ func isBankAccountHint(value string) bool {
 	return strings.Contains(normalized, "bank") || strings.Contains(normalized, "saving") || strings.Contains(normalized, "salary account")
 }
 
+// normalizeClarifications keeps only the questions that can actually be shown.
+// The review sheet renders these verbatim, and a stray number among them would
+// fail the schema — costing the draft over a line of copy.
+func normalizeClarifications(value any) []any {
+	values, _ := value.([]any)
+	questions := make([]any, 0, len(values))
+	for _, item := range values {
+		text, ok := item.(string)
+		if !ok {
+			continue
+		}
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			questions = append(questions, trimmed)
+		}
+	}
+	return questions
+}
+
 func normalizeSubscriptionDraft(entry map[string]any) {
 	candidate, ok := entry["subscription_candidate"].(map[string]any)
 	if !ok || candidate == nil {
 		return
 	}
 	pruneKeys(candidate, allowedSubscriptionCandidateFields)
+	normalizeSubscriptionCandidate(candidate)
 	interval, _ := candidate["billing_interval"].(string)
 	if interval == subscriptionIntervalDaily || interval == subscriptionIntervalBusinessDaily {
 		candidate["autopay"] = true
@@ -300,21 +336,52 @@ func appendUniqueAnyString(value any, wanted string) []any {
 	return append(values, wanted)
 }
 
+// normalizeSplitDraft makes the split block safe to show and safe to validate.
+//
+// This is where the strictest part of the schema meets the least predictable
+// part of the model. "Split it with the bubu-dudu group" gives it a group it
+// cannot enumerate and shares it cannot compute, and what it does with that —
+// a placeholder participant of nulls, a missing_fields entry it invented a name
+// for — used to fail validation and take the whole ₹10,000 rent capture with
+// it. None of that is worth a transaction: the group is named, the app knows
+// its members, and the review sheet is where shares get settled anyway.
 func normalizeSplitDraft(entry map[string]any) {
 	candidate, ok := entry["split_candidate_details"].(map[string]any)
 	if !ok || candidate == nil {
+		// Split intent with no detail block still has to reach the sheet with
+		// the split toggle on and a question attached, rather than as a plain
+		// expense that silently forgot the second half of the sentence.
+		if wantsSplit, _ := entry["split_candidate"].(bool); wantsSplit {
+			entry["split_candidate_details"] = map[string]any{
+				"group_name":     nil,
+				"participants":   []any{},
+				"missing_fields": []any{"friend_or_group"},
+			}
+		}
 		return
 	}
 	pruneKeys(candidate, allowedSplitCandidateFields)
-	participants, _ := candidate["participants"].([]any)
-	for _, participant := range participants {
-		if value, ok := participant.(map[string]any); ok {
-			pruneKeys(value, allowedSplitParticipantFields)
-		}
-	}
-	if len(participants) > 0 {
+	normalizeOptionalString(candidate, "group_name")
+	participants := normalizeSplitParticipants(candidate["participants"])
+	candidate["participants"] = participants
+	candidate["missing_fields"] = filterAliasedList(candidate["missing_fields"], splitMissingFieldAliases)
+
+	groupName, _ := candidate["group_name"].(string)
+	if len(participants) > 0 || groupName != "" {
 		entry["split_candidate"] = true
 	}
+	wantsSplit, _ := entry["split_candidate"].(bool)
+	if !wantsSplit {
+		return
+	}
+	if groupName == "" && len(participants) == 0 {
+		candidate["missing_fields"] = appendUniqueAnyString(candidate["missing_fields"], "friend_or_group")
+		return
+	}
+	// A group or a name is on the draft, so the open question is no longer who
+	// to split with — leaving it there would have the sheet ask about a group
+	// the user already named.
+	candidate["missing_fields"] = removeAnyString(candidate["missing_fields"], "friend_or_group")
 }
 
 func normalizeParseAliases(entry map[string]any) {

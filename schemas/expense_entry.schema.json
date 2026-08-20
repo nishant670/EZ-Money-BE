@@ -123,6 +123,7 @@
         "refund",
         "reimbursable",
         "donation",
+        "card_payment",
         null
       ]
     },
@@ -192,6 +193,11 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "account_hint": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       },
       "additionalProperties": false
@@ -221,6 +227,9 @@
           "type": "boolean"
         },
         "tag": {
+          "type": "boolean"
+        },
+        "account_hint": {
           "type": "boolean"
         }
       },
