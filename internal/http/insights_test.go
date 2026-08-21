@@ -1,6 +1,7 @@
 package http
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,15 @@ func insightByKind(cards []InsightCard, kind string) *InsightCard {
 	return nil
 }
 
+func assertInsightBodiesLeaveFactsStructured(t *testing.T, cards []InsightCard) {
+	t.Helper()
+	for _, card := range cards {
+		if strings.Contains(card.Body, "₹") || strings.Contains(card.Body, "(s)") {
+			t.Errorf("%s body duplicates a structured fact: %q", card.Kind, card.Body)
+		}
+	}
+}
+
 func TestBuildDashboardProducesFiveDeterministicTemplates(t *testing.T) {
 	location := time.FixedZone("IST", 5*60*60+30*60)
 	dateRange := dashboardRange{
@@ -58,6 +68,7 @@ func TestBuildDashboardProducesFiveDeterministicTemplates(t *testing.T) {
 	}
 
 	dashboard := buildDashboard(entries, dateRange)
+	assertInsightBodiesLeaveFactsStructured(t, dashboard.Insights)
 	kinds := map[string]bool{}
 	for _, card := range dashboard.Insights {
 		kinds[card.Kind] = true
@@ -126,6 +137,7 @@ func TestBuildDashboardReturnsFullPeriodReviewItems(t *testing.T) {
 	entries = append(entries, missingAccount)
 
 	dashboard := buildDashboard(entries, dateRange)
+	assertInsightBodiesLeaveFactsStructured(t, dashboard.Insights)
 	if len(dashboard.RecentTransactions) != 5 {
 		t.Fatalf("expected five recent transactions, got %#v", dashboard.RecentTransactions)
 	}
@@ -164,6 +176,7 @@ func TestBuildDashboardDetectsRecurringCandidatesForWeeklyReview(t *testing.T) {
 	}
 
 	dashboard := buildDashboard(entries, dateRange)
+	assertInsightBodiesLeaveFactsStructured(t, dashboard.Insights)
 	if len(dashboard.RecurringCandidates) != 1 {
 		t.Fatalf("expected one recurring candidate, got %#v", dashboard.RecurringCandidates)
 	}
@@ -208,6 +221,7 @@ func TestApplyBudgetStatusesAddsWatchAndExceededInsights(t *testing.T) {
 		{ID: 2, Name: "Travel", Period: budgetPeriodMonthly, Category: "Travel", LimitAmount: testMoney("1000"), AlertThresholdPercent: 80, Active: true},
 		{ID: 3, Name: "Shopping", Period: budgetPeriodMonthly, Category: "Shopping", LimitAmount: testMoney("1000"), AlertThresholdPercent: 80, Active: true},
 	}, dateRange, &dashboard)
+	assertInsightBodiesLeaveFactsStructured(t, dashboard.Insights)
 
 	if len(dashboard.BudgetStatuses) != 3 {
 		t.Fatalf("expected three budget statuses, got %#v", dashboard.BudgetStatuses)

@@ -906,7 +906,7 @@ func buildInsightCards(
 		count := top.TransactionCount
 		cards = append(cards, InsightCard{
 			Kind: "top_merchant", Severity: "info", Title: "Top merchant",
-			Body:             fmt.Sprintf("%s accounted for ₹%.2f across %d transaction(s).", top.Merchant, top.Amount, top.TransactionCount),
+			Body:             fmt.Sprintf("%s led confirmed spending in the selected period.", top.Merchant),
 			Explanation:      "Finds the merchant with the highest confirmed expense total in the selected period.",
 			ActionLabel:      "Open merchant",
 			Merchant:         top.Merchant,
@@ -933,7 +933,7 @@ func buildInsightCards(
 		amount := unusual
 		cards = append(cards, InsightCard{
 			Kind: "unusual_spending", Severity: "warning", Title: "Unusual spending",
-			Body:        fmt.Sprintf("A ₹%.2f expense was substantially above this period's average.", unusual),
+			Body:        "One confirmed expense was substantially above this period's average.",
 			Explanation: "Flags an expense that is substantially above this period's average expense size.",
 			ActionLabel: "Find large expenses",
 			Amount:      &amount,
@@ -945,7 +945,7 @@ func buildInsightCards(
 		confidence := candidate.Confidence
 		cards = append(cards, InsightCard{
 			Kind: "recurring_candidate", Severity: "info", Title: "Recurring spend to review",
-			Body:             fmt.Sprintf("Review %d likely recurring expense(s), including %s around ₹%.2f.", len(dashboard.RecurringCandidates), candidate.Label, candidate.AverageAmount),
+			Body:             fmt.Sprintf("%s appears to repeat and is ready for review.", candidate.Label),
 			Explanation:      "Detects repeated merchant or category patterns that look weekly or monthly.",
 			ActionLabel:      "Review recurring pattern",
 			Category:         candidate.Category,
@@ -1057,11 +1057,11 @@ func buildBudgetInsightCards(statuses []DashboardBudgetStatus) []InsightCard {
 		kind := "budget_watch"
 		severity := "warning"
 		title := target + " budget nearing limit"
-		body := fmt.Sprintf("%s spend is %.0f%% of the ₹%.2f monthly budget with %d day(s) left.", target, status.Percentage, status.LimitAmount, status.DaysLeft)
+		body := fmt.Sprintf("%s spending is nearing its monthly limit.", target)
 		if status.Status == "exceeded" {
 			kind = "budget_exceeded"
 			title = target + " budget exceeded"
-			body = fmt.Sprintf("%s spend is %.0f%% of the ₹%.2f monthly budget.", target, status.Percentage, status.LimitAmount)
+			body = fmt.Sprintf("%s spending has exceeded its monthly limit.", target)
 		}
 		cards = append(cards, InsightCard{
 			Kind:            kind,
@@ -1224,7 +1224,7 @@ func replaceRecurringInsight(cards []InsightCard, candidates []DashboardRecurrin
 		Kind:             "recurring_candidate",
 		Severity:         "info",
 		Title:            "Recurring spend to review",
-		Body:             fmt.Sprintf("Review %d likely recurring expense(s), including %s around ₹%.2f.", len(candidates), candidate.Label, candidate.AverageAmount),
+		Body:             fmt.Sprintf("%s appears to repeat and is ready for review.", candidate.Label),
 		Explanation:      "Detects repeated merchant or category patterns that look weekly or monthly.",
 		ActionLabel:      "Review recurring pattern",
 		Category:         candidate.Category,

@@ -237,6 +237,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 			split.POST("/groups/:id/leave", s.leaveSplitGroup)
 			split.POST("/bills", s.createSplitBill)
 			split.GET("/bills", s.listSplitBills)
+			split.GET("/bills/by-entry/:entry_id", s.getSplitBillByEntry)
 			split.PUT("/bills/:id", s.updateSplitBill)
 			split.DELETE("/bills/:id", s.deleteSplitBill)
 			split.POST("/settlements", s.createSplitSettlement)

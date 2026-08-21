@@ -223,6 +223,7 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	split.POST("/groups/:id/leave", server.leaveSplitGroup)
 	split.POST("/bills", server.createSplitBill)
 	split.GET("/bills", server.listSplitBills)
+	split.GET("/bills/by-entry/:entry_id", server.getSplitBillByEntry)
 	split.PUT("/bills/:id", server.updateSplitBill)
 	split.DELETE("/bills/:id", server.deleteSplitBill)
 	split.POST("/settlements", server.createSplitSettlement)
