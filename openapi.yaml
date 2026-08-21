@@ -415,6 +415,24 @@ paths:
           description: Invalid query or limit
         "500":
           description: Suggestions failed
+  /v1/categories:
+    get:
+      summary: List the canonical transaction categories
+      description: >-
+        The single source of truth for every client's category picker. The
+        response is identical for all users and does not change between
+        requests, so clients may cache it. Clients must not keep their own copy:
+        a hardcoded list is how "Electronics", "Health" and "Other" once reached
+        a picker while Travel, Family/Gifts and Misc fell out of it.
+      responses:
+        "200":
+          description: The canonical category list and the confirm-first fallback
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Categories"
+        "401":
+          description: Missing or invalid session
   /v1/reports/transactions/summary:
     get:
       summary: Return filtered transaction report rollups
@@ -2336,6 +2354,22 @@ components:
             canonical category. Absent categories are absent, not zero.
           additionalProperties:
             type: integer
+    Categories:
+      type: object
+      required: [categories, default]
+      properties:
+        categories:
+          type: array
+          description: Canonical category names, in picker order.
+          items:
+            type: string
+          example: ["Food & Drinks", "Transport", "Travel", "Shopping", "Bills", "Entertainment", "Family/Gifts", "Misc"]
+        default:
+          type: string
+          description: >-
+            The confirm-first fallback used when a category is unknown. Always a
+            member of `categories`.
+          example: "Misc"
     MerchantSuggestions:
       type: object
       required: [suggestions]

@@ -63,6 +63,8 @@ func TestEntryInputValidation(t *testing.T) {
 	invalidSource.Source = "import"
 	invalidMode := validEntryInput()
 	invalidMode.Mode = "Cheque"
+	missingMode := validEntryInput()
+	missingMode.Mode = ""
 	missingCategory := validEntryInput()
 	missingCategory.Category = ""
 	tests := []struct {
@@ -79,6 +81,7 @@ func TestEntryInputValidation(t *testing.T) {
 		{"invalid currency", invalidCurrency, false},
 		{"invalid source", invalidSource, false},
 		{"invalid mode", invalidMode, false},
+		{"mode may be derived from account", missingMode, true},
 		{"missing category", missingCategory, false},
 	}
 

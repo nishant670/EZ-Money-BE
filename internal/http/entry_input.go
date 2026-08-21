@@ -132,8 +132,13 @@ func validateEntryValues(amount models.Money, title, entryType, currency, source
 	if strings.TrimSpace(title) == "" {
 		fields["title"] = "is required"
 	}
-	if _, ok := canonicalMode(mode); !ok {
-		fields["mode"] = modeMessage()
+	// Mode may be omitted from an entry request because account_id already
+	// carries the payment source. The handler derives it after verifying account
+	// ownership. A supplied value must still be canonical (or a known alias).
+	if strings.TrimSpace(mode) != "" {
+		if _, ok := canonicalMode(mode); !ok {
+			fields["mode"] = modeMessage()
+		}
 	}
 	if strings.TrimSpace(category) == "" {
 		fields["category"] = "is required"

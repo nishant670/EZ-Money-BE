@@ -454,6 +454,12 @@ func TestEntryCreateCanCreateLinkedSplitWithInlineFriend(t *testing.T) {
 	if bills[0].GroupID == nil || len(bills[0].Participants) != 1 {
 		t.Fatalf("expected linked group and participant, got %#v", bills[0])
 	}
+	linkedBill := performJSONRequest[models.SplitBill](
+		t, router, http.MethodGet, fmt.Sprintf("/v1/split/bills/by-entry/%d", entry.ID), token, nil, http.StatusOK,
+	)
+	if linkedBill.ID != bills[0].ID || linkedBill.EntryID == nil || *linkedBill.EntryID != entry.ID {
+		t.Fatalf("expected entry-scoped split bill, got %#v", linkedBill)
+	}
 
 	balances := performJSONRequest[[]splitBalance](
 		t, router, http.MethodGet, "/v1/split/balances", token, nil, http.StatusOK,
@@ -492,6 +498,12 @@ func TestEntryCreateCanCreateLinkedSplitWithInlineFriend(t *testing.T) {
 	)
 	if len(bills) != 0 {
 		t.Fatalf("expected linked split bill to be deleted, got %#v", bills)
+	}
+	missingBill := performJSONRequest[*models.SplitBill](
+		t, router, http.MethodGet, fmt.Sprintf("/v1/split/bills/by-entry/%d", entry.ID), token, nil, http.StatusOK,
+	)
+	if missingBill != nil {
+		t.Fatalf("expected no entry-scoped split bill after delete, got %#v", missingBill)
 	}
 }
 

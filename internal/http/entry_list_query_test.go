@@ -50,6 +50,67 @@ func TestCanonicalModesAcceptedOnSaveAndFilter(t *testing.T) {
 	}
 }
 
+func TestEntryModeDerivesFromOwnedAccount(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	auth := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "derived-mode-device"}, http.StatusOK,
+	)
+
+	accounts := []models.Account{
+		{UserID: auth.User.ID, Type: "bank", Name: "Salary account"},
+		{UserID: auth.User.ID, Type: "debit_card", Name: "Salary debit card"},
+		{UserID: auth.User.ID, Type: "other", Name: "Unclassified rail"},
+	}
+	if err := database.DB.Create(&accounts).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	base := map[string]any{
+		"title": "Derived mode", "type": "expense", "amount": 100, "currency": "INR",
+		"source": "manual", "category": "Misc", "date": "2026-08-20",
+	}
+	for _, test := range []struct {
+		account models.Account
+		want    string
+	}{
+		{account: accounts[0], want: "Bank Account"},
+		{account: accounts[1], want: "Bank Account"},
+	} {
+		payload := make(map[string]any, len(base)+1)
+		for key, value := range base {
+			payload[key] = value
+		}
+		payload["account_id"] = test.account.ID
+		saved := performJSONRequest[models.Entry](
+			t, router, http.MethodPost, "/v1/entries", auth.Token, payload, http.StatusCreated,
+		)
+		if saved.Mode != test.want {
+			t.Fatalf("account type %q derived mode %q, want %q", test.account.Type, saved.Mode, test.want)
+		}
+	}
+
+	otherPayload := make(map[string]any, len(base)+1)
+	for key, value := range base {
+		otherPayload[key] = value
+	}
+	otherPayload["account_id"] = accounts[2].ID
+	rejected := performJSONRequest[struct {
+		Fields map[string]string `json:"fields"`
+	}](t, router, http.MethodPost, "/v1/entries", auth.Token, otherPayload, http.StatusUnprocessableEntity)
+	if rejected.Fields["mode"] != "is required when account type is other" {
+		t.Fatalf("missing mode for other account = %#v", rejected.Fields)
+	}
+
+	otherPayload["mode"] = "Wallets"
+	savedOther := performJSONRequest[models.Entry](
+		t, router, http.MethodPost, "/v1/entries", auth.Token, otherPayload, http.StatusCreated,
+	)
+	if savedOther.Mode != "Wallets" {
+		t.Fatalf("explicit other-account mode = %q, want Wallets", savedOther.Mode)
+	}
+}
+
 func TestModeFilterResolvesAliasesAndRejectsUnknowns(t *testing.T) {
 	useSmokeDatabase(t)
 	router := smokeRouter(t)

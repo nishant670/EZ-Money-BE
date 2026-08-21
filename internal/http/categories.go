@@ -1,8 +1,11 @@
 package http
 
 import (
+	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Canonical transaction categories. This is the single source of truth for what
@@ -17,6 +20,10 @@ import (
 //
 // TestCanonicalCategoriesMatchParseSchema and TestCanonicalCategoriesMatchPrompt
 // fail if these three ever diverge again.
+//
+// Clients read this list from GET /v1/categories rather than copying it, which
+// is what keeps a fourth and fifth copy from appearing in the app and the web
+// front end. TestCategoriesEndpointServesCanonicalList guards that route.
 var canonicalCategories = []string{
 	"Food & Drinks",
 	"Transport",
@@ -189,4 +196,39 @@ func categoryForSave(value string) (string, bool) {
 // categoryLengthMessage explains the only limit on a custom category name.
 func categoryLengthMessage() string {
 	return "must be " + strconv.Itoa(maxCustomCategoryLength) + " characters or fewer"
+}
+
+// CategoriesResponse is what every client picker is built from.
+//
+// The list exists in this file, in schemas/expense_entry.schema.json, and in
+// internal/ai/prompt.txt — three copies inside this repository, held together by
+// TestCanonicalCategoriesMatchParseSchema and TestCanonicalCategoriesMatchPrompt.
+// Clients used to keep a fourth: the mobile app hardcodes CATEGORIES in
+// lib/categories.ts and the web app hardcoded a different eight in its
+// AddTransactionModal, which is how "Electronics", "Health" and "Other" reached
+// the picker while Travel, Family/Gifts and Misc fell out of it. Two of those
+// were silently rewritten by categoryAliases on save, so the picker was telling
+// the user something the database disagreed with, and the third was stored
+// verbatim as a custom category nobody had chosen to create.
+//
+// A client that reads this endpoint cannot drift, because it holds no list.
+type CategoriesResponse struct {
+	Categories []string `json:"categories"`
+	Default    string   `json:"default"`
+}
+
+// listCategories serves the canonical picker list.
+//
+// It is deliberately free of user data: the response is identical for everyone,
+// so a client may cache it. Custom categories a user has created are not
+// included — those come back on the entries themselves, and a picker keeps them
+// selectable by appending the value it is currently editing.
+func (s *Server) listCategories(c *gin.Context) {
+	categories := make([]string, len(canonicalCategories))
+	copy(categories, canonicalCategories)
+
+	c.JSON(http.StatusOK, CategoriesResponse{
+		Categories: categories,
+		Default:    defaultCategory,
+	})
 }

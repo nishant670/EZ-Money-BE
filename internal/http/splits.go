@@ -1269,6 +1269,32 @@ func (s *Server) listSplitBills(c *gin.Context) {
 	c.JSON(http.StatusOK, bills)
 }
 
+func (s *Server) getSplitBillByEntry(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	entryID, ok := parseUintParam(c, "entry_id")
+	if !ok {
+		return
+	}
+
+	var bill models.SplitBill
+	err := database.DB.
+		Preload("Group").
+		Preload("Participants.Friend").
+		Where("user_id = ? AND entry_id = ?", userID, entryID).
+		First(&bill).Error
+	if err == gorm.ErrRecordNotFound {
+		c.JSON(http.StatusOK, nil)
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_get_split_bill"})
+		return
+	}
+
+	applySplitBillViewerPermissions(&bill, userID)
+	c.JSON(http.StatusOK, bill)
+}
+
 func (s *Server) updateSplitBill(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	id, ok := parseUintParam(c, "id")
