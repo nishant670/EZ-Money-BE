@@ -541,6 +541,26 @@ func answerLedgerQuestion(userID uint, question ledgerQuestion) (ledgerAnswer, e
 		answer.Amount = &amount
 	}
 
+	// One transaction behind a number is a transaction the card can simply
+	// show. "See the transaction" is a button asking the reader to go and find
+	// out what it was, when the row itself is what they were going to look at —
+	// and the row is one query the answer has already narrowed to a single
+	// result. Only ever the sole row: two or more and the list is the right
+	// destination.
+	if answer.TransactionCount == 1 && answer.LargestEntry == nil {
+		entryType := values.Get("type")
+		if entryType == "" {
+			entryType = "expense"
+		}
+		only, found, onlyErr := loadLargestEntry(query, entryType)
+		if onlyErr != nil {
+			return ledgerAnswer{}, onlyErr
+		}
+		if found {
+			answer.LargestEntry = &only
+		}
+	}
+
 	breakdown, err := loadAnswerBreakdown(query, question, values.Get("type"), amount)
 	if err != nil {
 		return ledgerAnswer{}, err

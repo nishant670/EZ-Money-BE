@@ -508,12 +508,16 @@ func (s *Server) handleParse(c *gin.Context) {
 	// question is not a transaction with empty fields — normalising it as one
 	// would file it under Misc, flag five fields for confirmation and hand the
 	// app a draft it must not save.
-	if parsedIntent(parsedObj) == parseIntentQuestion {
+	//
+	// `parsedQuestionQuery` is the model's answer plus a deterministic backstop
+	// for the fragments it routes to capture — "today spend" and its kind. See
+	// parse_intent.go.
+	if rawQuery, isQuestion := parsedQuestionQuery(parsedObj, transcript); isQuestion {
 		s.answerParsedQuestion(c, answeredQuestionRequest{
 			userID:        c.MustGet("userID").(uint),
 			transcript:    transcript,
 			tz:            tz,
-			rawQuery:      parsedObj["query"],
+			rawQuery:      rawQuery,
 			creditService: creditService,
 			usageEventID:  usageEvent.ID,
 			subject:       subject,

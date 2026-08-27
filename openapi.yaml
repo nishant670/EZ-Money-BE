@@ -1043,12 +1043,40 @@ paths:
         "404":
           description: Group not found
     delete:
-      summary: Archive a bill-splitting group
+      summary: Delete a bill-splitting group and retire its split bills
+      description: >
+        Archives the group and removes the split bills raised on it, so the
+        group stops contributing to split balances. The linked transactions are
+        the caller's choice and are kept unless `entries=delete` is passed.
+      parameters:
+        - in: query
+          name: entries
+          required: false
+          description: >
+            What to do with the transactions behind the group's split bills.
+            Absent means `keep`, so a client that does not know about this
+            parameter destroys nothing.
+          schema:
+            type: string
+            enum: [keep, delete]
+            default: keep
       responses:
         "200":
-          description: Group archived
+          description: Group deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  deleted_entries:
+                    type: integer
+                    description: How many transactions were actually deleted.
         "404":
           description: Group not found
+        "422":
+          description: Unreadable entries disposition
   /v1/split/groups/{id}/default-split:
     parameters:
       - in: path

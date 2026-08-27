@@ -1129,25 +1129,118 @@ func inviteSplitGroupMembersForOwner(
 	return inviteSplitGroupMembers(database.DB, owner, group, addedFriendIDs)
 }
 
+// Deleting a group retires what it was keeping track of.
+//
+// Archiving the row alone was the whole of this handler, and it left every bill
+// the group had raised sitting in `split_participants` — where
+// `buildSplitBalances` sums them without ever looking at which group they came
+// from. So a group the app showed as gone, on a screen that also said "settled
+// up", kept contributing to the overall figure above it. The two statements
+// were contradicting each other on the same screen.
+//
+// The bills go. What happens to the *transactions* behind them is the user's
+// call, and it is a genuine choice rather than an implementation detail: a
+// split bill and a Finnri entry are two different records of the same evening.
+// The bill says who owes whom; the entry says money left the account, which it
+// did, and which deleting a group does not undo. So the entries are kept unless
+// the user says otherwise — see `entries=delete`.
 func (s *Server) archiveSplitGroup(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
 	}
+	deleteEntries, ok := splitGroupEntryDisposition(c)
+	if !ok {
+		return
+	}
 
-	result := ownedSplitGroups(database.DB.Model(&models.SplitGroup{}), userID).
-		Where("id = ?", id).
-		Update("archived", true)
-	if result.Error != nil {
+	var removedEntries int64
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		result := ownedSplitGroups(tx.Model(&models.SplitGroup{}), userID).
+			Where("id = ?", id).
+			Update("archived", true)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+
+		var bills []models.SplitBill
+		if err := tx.Where("user_id = ? AND group_id = ?", userID, id).Find(&bills).Error; err != nil {
+			return err
+		}
+		if len(bills) == 0 {
+			return nil
+		}
+
+		billIDs := make([]uint, 0, len(bills))
+		entryIDs := make([]uint, 0, len(bills))
+		for _, bill := range bills {
+			billIDs = append(billIDs, bill.ID)
+			if bill.EntryID != nil {
+				entryIDs = append(entryIDs, *bill.EntryID)
+			}
+		}
+
+		// Participants first: they are what the balances are summed from, and
+		// the bill row is only the thing that groups them.
+		if err := tx.Where("user_id = ? AND bill_id IN ?", userID, billIDs).
+			Delete(&models.SplitParticipant{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ? AND id IN ?", userID, billIDs).
+			Delete(&models.SplitBill{}).Error; err != nil {
+			return err
+		}
+
+		if !deleteEntries || len(entryIDs) == 0 {
+			return nil
+		}
+		// Scoped by user_id as well as by id: the ids came from this user's own
+		// bills, and the second predicate is what makes that a guarantee rather
+		// than an inference.
+		entriesResult := tx.Where("user_id = ? AND id IN ?", userID, entryIDs).Delete(&models.Entry{})
+		if entriesResult.Error != nil {
+			return entriesResult.Error
+		}
+		removedEntries = entriesResult.RowsAffected
+		return nil
+	})
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_archive_split_group"})
 		return
 	}
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
-		return
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "split group archived",
+		// Reported rather than assumed, so the app can say what it actually did
+		// instead of what it asked for.
+		"deleted_entries": removedEntries,
+	})
+}
+
+// splitGroupEntryDisposition reads the one choice the delete carries.
+//
+// `keep` is the default and the absent value, so an older app build — which
+// sends no parameter at all — gets the behaviour that destroys nothing.
+func splitGroupEntryDisposition(c *gin.Context) (deleteEntries bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(c.Query("entries"))) {
+	case "", "keep":
+		return false, true
+	case "delete":
+		return true, true
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "split group archived"})
+	c.JSON(http.StatusUnprocessableEntity, gin.H{
+		"error":  "invalid_entry_disposition",
+		"fields": gin.H{"entries": "must be keep or delete"},
+	})
+	return false, false
 }
 
 func (s *Server) leaveSplitGroup(c *gin.Context) {
