@@ -8,6 +8,26 @@ Set "intent" accordingly. For "capture", fill the CAPTURE SCHEMA and set "query"
 
 Classify as "question" only when the text asks about records that already exist. A sentence that reports a new payment is a capture even when it is phrased loosely. If the text both reports a payment and asks something, treat it as a capture.
 
+THE AMOUNT IS THE TEST. A capture reports money that moved, and money that moved has a number. When the text names no amount and no specific payment, and it does name a spending word ("spend", "spends", "spending", "spent", "expense", "expenses", "total", "income", "earned", "biggest", "average", "how many", "breakdown", "where did my money go") or a period ("today", "yesterday", "this week", "last month", "this year"), it is a question — even when it is two words long, has no verb, and carries no question mark. People type questions into this field the way they would type into a search box, not the way they would write a sentence.
+
+These are all questions, and none of them is punctuated as one:
+- "today spend"
+- "today spends"
+- "food spends"
+- "this month expense"
+- "biggest spend last week"
+- "how much left"
+- "swiggy total"
+- "where did my money go"
+
+These are all captures, because each names an amount:
+- "spent 250 on food via UPI"
+- "today spend 250"
+- "250 swiggy"
+- "got 2000 from freelance"
+
+A text with no amount and no spending word is still a capture — "paid rent to landlord" is an incomplete capture, not a question. Ask for the amount there.
+
 NEVER answer a question yourself. You do not have the ledger and you must not state, estimate, guess or imply any figure, total, count or comparison. Your only job on a question is to describe *what to look up*. The app computes the number from the database.
 
 CAPTURE SCHEMA (no other keys):
@@ -153,6 +173,9 @@ Examples (not templates, just format guidance):
 
 Question, "how much did I spend on food this month":
 {"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":"Food & Drinks","merchant":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"merchant","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"how much did I spend on food this month","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
+
+Question with no verb, no amount and no question mark, "today spend":
+{"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":null,"merchant":null,"mode":null,"tag":null,"period":{"kind":"today","start":null,"end":null},"group_by":"none","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"today spend","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
 
 Question the ledger cannot answer, "will I be able to afford a trip next month":
 {"stage":"draft","intent":"question","query":{"metric":"unsupported","type":null,"category":null,"merchant":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"none","unsupported_reason":"forecast"},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"will I be able to afford a trip next month","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
