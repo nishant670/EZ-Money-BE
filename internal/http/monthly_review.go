@@ -141,7 +141,11 @@ func buildMonthlyReview(userID uint, month string, dateRange dashboardRange) (Mo
 	review.TopCategories = dashboard.TopCategories
 	review.TopMerchants = dashboard.TopMerchants
 	review.DailySpending = dashboard.DailySpending
-	review.Available = dashboard.Summary.TransactionCount >= monthlyReviewMinTransactions
+	// Gated on *expenses*, not every entry. A month holding one spend and four
+	// salary rows used to clear the floor and then describe itself as
+	// "₹450 across 1 transaction" — precisely the review this floor exists to
+	// suppress, because it costs more trust than it earns.
+	review.Available = dashboard.Summary.ExpenseCount >= monthlyReviewMinTransactions
 
 	previousCategories, err := loadDashboardPreviousCategoryTotals(
 		userID,
@@ -235,7 +239,7 @@ func monthlyReviewCopy(review MonthlyReviewResponse) (string, string) {
 	sentence := fmt.Sprintf(
 		"%s across %s",
 		formatReviewMoney(review.Summary.TotalSpent),
-		pluralize(review.Summary.TransactionCount, "transaction"),
+		pluralize(review.Summary.ExpenseCount, "transaction"),
 	)
 	if review.Summary.SpendChangeComparable {
 		sentence += fmt.Sprintf(
