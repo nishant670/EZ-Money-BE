@@ -43,6 +43,13 @@ type Config struct {
 	MaintenanceIntervalHours        int
 	AnonymousGuestRetentionDays     int
 	TrustedProxies                  []string
+	AdminBootstrapUserIDs           []uint
+	AdminStaticToken                string
+	AdminRateLimitRPS               float64
+	AdminRateLimitBurst             int
+	AdminIPAllowlist                []string
+	AdminAuditSalt                  string
+	USDINRRate                      float64
 }
 
 func getenv(key, def string) string {
@@ -106,6 +113,18 @@ func csv(key string) []string {
 	return values
 }
 
+func csvUint(key string) []uint {
+	values := csv(key)
+	result := make([]uint, 0, len(values))
+	for _, value := range values {
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err == nil && parsed > 0 {
+			result = append(result, uint(parsed))
+		}
+	}
+	return result
+}
+
 func Load() *Config {
 	return &Config{
 		Port:                            getenv("PORT", "8080"),
@@ -142,6 +161,13 @@ func Load() *Config {
 		MaintenanceIntervalHours:        atoi("MAINTENANCE_INTERVAL_HOURS", 24),
 		AnonymousGuestRetentionDays:     atoi("ANONYMOUS_GUEST_RETENTION_DAYS", 90),
 		TrustedProxies:                  trustedProxies(),
+		AdminBootstrapUserIDs:           csvUint("ADMIN_BOOTSTRAP_USER_IDS"),
+		AdminStaticToken:                getenv("ADMIN_STATIC_TOKEN", ""),
+		AdminRateLimitRPS:               atof("ADMIN_RATE_LIMIT_RPS", 30),
+		AdminRateLimitBurst:             atoi("ADMIN_RATE_LIMIT_BURST", 60),
+		AdminIPAllowlist:                csv("ADMIN_IP_ALLOWLIST"),
+		AdminAuditSalt:                  getenv("ADMIN_AUDIT_SALT", ""),
+		USDINRRate:                      atof("USD_INR_RATE", 88),
 	}
 }
 

@@ -17,6 +17,9 @@ import (
 	"finance-parser-go/internal/models"
 )
 
+// lastActiveWriteInterval bounds how often a request refreshes users.last_active_at.
+const lastActiveWriteInterval = 5 * time.Minute
+
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
@@ -57,6 +60,14 @@ func AuthMiddleware() gin.HandlerFunc {
 		// Store user in context
 		c.Set("user", &user)
 		c.Set("userID", user.ID)
+		// Coarse enough for "last active" on the admin console, and it keeps the
+		// hottest path in the product from issuing a row update on every single
+		// authenticated request.
+		now := time.Now().UTC()
+		if user.LastActiveAt == nil || now.Sub(*user.LastActiveAt) >= lastActiveWriteInterval {
+			_ = database.DB.Model(&models.User{}).Where("id = ?", user.ID).UpdateColumn("last_active_at", now).Error
+			user.LastActiveAt = &now
+		}
 
 		c.Next()
 	}
@@ -118,7 +129,18 @@ func (l *memoryRateLimiter) allow(key string) (bool, int) {
 }
 
 func rateLimit(cfg *config.Config, scope string) gin.HandlerFunc {
-	limiter := newMemoryRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst)
+	return rateLimitAt(cfg.RateLimitRPS, cfg.RateLimitBurst, scope)
+}
+
+// The admin console fetches five or six endpoints per page, and behind the web
+// BFF every admin shares one source IP. The product-wide 5 rps / burst 10 turned
+// an ordinary page load into partial failures with a "rate_limited" banner.
+func adminRateLimit(cfg *config.Config) gin.HandlerFunc {
+	return rateLimitAt(cfg.AdminRateLimitRPS, cfg.AdminRateLimitBurst, "admin")
+}
+
+func rateLimitAt(rps float64, burst int, scope string) gin.HandlerFunc {
+	limiter := newMemoryRateLimiter(rps, burst)
 	return func(c *gin.Context) {
 		key := scope + ":" + c.ClientIP()
 		ok, retryAfter := limiter.allow(key)

@@ -18,6 +18,8 @@ type User struct {
 	ProfileImage        string     `json:"profile_image"`
 	FailedLoginAttempts int        `gorm:"default:0" json:"-"`
 	LoginLockedUntil    *time.Time `gorm:"index" json:"-"`
+	ConvertedAt         *time.Time `gorm:"index" json:"converted_at,omitempty"`
+	LastActiveAt        *time.Time `gorm:"index" json:"last_active_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 	HasPin              bool       `gorm:"-" json:"has_pin"`

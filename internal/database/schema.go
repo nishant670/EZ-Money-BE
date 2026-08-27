@@ -31,7 +31,46 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE users
 			ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0,
 			ADD COLUMN IF NOT EXISTS login_locked_until TIMESTAMPTZ,
-			ADD COLUMN IF NOT EXISTS google_subject VARCHAR(255)`,
+			ADD COLUMN IF NOT EXISTS google_subject VARCHAR(255),
+			ADD COLUMN IF NOT EXISTS converted_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ`,
+		`ALTER TABLE auth_sessions
+			ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'user'`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_kind ON auth_sessions (kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_last_active_at ON users (last_active_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_converted_at ON users (converted_at)`,
+		`CREATE TABLE IF NOT EXISTS admin_users (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+			role VARCHAR(24) NOT NULL DEFAULT 'viewer',
+			disabled_at TIMESTAMPTZ,
+			created_by VARCHAR(120) NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_users_role
+			ON admin_users (role) WHERE disabled_at IS NULL`,
+		`ALTER TABLE admin_users DROP CONSTRAINT IF EXISTS admin_users_role_check`,
+		`ALTER TABLE admin_users ADD CONSTRAINT admin_users_role_check
+			CHECK (role IN ('viewer', 'support', 'owner'))`,
+		`CREATE TABLE IF NOT EXISTS admin_audit_log (
+			id BIGSERIAL PRIMARY KEY,
+			admin_user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+			actor VARCHAR(40) NOT NULL DEFAULT 'admin_user',
+			action VARCHAR(80) NOT NULL,
+			subject_type VARCHAR(40) NOT NULL DEFAULT '',
+			subject_id VARCHAR(120) NOT NULL DEFAULT '',
+			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+			ip_hash CHAR(64) NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE admin_audit_log
+			ALTER COLUMN admin_user_id DROP NOT NULL`,
+		`ALTER TABLE admin_audit_log
+			ADD COLUMN IF NOT EXISTS actor VARCHAR(40) NOT NULL DEFAULT 'admin_user'`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_actor ON admin_audit_log (actor)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created ON admin_audit_log (created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_admin ON admin_audit_log (admin_user_id, created_at DESC)`,
 		`DROP INDEX IF EXISTS idx_users_device_id`,
 		`CREATE INDEX IF NOT EXISTS idx_users_device_id
 			ON users (device_id)
@@ -57,9 +96,14 @@ func runtimeSchemaStatements() []string {
 			message TEXT NOT NULL,
 			impact VARCHAR(32) NOT NULL DEFAULT 'nice_to_have',
 			status VARCHAR(32) NOT NULL DEFAULT 'new',
+			admin_notes TEXT NOT NULL DEFAULT '',
+			resolved_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`ALTER TABLE feedback
+			ADD COLUMN IF NOT EXISTS admin_notes TEXT NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS resolved_by BIGINT REFERENCES users(id) ON DELETE SET NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_user_created
 			ON feedback (user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_status_created
@@ -76,9 +120,11 @@ func runtimeSchemaStatements() []string {
 			CHECK (impact IN ('critical', 'high', 'medium', 'nice_to_have'))`,
 		`ALTER TABLE feedback
 			DROP CONSTRAINT IF EXISTS feedback_status_check`,
+		`UPDATE feedback SET status = 'triaged' WHERE status = 'reviewing'`,
+		`UPDATE feedback SET status = 'declined' WHERE status = 'closed'`,
 		`ALTER TABLE feedback
 			ADD CONSTRAINT feedback_status_check
-			CHECK (status IN ('new', 'reviewing', 'planned', 'shipped', 'closed'))`,
+			CHECK (status IN ('new', 'triaged', 'planned', 'shipped', 'declined'))`,
 		`CREATE TABLE IF NOT EXISTS budgets (
 			id BIGSERIAL PRIMARY KEY,
 			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -278,6 +324,7 @@ func runtimeSchemaStatements() []string {
 			name VARCHAR(120) NOT NULL,
 			billing_interval VARCHAR(24) NOT NULL,
 			price_minor BIGINT NOT NULL DEFAULT 0,
+			list_price_minor BIGINT NOT NULL DEFAULT 0,
 			currency CHAR(3) NOT NULL DEFAULT 'INR',
 			included_credits INTEGER NOT NULL DEFAULT 0,
 			daily_credit_limit INTEGER NOT NULL DEFAULT 0,
@@ -287,6 +334,7 @@ func runtimeSchemaStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`ALTER TABLE plans ADD COLUMN IF NOT EXISTS list_price_minor BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE plans
 			DROP CONSTRAINT IF EXISTS plans_billing_interval_check`,
 		`ALTER TABLE plans
@@ -296,6 +344,35 @@ func runtimeSchemaStatements() []string {
 			DROP CONSTRAINT IF EXISTS plans_price_minor_non_negative_check`,
 		`ALTER TABLE plans
 			ADD CONSTRAINT plans_price_minor_non_negative_check CHECK (price_minor >= 0)`,
+		`ALTER TABLE plans DROP CONSTRAINT IF EXISTS plans_list_price_minor_non_negative_check`,
+		`ALTER TABLE plans ADD CONSTRAINT plans_list_price_minor_non_negative_check CHECK (list_price_minor >= 0)`,
+		`INSERT INTO plans (code, name, billing_interval, price_minor, list_price_minor, currency, included_credits, daily_credit_limit, is_public, requires_login, requires_prior_paid_months)
+			VALUES
+			('weekly_pass', 'Weekly Pass', 'weekly', 7900, 19900, 'INR', 800, 200, TRUE, TRUE, 0),
+			('monthly', 'Monthly', 'monthly', 14900, 49900, 'INR', 3600, 250, TRUE, TRUE, 0),
+			('quarterly', 'Quarterly', 'quarterly', 32900, 129900, 'INR', 11000, 300, TRUE, TRUE, 0),
+			('yearly', 'Yearly', 'yearly', 79900, 399900, 'INR', 48000, 350, TRUE, TRUE, 0),
+			('lifetime_quote', 'Lifetime Quote', 'lifetime_quote', 499900, 1999900, 'INR', 5000, 500, TRUE, TRUE, 3)
+			ON CONFLICT (code) DO UPDATE SET
+				name = EXCLUDED.name,
+				billing_interval = EXCLUDED.billing_interval,
+				price_minor = CASE WHEN plans.price_minor = 0 THEN EXCLUDED.price_minor ELSE plans.price_minor END,
+				list_price_minor = CASE WHEN plans.list_price_minor = 0 THEN EXCLUDED.list_price_minor ELSE plans.list_price_minor END,
+				included_credits = CASE WHEN plans.included_credits IN (0, 700, 3000, 10000, 45000) THEN EXCLUDED.included_credits ELSE plans.included_credits END,
+				daily_credit_limit = CASE WHEN plans.daily_credit_limit IN (0, 150, 200, 250, 300) THEN EXCLUDED.daily_credit_limit ELSE plans.daily_credit_limit END,
+				is_public = TRUE,
+				updated_at = NOW()`,
+		`CREATE TABLE IF NOT EXISTS admin_daily_metrics (
+			id BIGSERIAL PRIMARY KEY,
+			metric_date DATE NOT NULL UNIQUE,
+			active_users INTEGER NOT NULL DEFAULT 0,
+			ai_events INTEGER NOT NULL DEFAULT 0,
+			ai_credits INTEGER NOT NULL DEFAULT 0,
+			ai_cost_usd_micros BIGINT NOT NULL DEFAULT 0,
+			successful_ai_events INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`ALTER TABLE plans
 			DROP CONSTRAINT IF EXISTS plans_currency_check`,
 		`ALTER TABLE plans
