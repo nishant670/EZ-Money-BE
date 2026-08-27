@@ -23,6 +23,7 @@ type billingPlanResponse struct {
 	Name                    string   `json:"name"`
 	BillingInterval         string   `json:"billing_interval"`
 	PriceMinor              *int64   `json:"price_minor"`
+	ListPriceMinor          *int64   `json:"list_price_minor"`
 	Currency                string   `json:"currency"`
 	IncludedCredits         int      `json:"included_credits"`
 	DailyCreditLimit        int      `json:"daily_credit_limit"`
@@ -320,9 +321,11 @@ func defaultBillingPlans() []billingPlanResponse {
 			Code:             "weekly_pass",
 			Name:             "Weekly Pass",
 			BillingInterval:  "weekly",
+			PriceMinor:       int64Pointer(7900),
+			ListPriceMinor:   int64Pointer(19900),
 			Currency:         "INR",
-			IncludedCredits:  700,
-			DailyCreditLimit: 150,
+			IncludedCredits:  800,
+			DailyCreditLimit: 200,
 			RequiresLogin:    true,
 			CheckoutEnabled:  false,
 			FeatureGates:     paidFeatureGates(),
@@ -331,9 +334,11 @@ func defaultBillingPlans() []billingPlanResponse {
 			Code:             "monthly",
 			Name:             "Monthly",
 			BillingInterval:  "monthly",
+			PriceMinor:       int64Pointer(14900),
+			ListPriceMinor:   int64Pointer(49900),
 			Currency:         "INR",
-			IncludedCredits:  3000,
-			DailyCreditLimit: 200,
+			IncludedCredits:  3600,
+			DailyCreditLimit: 250,
 			RequiresLogin:    true,
 			CheckoutEnabled:  false,
 			FeatureGates:     paidFeatureGates(),
@@ -342,9 +347,11 @@ func defaultBillingPlans() []billingPlanResponse {
 			Code:             "quarterly",
 			Name:             "Quarterly",
 			BillingInterval:  "quarterly",
+			PriceMinor:       int64Pointer(32900),
+			ListPriceMinor:   int64Pointer(129900),
 			Currency:         "INR",
-			IncludedCredits:  10000,
-			DailyCreditLimit: 250,
+			IncludedCredits:  11000,
+			DailyCreditLimit: 300,
 			RequiresLogin:    true,
 			CheckoutEnabled:  false,
 			FeatureGates:     paidFeatureGates(),
@@ -353,9 +360,11 @@ func defaultBillingPlans() []billingPlanResponse {
 			Code:             "yearly",
 			Name:             "Yearly",
 			BillingInterval:  "yearly",
+			PriceMinor:       int64Pointer(79900),
+			ListPriceMinor:   int64Pointer(399900),
 			Currency:         "INR",
-			IncludedCredits:  45000,
-			DailyCreditLimit: 300,
+			IncludedCredits:  48000,
+			DailyCreditLimit: 350,
 			RequiresLogin:    true,
 			CheckoutEnabled:  false,
 			FeatureGates:     paidFeatureGates(),
@@ -364,9 +373,11 @@ func defaultBillingPlans() []billingPlanResponse {
 			Code:                    "lifetime_quote",
 			Name:                    "Lifetime Quote",
 			BillingInterval:         "lifetime_quote",
+			PriceMinor:              int64Pointer(499900),
+			ListPriceMinor:          int64Pointer(1999900),
 			Currency:                "INR",
-			IncludedCredits:         0,
-			DailyCreditLimit:        0,
+			IncludedCredits:         5000,
+			DailyCreditLimit:        500,
 			RequiresLogin:           true,
 			RequiresPriorPaidMonths: lifetimeQuoteRequiredPaidMonths,
 			CheckoutEnabled:         false,
@@ -377,11 +388,13 @@ func defaultBillingPlans() []billingPlanResponse {
 
 func planResponseFromModel(plan models.Plan) billingPlanResponse {
 	price := plan.PriceMinor
+	listPrice := plan.ListPriceMinor
 	return billingPlanResponse{
 		Code:                    plan.Code,
 		Name:                    plan.Name,
 		BillingInterval:         plan.BillingInterval,
 		PriceMinor:              &price,
+		ListPriceMinor:          &listPrice,
 		Currency:                plan.Currency,
 		IncludedCredits:         plan.IncludedCredits,
 		DailyCreditLimit:        plan.DailyCreditLimit,
@@ -391,6 +404,8 @@ func planResponseFromModel(plan models.Plan) billingPlanResponse {
 		FeatureGates:            planFeatureGates(plan.Code),
 	}
 }
+
+func int64Pointer(value int64) *int64 { return &value }
 
 func paymentProviderConfigured() bool {
 	return false

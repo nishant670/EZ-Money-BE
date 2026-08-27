@@ -635,6 +635,7 @@ func (s *Server) authRegister(c *gin.Context) {
 		}
 
 		if userFound {
+			convertedAt := time.Now().UTC()
 			if email != nil {
 				user.Email = email
 			}
@@ -645,6 +646,7 @@ func (s *Server) authRegister(c *gin.Context) {
 				user.PinHash = hash
 			}
 			user.IsGuest = false
+			user.ConvertedAt = &convertedAt
 			user.BiometricsEnabled = input.BiometricsEnabled
 			user.Username = "User_" + generateUUID()[:8]
 			if deviceIDPtr != nil {
@@ -811,9 +813,11 @@ func (s *Server) authGoogle(c *gin.Context) {
 
 		if strings.TrimSpace(input.GuestUUID) != "" {
 			if err := tx.Where("uuid = ? AND is_guest = ?", strings.TrimSpace(input.GuestUUID), true).First(&user).Error; err == nil {
+				convertedAt := time.Now().UTC()
 				user.Email = &email
 				user.GoogleSubject = &googleSubject
 				user.IsGuest = false
+				user.ConvertedAt = &convertedAt
 				user.BiometricsEnabled = input.BiometricsEnabled
 				// A guest is named `Guest_59d8f84f`, so there is nothing here
 				// worth keeping either way.

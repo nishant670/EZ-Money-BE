@@ -6,6 +6,214 @@ info:
 servers:
   - url: http://localhost:8080
 paths:
+  /v1/auth/admin/login:
+    post:
+      summary: Authenticate an enabled admin with email and PIN
+      responses:
+        "200": {description: Short-lived admin session issued}
+        "403": {description: User is not an enabled admin}
+  /v1/auth/admin/logout:
+    post:
+      summary: Revoke the current admin session
+      responses:
+        "200": {description: Admin session revoked}
+  /v1/admin/me:
+    get:
+      summary: Return the current admin identity and role
+      responses:
+        "200": {description: Current admin}
+  /v1/admin/overview:
+    get:
+      summary: Return dashboard headline metrics for a time window
+      responses:
+        "200": {description: Admin overview}
+  /v1/admin/users:
+    get:
+      summary: Search and paginate users with masked PII
+      responses:
+        "200": {description: User page}
+  /v1/admin/users/{id}:
+    get:
+      summary: Return a user support and product-usage profile
+      responses:
+        "200": {description: User detail}
+  /v1/admin/users/{id}/ai-usage:
+    get:
+      summary: Return paginated AI events for a user
+      responses:
+        "200": {description: AI usage page}
+  /v1/admin/users/{id}/credits:
+    get:
+      summary: Return a user's credit summary, grants, and ledger
+      responses:
+        "200": {description: User credits}
+  /v1/admin/users/{id}/activity:
+    get:
+      summary: Return a merged user activity timeline
+      responses:
+        "200": {description: Activity timeline}
+  /v1/admin/users/{id}/credits/adjustments:
+    post:
+      summary: Grant a manual credit adjustment to a user
+      responses:
+        "201": {description: Credit grant created}
+  /v1/admin/ai/metrics:
+    get:
+      summary: Return aggregate AI cost and usage metrics
+      responses:
+        "200": {description: AI metrics}
+  /v1/admin/ai/metrics/timeseries:
+    get:
+      summary: Return daily AI event, credit, cost, and success metrics
+      responses:
+        "200": {description: Daily AI series}
+  /v1/admin/ai/usage:
+    get:
+      summary: Browse raw AI usage events
+      responses:
+        "200": {description: AI usage page}
+  /v1/admin/ai/limit-events:
+    get:
+      summary: Browse AI credit and daily-cap limit events
+      responses:
+        "200": {description: Limit event page}
+  /v1/admin/ai/model-pricing:
+    get:
+      summary: List AI model pricing inputs
+      responses:
+        "200": {description: Model pricing}
+    put:
+      summary: Upsert AI model pricing inputs
+      responses:
+        "200": {description: Model pricing saved}
+  /v1/admin/credits/adjustments:
+    post:
+      summary: Create a user or guest credit adjustment
+      responses:
+        "201": {description: Credit grant created}
+  /v1/admin/credits/summary:
+    get:
+      summary: Return granted, consumed, expired, and outstanding credits
+      responses:
+        "200": {description: Credit liability summary}
+  /v1/admin/credits/ledger:
+    get:
+      summary: Browse the global credit ledger
+      responses:
+        "200": {description: Credit ledger page}
+  /v1/admin/subscriptions:
+    get:
+      summary: Browse user subscriptions
+      responses:
+        "200": {description: Subscription page}
+  /v1/admin/revenue:
+    get:
+      summary: Return modelled recurring revenue metrics
+      responses:
+        "200": {description: Modelled revenue metrics}
+  /v1/admin/plans:
+    get:
+      summary: List editable billing plans
+      responses:
+        "200": {description: Billing plans}
+  /v1/admin/plans/{code}:
+    put:
+      summary: Update a billing plan
+      responses:
+        "200": {description: Billing plan saved}
+  /v1/admin/billing/lifetime-quotes:
+    get:
+      summary: Browse lifetime quote requests
+      responses:
+        "200": {description: Lifetime quote page}
+  /v1/admin/billing/lifetime-quotes/{id}:
+    patch:
+      summary: Update lifetime quote status and notes
+      responses:
+        "200": {description: Lifetime quote updated}
+  /v1/admin/ai/abuse-blocks:
+    get:
+      summary: Browse AI abuse blocks
+      responses:
+        "200": {description: Abuse block page}
+    post:
+      summary: Create an AI abuse block
+      responses:
+        "201": {description: Abuse block created}
+  /v1/admin/ai/abuse-blocks/{id}:
+    patch:
+      summary: Update or lift an AI abuse block
+      responses:
+        "200": {description: Abuse block updated}
+  /v1/admin/feedback:
+    get:
+      summary: Browse and filter product feedback
+      responses:
+        "200": {description: Feedback page}
+  /v1/admin/feedback/stats:
+    get:
+      summary: Return feedback counts and open-item age
+      responses:
+        "200": {description: Feedback statistics}
+  /v1/admin/feedback/{id}:
+    patch:
+      summary: Update feedback status and admin notes
+      responses:
+        "200": {description: Feedback updated}
+  /v1/admin/analytics/signups:
+    get:
+      summary: Return daily or weekly signup counts
+      responses:
+        "200": {description: Signup series}
+  /v1/admin/analytics/activation:
+    get:
+      summary: Return seven-day activation funnel metrics
+      responses:
+        "200": {description: Activation funnel}
+  /v1/admin/analytics/retention:
+    get:
+      summary: Return signup-week retention cohorts
+      responses:
+        "200": {description: Retention cohort grid}
+  /v1/admin/analytics/engagement:
+    get:
+      summary: Return DAU, WAU, MAU, and stickiness series
+      responses:
+        "200": {description: Engagement series}
+  /v1/admin/analytics/feature-adoption:
+    get:
+      summary: Return feature and guest-conversion adoption metrics
+      responses:
+        "200": {description: Feature adoption metrics}
+  /v1/admin/audit-log:
+    get:
+      summary: Browse immutable admin action records
+      responses:
+        "200": {description: Audit log page}
+  /v1/admin/health:
+    get:
+      summary: Return database, maintenance, circuit, and notification health
+      responses:
+        "200": {description: Operational health}
+  /v1/admin/export/{resource}:
+    get:
+      summary: Export users, subscriptions, or AI usage as CSV
+      responses:
+        "200": {description: CSV export}
+  /v1/admin/admin-users:
+    get:
+      summary: List admin identities
+      responses:
+        "200": {description: Admin identities}
+    post:
+      summary: Create or enable an admin identity
+      responses:
+        "201": {description: Admin identity created}
+  /v1/admin/admin-users/{id}:
+    patch:
+      summary: Change an admin role or disabled state
+      responses:
+        "200": {description: Admin identity updated}
   /v1/monthly-review:
     get:
       summary: Return the review of a completed calendar month

@@ -17,20 +17,6 @@ import (
 	"finance-parser-go/internal/models"
 )
 
-func (s *Server) requireAdminBearer() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if strings.TrimSpace(s.cfg.AuthBearer) == "" {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "admin_auth_not_configured"})
-			return
-		}
-		if c.GetHeader("Authorization") != "Bearer "+s.cfg.AuthBearer {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "admin_unauthorized"})
-			return
-		}
-		c.Next()
-	}
-}
-
 func (s *Server) getAIMetrics(c *gin.Context) {
 	start, end, ok := parseMetricsWindow(c)
 	if !ok {

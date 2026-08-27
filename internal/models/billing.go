@@ -8,6 +8,7 @@ type Plan struct {
 	Name                    string    `gorm:"type:varchar(120);not null" json:"name"`
 	BillingInterval         string    `gorm:"type:varchar(24);not null" json:"billing_interval"`
 	PriceMinor              int64     `gorm:"not null;default:0" json:"price_minor"`
+	ListPriceMinor          int64     `gorm:"not null;default:0" json:"list_price_minor"`
 	Currency                string    `gorm:"type:char(3);not null;default:INR" json:"currency"`
 	IncludedCredits         int       `gorm:"not null;default:0" json:"included_credits"`
 	DailyCreditLimit        int       `gorm:"not null;default:0" json:"daily_credit_limit"`

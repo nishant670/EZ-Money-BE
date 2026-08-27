@@ -20,6 +20,9 @@ func main() {
 		&models.User{},
 		&models.AuthSession{},
 		&models.AuthVerification{},
+		&models.AdminUser{},
+		&models.AdminAuditLog{},
+		&models.AdminDailyMetric{},
 		&models.Account{},
 		&models.Entry{},
 		&models.QuickPrompt{},
@@ -51,6 +54,9 @@ func main() {
 	}
 
 	cfg := config.Load()
+	if err := httpserver.BootstrapAdminUsers(cfg); err != nil {
+		log.Printf("admin bootstrap failed, console has no bootstrapped owner: %v", err)
+	}
 	httpserver.StartMaintenanceJobs(cfg)
 	httpserver.StartSubscriptionAutomation(cfg)
 	httpserver.StartCardStatementAutomation(cfg)

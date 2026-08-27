@@ -32,7 +32,7 @@ func TestBillingPlansExposePublicCatalog(t *testing.T) {
 	if monthly == nil {
 		t.Fatal("expected monthly plan in public catalog")
 	}
-	if monthly.IncludedCredits != 3000 || monthly.DailyCreditLimit != 200 {
+	if monthly.IncludedCredits != 3600 || monthly.DailyCreditLimit != 250 || monthly.PriceMinor == nil || *monthly.PriceMinor != 14900 {
 		t.Fatalf("unexpected monthly limits: %#v", monthly)
 	}
 	if monthly.CheckoutEnabled {

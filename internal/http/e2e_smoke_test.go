@@ -146,6 +146,8 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	auth.POST("/otp/verify", server.authOtpVerify)
 	auth.POST("/register", server.authRegister)
 	auth.POST("/login", server.authLogin)
+	auth.POST("/admin/login", server.adminLogin)
+	auth.POST("/admin/logout", server.adminLogout)
 	auth.POST("/google", server.authGoogle)
 	auth.POST("/pin/reset", server.authPinReset)
 
@@ -155,15 +157,47 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	billingPublic.POST("/webhook", server.handleBillingWebhook)
 
 	admin := router.Group("/v1/admin")
-	admin.Use(jsonRequestLimits(cfg), rateLimit(cfg, "admin"), server.requireAdminBearer())
+	admin.Use(jsonRequestLimits(cfg), rateLimit(cfg, "admin"), server.requireAdminSession(), server.adminAuditMiddleware())
+	admin.GET("/me", server.getAdminMe)
+	admin.GET("/overview", server.getAdminOverview)
+	admin.GET("/users", server.listAdminUsers)
+	admin.GET("/users/:id", server.getAdminUser)
+	admin.GET("/users/:id/ai-usage", server.listAdminUserAIUsage)
+	admin.GET("/users/:id/credits", server.getAdminUserCredits)
+	admin.GET("/users/:id/activity", server.getAdminUserActivity)
+	admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), server.createUserCreditAdjustment)
 	admin.GET("/ai/metrics", server.getAIMetrics)
+	admin.GET("/ai/metrics/timeseries", server.getAIMetricsTimeseries)
+	admin.GET("/ai/usage", server.listAdminAIUsage)
+	admin.GET("/ai/limit-events", server.listAdminAILimitEvents)
 	admin.GET("/ai/model-pricing", server.listAIModelPricing)
-	admin.PUT("/ai/model-pricing", server.upsertAIModelPricing)
-	admin.POST("/credits/adjustments", server.createCreditAdjustment)
+	admin.PUT("/ai/model-pricing", requireAdminRole(models.AdminRoleOwner), server.upsertAIModelPricing)
+	admin.POST("/credits/adjustments", requireAdminRole(models.AdminRoleSupport), server.createCreditAdjustment)
+	admin.GET("/credits/summary", server.getAdminCreditsSummary)
+	admin.GET("/credits/ledger", server.listAdminCreditLedger)
+	admin.GET("/subscriptions", server.listAdminSubscriptions)
+	admin.GET("/revenue", server.getAdminRevenue)
+	admin.GET("/plans", server.listAdminPlans)
+	admin.PUT("/plans/:code", requireAdminRole(models.AdminRoleOwner), server.updateAdminPlan)
 	admin.GET("/billing/lifetime-quotes", server.listLifetimeQuoteRequests)
+	admin.PATCH("/billing/lifetime-quotes/:id", requireAdminRole(models.AdminRoleSupport), server.updateLifetimeQuoteRequest)
 	admin.GET("/ai/abuse-blocks", server.listAIAbuseBlocks)
-	admin.POST("/ai/abuse-blocks", server.createAIAbuseBlock)
-	admin.PATCH("/ai/abuse-blocks/:id", server.updateAIAbuseBlock)
+	admin.POST("/ai/abuse-blocks", requireAdminRole(models.AdminRoleSupport), server.createAIAbuseBlock)
+	admin.PATCH("/ai/abuse-blocks/:id", requireAdminRole(models.AdminRoleSupport), server.updateAIAbuseBlock)
+	admin.GET("/feedback", server.listAdminFeedback)
+	admin.GET("/feedback/stats", server.getAdminFeedbackStats)
+	admin.PATCH("/feedback/:id", requireAdminRole(models.AdminRoleSupport), server.updateAdminFeedback)
+	admin.GET("/analytics/signups", server.getAdminSignups)
+	admin.GET("/analytics/activation", server.getAdminActivation)
+	admin.GET("/analytics/retention", server.getAdminRetention)
+	admin.GET("/analytics/engagement", server.getAdminEngagement)
+	admin.GET("/analytics/feature-adoption", server.getAdminFeatureAdoption)
+	admin.GET("/audit-log", server.listAdminAuditLog)
+	admin.GET("/health", server.getAdminHealth)
+	admin.GET("/export/:resource", server.exportAdminCSV)
+	admin.GET("/admin-users", requireAdminRole(models.AdminRoleOwner), server.listAdminIdentities)
+	admin.POST("/admin-users", requireAdminRole(models.AdminRoleOwner), server.createAdminIdentity)
+	admin.PATCH("/admin-users/:id", requireAdminRole(models.AdminRoleOwner), server.updateAdminIdentity)
 
 	authorized := router.Group("/v1")
 	authorized.Use(AuthMiddleware())
@@ -252,6 +286,9 @@ func useSmokeDatabase(t *testing.T) {
 		&models.User{},
 		&models.AuthSession{},
 		&models.AuthVerification{},
+		&models.AdminUser{},
+		&models.AdminAuditLog{},
+		&models.AdminDailyMetric{},
 		&models.Plan{},
 		&models.UserSubscription{},
 		&models.CreditGrant{},
