@@ -95,6 +95,24 @@ type statementDiff struct {
 	// entries. Surfaced so the user can see they were considered.
 	Ignored []statementLine    `json:"ignored"`
 	Summary statementDiffTotal `json:"summary"`
+	// Present only for AI screenshot intake. A mismatch is a review warning,
+	// never a reason to hide or reject the parsed rows.
+	Checksum *statementChecksum `json:"checksum,omitempty"`
+	Source   string             `json:"source,omitempty"`
+
+	CreditsCharged        *int `json:"credits_charged,omitempty"`
+	CreditsRemainingToday *int `json:"credits_remaining_today,omitempty"`
+	CreditsRemainingTotal *int `json:"credits_remaining_total,omitempty"`
+}
+
+type statementChecksum struct {
+	ParsedDebits  models.Money `json:"parsed_debits"`
+	ParsedCredits models.Money `json:"parsed_credits"`
+	ParsedNet     models.Money `json:"parsed_net"`
+	ExpectedNet   models.Money `json:"expected_net"`
+	Difference    models.Money `json:"difference"`
+	Matches       bool         `json:"matches"`
+	Message       string       `json:"message"`
 }
 
 type statementDiffTotal struct {

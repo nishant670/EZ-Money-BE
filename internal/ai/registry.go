@@ -156,7 +156,7 @@ func DefaultActionRegistry() ActionRegistry {
 		},
 		{
 			Code:               ActionFutureAIStatementImport,
-			Label:              "AI statement import",
+			Label:              "AI statement screenshot import",
 			InputKind:          InputKindFile,
 			GuestAllowed:       false,
 			DefaultCredits:     100,
@@ -166,7 +166,7 @@ func DefaultActionRegistry() ActionRegistry {
 				MaxFileBytes: 5 * 1024 * 1024,
 			},
 			PaidPlanRequired: true,
-			Implemented:      false,
+			Implemented:      true,
 		},
 	})
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"finance-parser-go/internal/database"
+	"finance-parser-go/internal/identity"
 	"finance-parser-go/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -527,11 +528,11 @@ func (s *Server) createSplitGroupDirectInvite(c *gin.Context) {
 	matchedUser := false
 	userQuery := database.DB
 	if targetEmail != "" && targetPhone != "" {
-		userQuery = userQuery.Where("LOWER(email) = ? OR phone = ?", targetEmail, targetPhone)
+		userQuery = userQuery.Where("LOWER(email) = ? OR phone_normalized = ?", targetEmail, identity.NormalizePhone(targetPhone))
 	} else if targetEmail != "" {
 		userQuery = userQuery.Where("LOWER(email) = ?", targetEmail)
 	} else {
-		userQuery = userQuery.Where("phone = ?", targetPhone)
+		userQuery = userQuery.Where("phone_normalized = ?", identity.NormalizePhone(targetPhone))
 	}
 	if err := userQuery.First(&invitedUser).Error; err != nil && err != gorm.ErrRecordNotFound {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_lookup_invited_user"})
@@ -767,6 +768,16 @@ func (s *Server) updateSplitFriend(c *gin.Context) {
 	if err := database.DB.Save(&friend).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_friend"})
 		return
+	}
+	if matchedUser, err := splitFriendUser(database.DB, friend); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_reconcile_split_friend"})
+		return
+	} else if matchedUser != nil {
+		if err := reconcileSplitIdentities(database.DB, matchedUser.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_reconcile_split_friend"})
+			return
+		}
+		_ = database.DB.First(&friend, friend.ID).Error
 	}
 	c.JSON(http.StatusOK, friend)
 }
@@ -1738,6 +1749,9 @@ func (input splitFriendInput) validate() map[string]string {
 	if len(strings.TrimSpace(input.Phone)) > 32 {
 		fields["phone"] = "must not exceed 32 characters"
 	}
+	if strings.TrimSpace(input.Phone) != "" && identity.NormalizePhone(input.Phone) == "" {
+		fields["phone"] = "must contain at least 10 digits"
+	}
 	return fields
 }
 
@@ -2316,7 +2330,10 @@ func splitFriendUser(db *gorm.DB, friend models.SplitFriend) (*models.User, erro
 	}
 
 	email := strings.ToLower(strings.TrimSpace(friend.Email))
-	phone := strings.TrimSpace(friend.Phone)
+	phone := friend.PhoneNormalized
+	if phone == "" {
+		phone = identity.NormalizePhone(friend.Phone)
+	}
 	if email == "" && phone == "" {
 		return nil, nil
 	}
@@ -2324,11 +2341,11 @@ func splitFriendUser(db *gorm.DB, friend models.SplitFriend) (*models.User, erro
 	query := db
 	switch {
 	case email != "" && phone != "":
-		query = query.Where("LOWER(email) = ? OR phone = ?", email, phone)
+		query = query.Where("LOWER(email) = ? OR phone_normalized = ?", email, phone)
 	case email != "":
 		query = query.Where("LOWER(email) = ?", email)
 	default:
-		query = query.Where("phone = ?", phone)
+		query = query.Where("phone_normalized = ?", phone)
 	}
 	var matched models.User
 	err := query.First(&matched).Error
@@ -2524,7 +2541,7 @@ func getOrCreateSplitGroupDirectInvite(db *gorm.DB, userID, groupID, inviteID ui
 	if targetEmail != "" {
 		query = query.Where("LOWER(target_email) = ?", strings.ToLower(targetEmail))
 	} else {
-		query = query.Where("target_phone = ?", targetPhone)
+		query = query.Where("target_phone_normalized = ?", identity.NormalizePhone(targetPhone))
 	}
 
 	var directInvite models.SplitGroupDirectInvite
@@ -2629,9 +2646,9 @@ func splitInviteTargetIdentityQuery(user models.User) (string, []any) {
 		parts = append(parts, "LOWER(target_email) = ?")
 		args = append(args, strings.ToLower(strings.TrimSpace(*user.Email)))
 	}
-	if user.Phone != nil && strings.TrimSpace(*user.Phone) != "" {
-		parts = append(parts, "target_phone = ?")
-		args = append(args, strings.TrimSpace(*user.Phone))
+	if user.PhoneNormalized != "" {
+		parts = append(parts, "target_phone_normalized = ?")
+		args = append(args, user.PhoneNormalized)
 	}
 	if len(parts) == 0 {
 		return "", nil
@@ -2646,9 +2663,9 @@ func splitInviteUserIdentityQuery(user models.User) (string, []any) {
 		parts = append(parts, "LOWER(email) = ?")
 		args = append(args, strings.ToLower(strings.TrimSpace(*user.Email)))
 	}
-	if user.Phone != nil && strings.TrimSpace(*user.Phone) != "" {
-		parts = append(parts, "phone = ?")
-		args = append(args, strings.TrimSpace(*user.Phone))
+	if user.PhoneNormalized != "" {
+		parts = append(parts, "phone_normalized = ?")
+		args = append(args, user.PhoneNormalized)
 	}
 	if len(parts) == 0 {
 		return "", nil

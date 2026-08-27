@@ -180,12 +180,15 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// Accounts
 		authorized.POST("/accounts", s.saveAccount)
 		authorized.GET("/accounts", s.listAccounts)
+		authorized.GET("/account-providers", listAccountProviders)
 		authorized.PUT("/accounts/:id", s.updateAccount)
+		authorized.POST("/accounts/:id/paid-off", s.markCardPaidOff)
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Credit card statements
 		authorized.GET("/accounts/:id/statements", s.listCardStatements)
 		authorized.POST("/accounts/:id/statements", s.saveCardStatement)
+		authorized.POST("/accounts/:id/statements/alert", jsonRequestLimits(cfg), rateLimit(cfg, "ai"), s.importCardStatementAlert)
 		authorized.GET("/statements/upcoming", s.listUpcomingStatements)
 		authorized.GET("/statements/:id", s.getCardStatement)
 		authorized.DELETE("/statements/:id", s.deleteCardStatement)
@@ -193,7 +196,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/statements/:id/payments/:paymentId", s.deleteCardStatementPayment)
 		authorized.POST("/statements/:id/diff", s.diffCardStatement)
 		authorized.POST("/statements/:id/import", s.importCardStatementLines)
-		authorized.POST("/statements/:id/upload", s.uploadCardStatementPDF)
+		authorized.POST("/statements/:id/upload", uploadRequestLimits(cfg), s.uploadCardStatementPDF)
+		authorized.POST("/statements/:id/screenshots", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.uploadCardStatementScreenshots)
 
 		// Card EMI plans
 		authorized.GET("/accounts/:id/emi-plans", s.listCardEMIPlans)
@@ -258,6 +262,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 			split.POST("/friends", s.createSplitFriend)
 			split.GET("/friends", s.listSplitFriends)
 			split.PUT("/friends/:id", s.updateSplitFriend)
+			split.POST("/friends/:id/merge-into/:target", s.mergeSplitFriend)
 			split.DELETE("/friends/:id", s.archiveSplitFriend)
 			split.POST("/groups", s.createSplitGroup)
 			split.GET("/groups", s.listSplitGroups)
@@ -334,6 +339,7 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/merchants") ||
 		strings.HasPrefix(path, "/v1/categories") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
+		strings.HasPrefix(path, "/v1/account-providers") ||
 		// Statements nested under a card are covered by the line above, but
 		// the top-level ones are not: "/v1/statements/:id" and
 		// "/v1/statements/upcoming" do not have "/v1/accounts" as a prefix.
@@ -1196,7 +1202,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}
 	if input.Category != nil {
 		entry.Category = *input.Category
-		if resolved, ok := categoryForSave(entry.Category); ok {
+		if resolved, ok := categoryForSave(entry.Category, entry.Type); ok {
 			entry.Category = resolved
 		}
 	}
@@ -1481,6 +1487,10 @@ func (s *Server) updateProfile(c *gin.Context) {
 
 	if err := database.DB.Save(&user).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to update profile."})
+		return
+	}
+	if err := reconcileSplitIdentities(database.DB, user.ID); err != nil {
+		c.JSON(500, gin.H{"error": "Failed to reconcile split identities."})
 		return
 	}
 
@@ -1787,6 +1797,7 @@ func (s *Server) saveAccount(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	hydrateAccountProvider(&account)
 	c.JSON(201, account)
 }
 
@@ -1796,6 +1807,9 @@ func (s *Server) listAccounts(c *gin.Context) {
 	if err := database.DB.Where("user_id = ?", userID).Find(&accounts).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
+	}
+	for index := range accounts {
+		hydrateAccountProvider(&accounts[index])
 	}
 
 	// Each account arrives with what its transactions prove, not just what the
@@ -1856,6 +1870,58 @@ func (s *Server) updateAccount(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	hydrateAccountProvider(&account)
+	c.JSON(200, account)
+}
+
+// markCardPaidOff resets only the ledger fallback used before a card has a
+// priced statement. Once a statement exists, payment rows remain authoritative.
+func (s *Server) markCardPaidOff(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid id"})
+		return
+	}
+	var account models.Account
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&account).Error; err != nil {
+		c.JSON(404, gin.H{"error": "account_not_found"})
+		return
+	}
+	if normalizeAccountType(account.Type) != "credit_card" {
+		c.JSON(422, gin.H{"error": "not_credit_card"})
+		return
+	}
+	var pricedStatements int64
+	if err := database.DB.Model(&models.CardStatement{}).
+		Where("user_id = ? AND account_id = ? AND status <> ?", userID, account.ID, statementStatusDraft).
+		Count(&pricedStatements).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_check_card_statements"})
+		return
+	}
+	if pricedStatements > 0 {
+		c.JSON(409, gin.H{
+			"error":   "statement_managed_card",
+			"message": "Record the payment on the card statement instead.",
+		})
+		return
+	}
+	now := timepkg.Now().UTC()
+	var lastEntryID uint
+	if err := database.DB.Model(&models.Entry{}).
+		Where("user_id = ? AND account_id = ?", userID, account.ID).
+		Select("COALESCE(MAX(id), 0)").Scan(&lastEntryID).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_mark_card_paid_off"})
+		return
+	}
+	if err := database.DB.Model(&account).Updates(map[string]any{
+		"card_ledger_reset_at": now, "card_ledger_reset_entry_id": lastEntryID,
+	}).Error; err != nil {
+		c.JSON(500, gin.H{"error": "failed_mark_card_paid_off"})
+		return
+	}
+	account.CardLedgerResetAt = &now
+	account.CardLedgerResetEntryID = &lastEntryID
 	c.JSON(200, account)
 }
 

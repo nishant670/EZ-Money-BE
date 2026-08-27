@@ -1,7 +1,10 @@
 package models
 
 import (
+	"finance-parser-go/internal/identity"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type User struct {
@@ -9,6 +12,7 @@ type User struct {
 	UUID                string     `gorm:"uniqueIndex" json:"uuid"`                 // Public ID for API tokens check
 	Email               *string    `gorm:"uniqueIndex" json:"email,omitempty"`      // Nullable unique email
 	Phone               *string    `gorm:"uniqueIndex" json:"phone,omitempty"`      // Nullable unique phone
+	PhoneNormalized     string     `gorm:"type:varchar(10);index" json:"-"`         // India-first identity comparison key
 	GoogleSubject       *string    `gorm:"uniqueIndex" json:"-"`                    // Stable Google account subject
 	DeviceID            *string    `gorm:"index" json:"device_id,omitempty"`        // For device-scoped guest reuse
 	PinHash             string     `json:"-"`                                       // Bcrypt hash, hidden from JSON
@@ -23,4 +27,13 @@ type User struct {
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 	HasPin              bool       `gorm:"-" json:"has_pin"`
+}
+
+func (user *User) BeforeSave(_ *gorm.DB) error {
+	if user.Phone == nil {
+		user.PhoneNormalized = ""
+	} else {
+		user.PhoneNormalized = identity.NormalizePhone(*user.Phone)
+	}
+	return nil
 }

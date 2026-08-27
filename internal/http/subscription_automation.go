@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/config"
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/models"
@@ -32,6 +33,12 @@ func StartSubscriptionAutomation(_ *config.Config) {
 			if _, err := syncAllSubscriptionAutomation(time.Now()); err != nil {
 				log.Printf("subscription automation sync failed: %v", err)
 			}
+			if _, err := syncPaidSubscriptionCreditTranches(time.Now().UTC()); err != nil {
+				log.Printf("paid subscription credit tranche sync failed: %v", err)
+			}
+			if _, err := billing.NewCreditService(database.DB).ExpireCredits(); err != nil {
+				log.Printf("credit expiry sync failed: %v", err)
+			}
 		}
 		run()
 		ticker := time.NewTicker(time.Minute)
@@ -40,6 +47,26 @@ func StartSubscriptionAutomation(_ *config.Config) {
 			run()
 		}
 	}()
+}
+
+func syncPaidSubscriptionCreditTranches(now time.Time) (int, error) {
+	var subscriptions []models.UserSubscription
+	if err := database.DB.Preload("Plan").
+		Where("status = ? AND current_period_start <= ?", "active", now).
+		Find(&subscriptions).Error; err != nil {
+		return 0, err
+	}
+
+	service := billing.NewCreditService(database.DB)
+	created := 0
+	for _, subscription := range subscriptions {
+		count, err := service.SyncSubscriptionTranches(subscription, now)
+		if err != nil {
+			return created, err
+		}
+		created += count
+	}
+	return created, nil
 }
 
 func syncAllSubscriptionAutomation(now time.Time) (int, error) {
@@ -123,7 +150,7 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 		// same resolver, otherwise a subscription filed under the old
 		// subscription-only vocabulary ("Cloud", "Membership") would put that
 		// value straight into the ledger and fragment the category rollups.
-		category, ok := categoryForSave(subscription.Category)
+		category, ok := categoryForSave(subscription.Category, "expense")
 		if !ok {
 			category = defaultCategory
 		}

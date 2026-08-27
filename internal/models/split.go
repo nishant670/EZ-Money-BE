@@ -4,23 +4,32 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"finance-parser-go/internal/identity"
 	"fmt"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type SplitFriend struct {
-	ID       uint   `gorm:"primaryKey" json:"id"`
-	UserID   uint   `gorm:"index;not null" json:"user_id"`
-	Name     string `gorm:"not null" json:"name"`
-	Email    string `json:"email"`
-	Phone    string `json:"phone"`
-	Archived bool   `gorm:"not null;default:false" json:"archived"`
+	ID              uint   `gorm:"primaryKey" json:"id"`
+	UserID          uint   `gorm:"index;not null" json:"user_id"`
+	Name            string `gorm:"not null" json:"name"`
+	Email           string `json:"email"`
+	Phone           string `json:"phone"`
+	PhoneNormalized string `gorm:"type:varchar(10);index" json:"phone_normalized,omitempty"`
+	Archived        bool   `gorm:"not null;default:false" json:"archived"`
 	// Set when the person behind this friend row has their own Finnri account.
 	// A friend row belongs to whoever wrote it, so this is the only link that
 	// lets a shared group say "this member is you" to the right viewer.
 	LinkedUserID *uint     `gorm:"index" json:"linked_user_id,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+func (friend *SplitFriend) BeforeSave(_ *gorm.DB) error {
+	friend.PhoneNormalized = identity.NormalizePhone(friend.Phone)
+	return nil
 }
 
 // SplitGroupDefaultSplitSlot names the group owner in a default split. Every
@@ -155,14 +164,20 @@ type SplitGroupDirectInvite struct {
 	// Which friend row this invite was raised for, when it came from adding a
 	// specific person to the group. It is what lets acceptance reuse the row the
 	// owner has already been splitting against instead of guessing at one.
-	FriendID      *uint     `gorm:"index" json:"friend_id,omitempty"`
-	TargetEmail   string    `gorm:"type:varchar(254);not null;default:''" json:"target_email"`
-	TargetPhone   string    `gorm:"type:varchar(32);not null;default:''" json:"target_phone"`
-	InvitedUserID *uint     `gorm:"index" json:"invited_user_id"`
-	InvitedUser   *User     `json:"-" gorm:"foreignKey:InvitedUserID;constraint:OnDelete:SET NULL"`
-	Status        string    `gorm:"type:varchar(16);not null;default:pending" json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	FriendID              *uint     `gorm:"index" json:"friend_id,omitempty"`
+	TargetEmail           string    `gorm:"type:varchar(254);not null;default:''" json:"target_email"`
+	TargetPhone           string    `gorm:"type:varchar(32);not null;default:''" json:"target_phone"`
+	TargetPhoneNormalized string    `gorm:"type:varchar(10);index" json:"-"`
+	InvitedUserID         *uint     `gorm:"index" json:"invited_user_id"`
+	InvitedUser           *User     `json:"-" gorm:"foreignKey:InvitedUserID;constraint:OnDelete:SET NULL"`
+	Status                string    `gorm:"type:varchar(16);not null;default:pending" json:"status"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
+func (invite *SplitGroupDirectInvite) BeforeSave(_ *gorm.DB) error {
+	invite.TargetPhoneNormalized = identity.NormalizePhone(invite.TargetPhone)
+	return nil
 }
 
 type SplitGroupUserMember struct {

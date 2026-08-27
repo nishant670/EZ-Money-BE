@@ -18,6 +18,7 @@ type Config struct {
 	OpenAILlmModel                  string
 	OpenAIWhisper                   string
 	OpenAIMaxTokens                 int
+	OpenAIStatementMaxTokens        int
 	ReqTimeoutSec                   int
 	RateLimitRPS                    float64
 	RateLimitBurst                  int
@@ -136,6 +137,7 @@ func Load() *Config {
 		OpenAILlmModel:                  getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
 		OpenAIWhisper:                   getenv("OPENAI_WHISPER_MODEL", "gpt-4o-mini-transcribe"),
 		OpenAIMaxTokens:                 atoi("OPENAI_MAX_OUTPUT_TOKENS", 600),
+		OpenAIStatementMaxTokens:        atoi("OPENAI_STATEMENT_MAX_OUTPUT_TOKENS", 4000),
 		ReqTimeoutSec:                   atoi("REQUEST_TIMEOUT_SECONDS", 30),
 		RateLimitRPS:                    atof("RATE_LIMIT_RPS", 5),
 		RateLimitBurst:                  atoi("RATE_LIMIT_BURST", 10),

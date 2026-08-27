@@ -53,9 +53,10 @@ func TestCanonicalCategoriesMatchParseSchema(t *testing.T) {
 		t.Error("parse schema should still allow a null category for non-transaction text")
 	}
 
-	if strings.Join(schemaCategories, "|") != strings.Join(canonicalCategories, "|") {
-		t.Fatalf("parse schema categories drifted from canonicalCategories\n schema: %v\n  code:  %v",
-			schemaCategories, canonicalCategories)
+	allCategories := append(append([]string(nil), canonicalCategories...), canonicalIncomeCategories...)
+	if strings.Join(schemaCategories, "|") != strings.Join(allCategories, "|") {
+		t.Fatalf("parse schema categories drifted from canonical category lists\n schema: %v\n  code:  %v",
+			schemaCategories, allCategories)
 	}
 }
 
@@ -66,7 +67,8 @@ func TestCanonicalCategoriesMatchPrompt(t *testing.T) {
 		t.Fatalf("failed to read parser prompt: %v", err)
 	}
 
-	want := `"category": "` + strings.Join(canonicalCategories, "|") + `|null",`
+	allCategories := append(append([]string(nil), canonicalCategories...), canonicalIncomeCategories...)
+	want := `"category": "` + strings.Join(allCategories, "|") + `|null",`
 	if !strings.Contains(string(raw), want) {
 		t.Fatalf("parser prompt does not declare the canonical categories; expected a line containing:\n%s", want)
 	}
@@ -121,6 +123,25 @@ func TestCanonicalCategoryRejectsUnknownValues(t *testing.T) {
 		if resolved, ok := canonicalCategory(value); ok {
 			t.Errorf("canonicalCategory(%q) = %q, want rejection so the user is asked", value, resolved)
 		}
+	}
+}
+
+func TestCanonicalIncomeCategoriesStaySeparateFromExpenses(t *testing.T) {
+	for _, category := range canonicalIncomeCategories {
+		if resolved, ok := canonicalCategoryForType(category, "income"); !ok || resolved != category {
+			t.Fatalf("income category %q did not round trip: %q, %v", category, resolved, ok)
+		}
+		if category != "Other" {
+			if _, ok := canonicalCategoryForType(category, "expense"); ok {
+				t.Fatalf("income category %q leaked into expense categories", category)
+			}
+		}
+	}
+	if resolved, ok := canonicalCategoryForType("Other", "expense"); !ok || resolved != "Misc" {
+		t.Fatalf("legacy expense Other should still resolve to Misc, got %q, %v", resolved, ok)
+	}
+	if resolved, ok := canonicalCategoryForType("cashback", "income"); !ok || resolved != "Refund" {
+		t.Fatalf("income cashback should resolve to Refund, got %q, %v", resolved, ok)
 	}
 }
 
@@ -204,6 +225,12 @@ func TestCategoriesEndpointServesCanonicalList(t *testing.T) {
 	}
 	if response.Default != defaultCategory {
 		t.Fatalf("served default category = %q, want %q", response.Default, defaultCategory)
+	}
+	if strings.Join(response.IncomeCategories, "|") != strings.Join(canonicalIncomeCategories, "|") {
+		t.Fatalf("served income categories drifted: served=%v code=%v", response.IncomeCategories, canonicalIncomeCategories)
+	}
+	if response.IncomeDefault != defaultIncomeCategory {
+		t.Fatalf("served income default = %q, want %q", response.IncomeDefault, defaultIncomeCategory)
 	}
 
 	// Every served value must survive a round trip through the save path, or a

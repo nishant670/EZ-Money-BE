@@ -74,6 +74,20 @@ func TestSummariseAccountOmitsUtilisationWithoutALimit(t *testing.T) {
 	}
 }
 
+func TestSummariseAccountStartsStatementlessCardAfterPaidOffReset(t *testing.T) {
+	resetAt := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
+	account := models.Account{
+		Type: "credit_card", Balance: mustMoney(t, "1500"), CardLedgerResetAt: &resetAt,
+	}
+	summary := summariseAccount(account, accountLedgerTotals{
+		LifetimeSpent: 24000, LifetimeReceived: 5000,
+		CardSpentSinceReset: 800, CardReceivedSinceReset: 100,
+	}, cardStatementContext{}, testToday)
+	if summary.Outstanding == nil || *summary.Outstanding != 700 {
+		t.Fatalf("outstanding after reset = %v, want 700 from only later entries", summary.Outstanding)
+	}
+}
+
 // A card in credit has no bar to draw. Over the limit does, and it is worth
 // showing, so only the negative side is clamped.
 func TestSummariseAccountClampsNegativeUtilisationButNotOverLimit(t *testing.T) {
@@ -210,6 +224,47 @@ func TestListAccountsDerivesPerAccountFiguresFromTheLedger(t *testing.T) {
 	if unusedResult.Summary.LastActivityDate != "" {
 		t.Fatalf("last activity for an unused account = %q, want empty", unusedResult.Summary.LastActivityDate)
 	}
+}
+
+func TestMarkCardPaidOffResetsOnlyTheStatementlessLedgerFallback(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	auth := performJSONRequest[AuthResponse](t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{
+		"device_id": "card-paid-off-device",
+	}, http.StatusOK)
+	card := models.Account{UserID: auth.User.ID, Type: "credit_card", Name: "Ledger card"}
+	if err := database.DB.Create(&card).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := models.Entry{
+		UserID: auth.User.ID, AccountID: &card.ID, Type: "expense", Amount: mustMoney(t, "4000"),
+		Date: testToday, Currency: "INR", Source: "manual",
+	}
+	if err := database.DB.Create(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	performJSONRequest[models.Account](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/accounts/%d/paid-off", card.ID), auth.Token, nil, http.StatusOK,
+	)
+	after := models.Entry{
+		UserID: auth.User.ID, AccountID: &card.ID, Type: "expense", Amount: mustMoney(t, "600"),
+		Date: testToday, Currency: "INR", Source: "manual",
+	}
+	if err := database.DB.Create(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	accounts := performJSONRequest[[]accountWithSummary](
+		t, router, http.MethodGet, "/v1/accounts?tz=Asia/Kolkata", auth.Token, nil, http.StatusOK,
+	)
+	for _, result := range accounts {
+		if result.ID == card.ID {
+			if result.Summary.Outstanding == nil || *result.Summary.Outstanding != 600 {
+				t.Fatalf("outstanding after paid-off reset = %v, want 600", result.Summary.Outstanding)
+			}
+			return
+		}
+	}
+	t.Fatal("card missing from account response")
 }
 
 // Accounts are per-user, and so are their figures.
