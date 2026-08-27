@@ -771,6 +771,25 @@ func (s *Server) updateSplitFriend(c *gin.Context) {
 	c.JSON(http.StatusOK, friend)
 }
 
+// Archiving a friend takes them out of the groups they were in.
+//
+// It used to set `archived` and stop there, and the `split_group_members` rows
+// survived — pointing at a friend `listSplitFriends` will never return again,
+// because it filters on that same flag. Every group the person was in went on
+// listing a member the app could not resolve to anybody.
+//
+// That is not a tidiness problem. The expense composer decides who *carries* a
+// share from the group's member list and who gets a *row* from the friends
+// list, so the two came apart at exactly this point: a split over two visible
+// people totalled three people's worth, and the third had nothing on screen to
+// edit. It is also how a duplicate gets cleaned up — the whole reason somebody
+// archives a friend row is that it turned out to be a second copy of a person
+// who is already in the group under another one.
+//
+// Their bills and participant rows are left alone. `buildSplitBalances` walks
+// active friends and never reaches an archived one, so the balance is already
+// zero; deleting the history as well would be a different and much larger
+// promise than the button makes.
 func (s *Server) archiveSplitFriend(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	id, ok := parseUintParam(c, "id")
@@ -778,15 +797,25 @@ func (s *Server) archiveSplitFriend(c *gin.Context) {
 		return
 	}
 
-	result := ownedSplitFriends(database.DB.Model(&models.SplitFriend{}), userID).
-		Where("id = ?", id).
-		Update("archived", true)
-	if result.Error != nil {
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		result := ownedSplitFriends(tx.Model(&models.SplitFriend{}), userID).
+			Where("id = ?", id).
+			Update("archived", true)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Where("user_id = ? AND friend_id = ?", userID, id).
+			Delete(&models.SplitGroupMember{}).Error
+	})
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "split_friend_not_found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_archive_split_friend"})
-		return
-	}
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "split_friend_not_found"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "split friend archived"})
@@ -1942,10 +1971,23 @@ func validateSplitBillParticipantFriends(userID uint, groupID *uint, participant
 		return validateSplitParticipantFriends(userID, participants)
 	}
 
+	// Joined against the friend rows rather than read from the membership table
+	// alone, because membership survives archiving. A share recorded against an
+	// archived friend is money that leaves the payer's side of the ledger and
+	// arrives nowhere: `buildSplitBalances` walks active friends and never
+	// reaches that participant row, so the amount is gone from every figure the
+	// app shows rather than merely misfiled.
+	//
+	// Scoped by the group and by `archived`, and deliberately not by `userID`.
+	// Membership always names the *owner's* friend rows, and a member recording
+	// an expense in a shared group names them too — so the caller is usually
+	// not the person those rows belong to.
 	var groupFriendIDs []uint
 	if err := database.DB.Model(&models.SplitGroupMember{}).
-		Where("group_id = ?", *groupID).
-		Pluck("friend_id", &groupFriendIDs).Error; err != nil {
+		Joins("JOIN split_friends ON split_friends.id = split_group_members.friend_id").
+		Where("split_group_members.group_id = ?", *groupID).
+		Where("split_friends.archived = ?", false).
+		Pluck("split_group_members.friend_id", &groupFriendIDs).Error; err != nil {
 		return nil, err
 	}
 	allowedFriendIDs := map[uint]bool{}
