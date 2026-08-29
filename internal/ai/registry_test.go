@@ -70,6 +70,19 @@ func TestFutureActionsCannotBeExecutedYet(t *testing.T) {
 	}
 }
 
+func TestStatementScreenshotActionIsExecutableAndBounded(t *testing.T) {
+	action, err := DefaultActionRegistry().RequireImplemented(ActionFutureAIStatementImport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.InputKind != InputKindFile || action.InputLimits.MaxFileBytes != 5*1024*1024 {
+		t.Fatalf("unexpected statement input limits: %#v", action)
+	}
+	if !action.PaidPlanRequired || action.GuestAllowed {
+		t.Fatalf("statement image parsing must stay paid and signed-in only: %#v", action)
+	}
+}
+
 func TestActionValidationRejectsInvalidCosts(t *testing.T) {
 	action := Action{
 		Code:               ActionCode("bad_cost"),

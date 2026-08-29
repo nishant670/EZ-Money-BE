@@ -179,7 +179,7 @@ func syncCardStatementReminders(userID uint, now time.Time) (int, error) {
 	for index := range statements {
 		statement := statements[index]
 		card, ok := cards[statement.AccountID]
-		if !ok {
+		if !ok || !card.ReminderEnabled {
 			continue
 		}
 

@@ -18,6 +18,7 @@ import (
 
 	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/database"
+	"finance-parser-go/internal/identity"
 	"finance-parser-go/internal/models"
 )
 
@@ -169,7 +170,11 @@ func normalizeIdentifier(identifier string) (string, string, error) {
 	if strings.Contains(normalized, "@") {
 		return "email", strings.ToLower(normalized), nil
 	}
-	return "phone", normalized, nil
+	normalizedPhone := identity.NormalizePhone(normalized)
+	if normalizedPhone == "" {
+		return "", "", errors.New("invalid_phone")
+	}
+	return "phone", normalizedPhone, nil
 }
 
 func consumeClaimToken(rawToken string) (verifiedClaim, error) {
@@ -210,6 +215,9 @@ func issueSession(userID uint) (string, time.Time, error) {
 }
 
 func authResponse(user *models.User) (AuthResponse, error) {
+	if err := reconcileSplitIdentities(database.DB, user.ID); err != nil {
+		return AuthResponse{}, err
+	}
 	token, expiresAt, err := issueSession(user.ID)
 	if err != nil {
 		return AuthResponse{}, err
@@ -221,7 +229,7 @@ func findUserByVerifiedIdentifier(identifierType, identifier string) (models.Use
 	var user models.User
 	query := "email = ?"
 	if identifierType != "email" {
-		query = "phone = ?"
+		query = "phone_normalized = ?"
 	}
 	err := database.DB.Where(query, identifier).First(&user).Error
 	return user, err
@@ -425,7 +433,7 @@ func (s *Server) authIdentify(c *gin.Context) {
 	var user models.User
 	query := "email = ?"
 	if identifierType == "phone" {
-		query = "phone = ?"
+		query = "phone_normalized = ?"
 	}
 	err = database.DB.Where(query, identifier).First(&user).Error
 	if err == gorm.ErrRecordNotFound {
@@ -603,7 +611,7 @@ func (s *Server) authRegister(c *gin.Context) {
 		var existing models.User
 		query := "email = ?"
 		if claim.IdentifierType != "email" {
-			query = "phone = ?"
+			query = "phone_normalized = ?"
 		}
 		if err := tx.Where(query, claim.Identifier).First(&existing).Error; err == nil {
 			return gorm.ErrDuplicatedKey

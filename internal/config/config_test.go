@@ -19,6 +19,9 @@ func TestLoadDoesNotDefaultCORSWildcard(t *testing.T) {
 	if cfg.MaxJSONKB != 64 {
 		t.Fatalf("expected default MAX_JSON_KB 64, got %d", cfg.MaxJSONKB)
 	}
+	if cfg.OpenAIStatementMaxTokens != 4000 {
+		t.Fatalf("expected statement output limit 4000, got %d", cfg.OpenAIStatementMaxTokens)
+	}
 	if cfg.AIFreeCostPerUserAlertUSDMicros != 100000 {
 		t.Fatalf("expected default free cost alert 100000 micros, got %d", cfg.AIFreeCostPerUserAlertUSDMicros)
 	}
@@ -49,6 +52,7 @@ func TestEnvExampleContainsRequiredRedactedVariables(t *testing.T) {
 		"OPENAI_LLM_MODEL",
 		"OPENAI_WHISPER_MODEL",
 		"OPENAI_MAX_OUTPUT_TOKENS",
+		"OPENAI_STATEMENT_MAX_OUTPUT_TOKENS",
 		"AI_PARSE_DISABLED",
 		"AI_UNPAID_MAX_VOICE_BYTES",
 		"AI_FAILED_PARSE_COOLDOWN_THRESHOLD",

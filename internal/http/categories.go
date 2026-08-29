@@ -35,9 +35,18 @@ var canonicalCategories = []string{
 	"Misc",
 }
 
+var canonicalIncomeCategories = []string{
+	"Salary",
+	"Freelance",
+	"Interest",
+	"Refund",
+	"Other",
+}
+
 // defaultCategory is the confirm-first fallback: when the category is unknown we
 // file it here and flag it for confirmation rather than guessing.
 const defaultCategory = "Misc"
+const defaultIncomeCategory = "Other"
 
 // categoryAliases maps loose or legacy input onto the canonical list.
 //
@@ -146,20 +155,47 @@ var categoryAliases = map[string]string{
 	"split":         "Misc",
 }
 
+var incomeCategoryAliases = map[string]string{
+	"salary income":     "Salary",
+	"wages":             "Salary",
+	"paycheck":          "Salary",
+	"freelancing":       "Freelance",
+	"consulting":        "Freelance",
+	"side hustle":       "Freelance",
+	"interest income":   "Interest",
+	"bank interest":     "Interest",
+	"cashback":          "Refund",
+	"reimbursement":     "Refund",
+	"returned purchase": "Refund",
+}
+
 // canonicalCategory resolves a raw value to its canonical form. The second
 // return is false when the value is not recognised at all, which callers treat
 // as "ask the user" rather than silently filing it somewhere.
 func canonicalCategory(value string) (string, bool) {
+	if resolved, ok := canonicalCategoryForType(value, "expense"); ok {
+		return resolved, true
+	}
+	return canonicalCategoryForType(value, "income")
+}
+
+func canonicalCategoryForType(value, entryType string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	if normalized == "" {
 		return "", false
 	}
-	for _, category := range canonicalCategories {
+	categories := canonicalCategories
+	aliases := categoryAliases
+	if strings.EqualFold(strings.TrimSpace(entryType), "income") {
+		categories = canonicalIncomeCategories
+		aliases = incomeCategoryAliases
+	}
+	for _, category := range categories {
 		if strings.ToLower(category) == normalized {
 			return category, true
 		}
 	}
-	if alias, ok := categoryAliases[normalized]; ok {
+	if alias, ok := aliases[normalized]; ok {
 		return alias, true
 	}
 	return "", false
@@ -179,12 +215,22 @@ const maxCustomCategoryLength = 40
 // the same failure as the parser inventing one — the parser is now held to the
 // canonical enum by the schema and the normalizer, which is where "Finance" and
 // "Split" originally came from.
-func categoryForSave(value string) (string, bool) {
+func categoryForSave(value string, entryTypes ...string) (string, bool) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return "", false
 	}
-	if resolved, ok := canonicalCategory(trimmed); ok {
+	var resolved string
+	var ok bool
+	if len(entryTypes) > 0 {
+		resolved, ok = canonicalCategoryForType(trimmed, entryTypes[0])
+	} else {
+		// Historical callers without a type are expense-only. Keeping that
+		// default prevents an income alias such as "side hustle" from rewriting
+		// a user-authored expense category with the same words.
+		resolved, ok = canonicalCategoryForType(trimmed, "expense")
+	}
+	if ok {
 		return resolved, true
 	}
 	if len([]rune(trimmed)) > maxCustomCategoryLength {
@@ -213,8 +259,10 @@ func categoryLengthMessage() string {
 //
 // A client that reads this endpoint cannot drift, because it holds no list.
 type CategoriesResponse struct {
-	Categories []string `json:"categories"`
-	Default    string   `json:"default"`
+	Categories       []string `json:"categories"`
+	Default          string   `json:"default"`
+	IncomeCategories []string `json:"income_categories"`
+	IncomeDefault    string   `json:"income_default"`
 }
 
 // listCategories serves the canonical picker list.
@@ -228,7 +276,9 @@ func (s *Server) listCategories(c *gin.Context) {
 	copy(categories, canonicalCategories)
 
 	c.JSON(http.StatusOK, CategoriesResponse{
-		Categories: categories,
-		Default:    defaultCategory,
+		Categories:       categories,
+		Default:          defaultCategory,
+		IncomeCategories: append([]string(nil), canonicalIncomeCategories...),
+		IncomeDefault:    defaultIncomeCategory,
 	})
 }

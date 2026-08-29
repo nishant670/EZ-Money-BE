@@ -31,6 +31,13 @@ type DashboardSummary struct {
 	TotalIncome      float64 `json:"total_income"`
 	DailyAverage     float64 `json:"daily_average"`
 	TransactionCount int     `json:"transaction_count"`
+	// Expenses only, where TransactionCount is every entry in the window.
+	// Anything that pairs a count with a *spend* figure has to use this one:
+	// "₹67,955 across 39 transactions" counted a salary inside a sentence about
+	// money going out, so the two halves described different sets of rows.
+	// TransactionCount keeps its meaning — the dashboard, Insights and the
+	// weekly review use it as a plain activity count, which it is.
+	ExpenseCount int `json:"expense_count"`
 	// What the same window spent last time, and how this compares — the
 	// headline version of what TopCategories already carries per category.
 	// It lived only inside a `period_comparison` insight card before, which is
@@ -334,6 +341,7 @@ type dashboardSummaryRow struct {
 	TotalSpent       float64
 	TotalIncome      float64
 	TransactionCount int
+	ExpenseCount     int
 }
 
 func loadDashboardSummary(userID uint, start, end string) (DashboardSummary, error) {
@@ -341,7 +349,8 @@ func loadDashboardSummary(userID uint, start, end string) (DashboardSummary, err
 	err := database.DB.Model(&models.Entry{}).
 		Select(`COALESCE(SUM(CASE WHEN LOWER(type) = 'expense' THEN amount ELSE 0 END), 0) AS total_spent,
 			COALESCE(SUM(CASE WHEN LOWER(type) = 'income' THEN amount ELSE 0 END), 0) AS total_income,
-			COUNT(*) AS transaction_count`).
+			COUNT(*) AS transaction_count,
+			COUNT(CASE WHEN LOWER(type) = 'expense' THEN 1 END) AS expense_count`).
 		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+"", userID, start, end).
 		Scan(&row).Error
 	if err != nil {
@@ -351,6 +360,7 @@ func loadDashboardSummary(userID uint, start, end string) (DashboardSummary, err
 		TotalSpent:       row.TotalSpent,
 		TotalIncome:      row.TotalIncome,
 		TransactionCount: row.TransactionCount,
+		ExpenseCount:     row.ExpenseCount,
 	}, nil
 }
 
@@ -665,6 +675,7 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 			continue
 		}
 		response.Summary.TotalSpent += amount
+		response.Summary.ExpenseCount++
 		expenseAmounts = append(expenseAmounts, amount)
 		if dailyCurrent[entry.Date] == nil {
 			dailyCurrent[entry.Date] = &DashboardDailySpend{Date: entry.Date}

@@ -222,7 +222,7 @@ func forecloseEMIPlan(plan *models.CardEMIPlan) error {
 // otherwise files the instalment under the confirm-first fallback rather than
 // inventing a category the rest of the app cannot group by.
 func emiEntryCategory(category string) string {
-	if resolved, ok := categoryForSave(category); ok {
+	if resolved, ok := categoryForSave(category, "expense"); ok {
 		return resolved
 	}
 	return defaultCategory

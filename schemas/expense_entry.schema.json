@@ -96,6 +96,11 @@
         "Entertainment",
         "Family/Gifts",
         "Misc",
+        "Salary",
+        "Freelance",
+        "Interest",
+        "Refund",
+        "Other",
         null
       ]
     },

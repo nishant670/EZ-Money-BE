@@ -739,6 +739,74 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Account"
+  /v1/account-providers:
+    get:
+      summary: List structured account providers and their matching aliases
+      parameters:
+        - in: query
+          name: type
+          required: false
+          schema:
+            type: string
+            enum: [cash, upi, bank, credit_card, debit_card, wallet, other]
+          description: Return only providers that support this account type.
+      responses:
+        "200":
+          description: Provider catalogue
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccountProvider"
+        "422":
+          description: Invalid account type
+  /v1/accounts/{id}/statements/alert:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+        description: Credit card account id
+    post:
+      summary: Parse an SMS or email bill alert and upsert its card statement
+      description: >
+        The authenticated intake channel submits alert text; this endpoint does
+        not request mailbox or SMS permissions. Model-produced amounts must
+        occur in the source text. The existing unique statement key makes
+        retries idempotent, and a priced manual statement is never overwritten.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatementAlertInput"
+      responses:
+        "200":
+          description: Existing statement updated, or a manual statement preserved
+          headers:
+            X-Finnri-Manual-Preserved:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardStatement"
+        "201":
+          description: Statement created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardStatement"
+        "402":
+          description: AI plan or credits required
+        "404":
+          description: Card not found
+        "422":
+          description: Invalid or unrecognised alert
+        "502":
+          description: AI provider could not parse the alert
   /v1/accounts/{id}:
     parameters:
       - in: path
@@ -774,6 +842,26 @@ paths:
           description: Account is used by transactions or is the user's only account
         "404":
           description: Account not found
+  /v1/accounts/{id}/paid-off:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Reset a statement-less credit card's ledger outstanding after it is paid off
+      responses:
+        "200":
+          description: Card fallback balance reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "409":
+          description: Card is managed by statements; record a statement payment instead
+        "422":
+          description: Account is not a credit card
   /v1/entries/{id}:
     parameters:
       - in: path
@@ -1197,6 +1285,29 @@ paths:
           description: Friend archived
         "404":
           description: Friend not found
+  /v1/split/friends/{id}/merge-into/{target}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        description: Friend row to archive after moving its history
+        schema:
+          type: integer
+      - in: path
+        name: target
+        required: true
+        description: Surviving friend row
+        schema:
+          type: integer
+    post:
+      summary: Merge one bill-splitting friend into another
+      responses:
+        "200":
+          description: References moved and duplicate archived
+        "404":
+          description: Friend not found
+        "409":
+          description: Friends are linked to different Finnri users
   /v1/split/groups:
     post:
       summary: Create a bill-splitting group
@@ -1692,6 +1803,55 @@ paths:
             invalid_statement_pdf, statement_password_required,
             statement_password_incorrect, statement_unreadable, or
             no_transactions_found
+  /v1/statements/{id}/screenshots:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Read cropped statement screenshots with AI and return the diff
+      description: >
+        Accepts up to eight ordered JPEG, PNG or WebP images. Images are sent to
+        the configured OpenAI service for structured extraction, held only for
+        this request, and never stored by Finnri. Exact overlapping rows are
+        collapsed with the same idempotency key used by import. The checksum is
+        advisory: a mismatch never prevents review or selective import.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [images]
+              properties:
+                images:
+                  type: array
+                  minItems: 1
+                  maxItems: 8
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        "200":
+          description: The normal statement diff plus screenshot checksum and AI credit usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatementDiff"
+        "402":
+          description: AI plan or credits required
+        "404":
+          description: Statement not found
+        "413":
+          description: Image batch too large
+        "415":
+          description: Unsupported image type
+        "422":
+          description: No transaction rows found or too many images
+        "502":
+          description: AI provider could not read the screenshots
   /v1/accounts/{id}/emi-plans:
     parameters:
       - in: path
@@ -2592,7 +2752,7 @@ components:
             type: integer
     Categories:
       type: object
-      required: [categories, default]
+      required: [categories, default, income_categories, income_default]
       properties:
         categories:
           type: array
@@ -2606,6 +2766,16 @@ components:
             The confirm-first fallback used when a category is unknown. Always a
             member of `categories`.
           example: "Misc"
+        income_categories:
+          type: array
+          description: Canonical income category names, in picker order.
+          items:
+            type: string
+          example: ["Salary", "Freelance", "Interest", "Refund", "Other"]
+        income_default:
+          type: string
+          description: The confirm-first fallback for an unknown income source.
+          example: "Other"
     MerchantSuggestions:
       type: object
       required: [suggestions]
@@ -2640,6 +2810,19 @@ components:
           type: string
         identifier:
           type: string
+          description: Legacy display fallback. Prefer the type-specific field.
+        provider_id:
+          type: string
+          description: Stable id from the account provider catalogue.
+        last4:
+          type: string
+          pattern: "^[0-9]{4}$"
+        upi_handle:
+          type: string
+        wallet_nickname:
+          type: string
+        account_nickname:
+          type: string
         credit_limit:
           type: number
           multipleOf: 0.01
@@ -2648,6 +2831,18 @@ components:
           type: integer
           minimum: 0
           maximum: 31
+        statement_day:
+          type: integer
+          minimum: 0
+          maximum: 31
+        reminder_days_before:
+          type: integer
+          minimum: 0
+          maximum: 30
+        reminder_enabled:
+          type: boolean
+        autopay_enabled:
+          type: boolean
         fee_month:
           type: string
         balance:
@@ -2670,11 +2865,34 @@ components:
           type: string
         identifier:
           type: string
+        provider_id:
+          type: string
+        provider_details:
+          $ref: "#/components/schemas/AccountProvider"
+        last4:
+          type: string
+        upi_handle:
+          type: string
+        wallet_nickname:
+          type: string
+        account_nickname:
+          type: string
         credit_limit:
           type: number
           multipleOf: 0.01
         due_day:
           type: integer
+        statement_day:
+          type: integer
+        reminder_days_before:
+          type: integer
+        reminder_enabled:
+          type: boolean
+        autopay_enabled:
+          type: boolean
+        card_ledger_reset_at:
+          type: string
+          format: date-time
         fee_month:
           type: string
         balance:
@@ -2685,6 +2903,26 @@ components:
             first logged transaction. Never a current figure on its own.
         is_default:
           type: boolean
+    AccountProvider:
+      type: object
+      required: [id, display_name, type_support, asset_key]
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        type_support:
+          type: array
+          items:
+            type: string
+            enum: [cash, upi, bank, credit_card, debit_card, wallet, other]
+        asset_key:
+          type: string
+          description: Local visual key; clients choose the actual bundled icon.
+        aliases:
+          type: array
+          items:
+            type: string
     AccountWithSummary:
       allOf:
         - $ref: "#/components/schemas/Account"
@@ -2790,6 +3028,20 @@ components:
             updated_at:
               type: string
               format: date-time
+    StatementAlertInput:
+      type: object
+      required: [text, channel]
+      properties:
+        text:
+          type: string
+          maxLength: 4000
+        channel:
+          type: string
+          enum: [sms, email]
+        received_at:
+          type: string
+          format: date
+          description: Defaults to today and becomes the statement date when the alert omits one.
     CardStatementInput:
       type: object
       required: [statement_date, total_due]
@@ -3047,6 +3299,39 @@ components:
               type: number
             extra_amount:
               type: number
+        source:
+          type: string
+          enum: [screenshots_ai]
+          description: Present only when screenshots produced this diff.
+        checksum:
+          $ref: "#/components/schemas/StatementChecksum"
+        credits_charged:
+          type: integer
+        credits_remaining_today:
+          type: integer
+        credits_remaining_total:
+          type: integer
+    StatementChecksum:
+      type: object
+      description: Advisory screenshot arithmetic; a mismatch never blocks review or import.
+      required: [parsed_debits, parsed_credits, parsed_net, expected_net, difference, matches, message]
+      properties:
+        parsed_debits:
+          type: number
+        parsed_credits:
+          type: number
+        parsed_net:
+          type: number
+        expected_net:
+          type: number
+          description: Statement total due minus the previous statement's unpaid remainder.
+        difference:
+          type: number
+          description: Parsed net minus expected net.
+        matches:
+          type: boolean
+        message:
+          type: string
     CardEMIPlanInput:
       type: object
       required: [title, principal, tenure_months, purchased_on]

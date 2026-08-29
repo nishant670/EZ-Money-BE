@@ -954,6 +954,27 @@ func runtimeSchemaStatements() []string {
 			ON split_group_user_members (user_id, status, group_id)`,
 		`ALTER TABLE split_friends
 			ADD COLUMN IF NOT EXISTS linked_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL`,
+		`ALTER TABLE users
+			ADD COLUMN IF NOT EXISTS phone_normalized VARCHAR(10) NOT NULL DEFAULT ''`,
+		`ALTER TABLE split_friends
+			ADD COLUMN IF NOT EXISTS phone_normalized VARCHAR(10) NOT NULL DEFAULT ''`,
+		`ALTER TABLE split_group_direct_invites
+			ADD COLUMN IF NOT EXISTS target_phone_normalized VARCHAR(10) NOT NULL DEFAULT ''`,
+		`UPDATE users
+			SET phone_normalized = RIGHT(REGEXP_REPLACE(phone, '[^0-9]', '', 'g'), 10)
+			WHERE phone IS NOT NULL AND LENGTH(REGEXP_REPLACE(phone, '[^0-9]', '', 'g')) >= 10`,
+		`UPDATE split_friends
+			SET phone_normalized = RIGHT(REGEXP_REPLACE(phone, '[^0-9]', '', 'g'), 10)
+			WHERE phone <> '' AND LENGTH(REGEXP_REPLACE(phone, '[^0-9]', '', 'g')) >= 10`,
+		`UPDATE split_group_direct_invites
+			SET target_phone_normalized = RIGHT(REGEXP_REPLACE(target_phone, '[^0-9]', '', 'g'), 10)
+			WHERE target_phone <> '' AND LENGTH(REGEXP_REPLACE(target_phone, '[^0-9]', '', 'g')) >= 10`,
+		`CREATE INDEX IF NOT EXISTS idx_users_phone_normalized
+			ON users (phone_normalized) WHERE phone_normalized <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_split_friends_phone_normalized
+			ON split_friends (phone_normalized) WHERE phone_normalized <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_split_group_direct_invites_phone_normalized
+			ON split_group_direct_invites (target_phone_normalized) WHERE target_phone_normalized <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_split_friends_linked_user
 			ON split_friends (linked_user_id)
 			WHERE linked_user_id IS NOT NULL`,
@@ -967,7 +988,7 @@ func runtimeSchemaStatements() []string {
 			WHERE split_friends.linked_user_id IS NULL
 				AND (
 					(split_friends.email <> '' AND LOWER(split_friends.email) = LOWER(users.email))
-					OR (split_friends.phone <> '' AND split_friends.phone = users.phone)
+					OR (split_friends.phone_normalized <> '' AND split_friends.phone_normalized = users.phone_normalized)
 				)`,
 		`ALTER TABLE split_groups
 			ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'other'`,
@@ -1031,7 +1052,27 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE accounts
 			ADD COLUMN IF NOT EXISTS statement_day INTEGER NOT NULL DEFAULT 0,
 			ADD COLUMN IF NOT EXISTS reminder_days_before INTEGER NOT NULL DEFAULT 3,
+			ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			ADD COLUMN IF NOT EXISTS card_ledger_reset_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS card_ledger_reset_entry_id BIGINT,
 			ADD COLUMN IF NOT EXISTS autopay_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE accounts
+			ADD COLUMN IF NOT EXISTS provider_id VARCHAR(64) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS last4 VARCHAR(4) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS upi_handle VARCHAR(120) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS wallet_nickname VARCHAR(120) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS account_nickname VARCHAR(120) NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_provider_id ON accounts (provider_id)`,
+		`UPDATE accounts
+			SET last4 = identifier
+			WHERE type IN ('bank', 'credit_card', 'debit_card')
+				AND last4 = '' AND identifier ~ '^[0-9]{4}$'`,
+		`UPDATE accounts
+			SET upi_handle = identifier
+			WHERE type = 'upi' AND upi_handle = '' AND identifier <> ''`,
+		`UPDATE accounts
+			SET wallet_nickname = identifier
+			WHERE type = 'wallet' AND wallet_nickname = '' AND identifier <> ''`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_statement_once
 			ON card_statements (user_id, account_id, statement_date)`,
 		`CREATE INDEX IF NOT EXISTS idx_card_statements_account_date

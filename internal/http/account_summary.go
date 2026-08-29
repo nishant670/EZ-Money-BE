@@ -76,14 +76,16 @@ type accountWithSummary struct {
 
 // accountLedgerTotals is one account's raw aggregates, straight from SQL.
 type accountLedgerTotals struct {
-	AccountID         uint
-	SpentThisMonth    float64
-	ReceivedThisMonth float64
-	EntriesThisMonth  int
-	LifetimeSpent     float64
-	LifetimeReceived  float64
-	EntriesTotal      int
-	LastActivityDate  string
+	AccountID              uint
+	SpentThisMonth         float64
+	ReceivedThisMonth      float64
+	EntriesThisMonth       int
+	LifetimeSpent          float64
+	LifetimeReceived       float64
+	CardSpentSinceReset    float64
+	CardReceivedSinceReset float64
+	EntriesTotal           int
+	LastActivityDate       string
 }
 
 // monthToDateWindow is the range the accounts screen reports on: the 1st of the
@@ -106,19 +108,22 @@ func monthToDateWindow(now time.Time) (string, string) {
 func loadAccountLedgerTotals(userID uint, monthStart, monthEnd string) (map[uint]accountLedgerTotals, error) {
 	var rows []accountLedgerTotals
 	if err := database.DB.Model(&models.Entry{}).
-		Select(`account_id AS account_id,
-			COALESCE(SUM(CASE WHEN LOWER(type) = 'expense' AND date >= ? AND date <= ? THEN amount ELSE 0 END), 0) AS spent_this_month,
-			COALESCE(SUM(CASE WHEN LOWER(type) <> 'expense' AND date >= ? AND date <= ? THEN amount ELSE 0 END), 0) AS received_this_month,
-			COALESCE(SUM(CASE WHEN date >= ? AND date <= ? THEN 1 ELSE 0 END), 0) AS entries_this_month,
-			COALESCE(SUM(CASE WHEN LOWER(type) = 'expense' THEN amount ELSE 0 END), 0) AS lifetime_spent,
-			COALESCE(SUM(CASE WHEN LOWER(type) <> 'expense' THEN amount ELSE 0 END), 0) AS lifetime_received,
+		Joins("JOIN accounts AS ledger_account ON ledger_account.id = entries.account_id").
+		Select(`entries.account_id AS account_id,
+			COALESCE(SUM(CASE WHEN LOWER(entries.type) = 'expense' AND entries.date >= ? AND entries.date <= ? THEN entries.amount ELSE 0 END), 0) AS spent_this_month,
+			COALESCE(SUM(CASE WHEN LOWER(entries.type) <> 'expense' AND entries.date >= ? AND entries.date <= ? THEN entries.amount ELSE 0 END), 0) AS received_this_month,
+			COALESCE(SUM(CASE WHEN entries.date >= ? AND entries.date <= ? THEN 1 ELSE 0 END), 0) AS entries_this_month,
+			COALESCE(SUM(CASE WHEN LOWER(entries.type) = 'expense' THEN entries.amount ELSE 0 END), 0) AS lifetime_spent,
+			COALESCE(SUM(CASE WHEN LOWER(entries.type) <> 'expense' THEN entries.amount ELSE 0 END), 0) AS lifetime_received,
+			COALESCE(SUM(CASE WHEN LOWER(entries.type) = 'expense' AND (ledger_account.card_ledger_reset_entry_id IS NULL OR entries.id > ledger_account.card_ledger_reset_entry_id) THEN entries.amount ELSE 0 END), 0) AS card_spent_since_reset,
+			COALESCE(SUM(CASE WHEN LOWER(entries.type) <> 'expense' AND (ledger_account.card_ledger_reset_entry_id IS NULL OR entries.id > ledger_account.card_ledger_reset_entry_id) THEN entries.amount ELSE 0 END), 0) AS card_received_since_reset,
 			COUNT(*) AS entries_total,
-			COALESCE(MAX(date), '') AS last_activity_date`,
+			COALESCE(MAX(entries.date), '') AS last_activity_date`,
 			monthStart, monthEnd,
 			monthStart, monthEnd,
 			monthStart, monthEnd).
-		Where("user_id = ? AND account_id IS NOT NULL", userID).
-		Group("account_id").
+		Where("entries.user_id = ? AND entries.account_id IS NOT NULL", userID).
+		Group("entries.account_id").
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -150,9 +155,18 @@ func summariseAccount(account models.Account, totals accountLedgerTotals, statem
 		// less everything credited back. Used only when the card has no
 		// statement to do better.
 		ledgerOutstanding := models.Money(0)
-		ledgerOutstanding += account.Balance
-		ledgerOutstanding += models.Money(totals.LifetimeSpent * 100)
-		ledgerOutstanding -= models.Money(totals.LifetimeReceived * 100)
+		spentForOutstanding := totals.CardSpentSinceReset
+		receivedForOutstanding := totals.CardReceivedSinceReset
+		if account.CardLedgerResetEntryID == nil && account.CardLedgerResetAt == nil {
+			ledgerOutstanding += account.Balance
+			// The explicit since-reset aggregates equal lifetime totals in SQL
+			// when no reset exists. Use the lifetime fields here as well so pure
+			// summary unit tests and older callers remain truthful.
+			spentForOutstanding = totals.LifetimeSpent
+			receivedForOutstanding = totals.LifetimeReceived
+		}
+		ledgerOutstanding += models.Money(spentForOutstanding * 100)
+		ledgerOutstanding -= models.Money(receivedForOutstanding * 100)
 
 		input := cardLimitInput{
 			CreditLimit:         account.CreditLimit,

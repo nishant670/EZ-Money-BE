@@ -99,7 +99,8 @@ func TestMonthlyReviewCopyMatchesTheSpecifiedLine(t *testing.T) {
 		PreviousLabel: "July",
 		Summary: DashboardSummary{
 			TotalSpent:            40091,
-			TransactionCount:      33,
+			TransactionCount:      34, // one of them is income, and must not be counted
+			ExpenseCount:          33,
 			SpendChange:           -12,
 			SpendChangeComparable: true,
 		},
@@ -122,7 +123,7 @@ func TestMonthlyReviewCopyDropsClausesItCannotSupport(t *testing.T) {
 	base := MonthlyReviewResponse{
 		Label:         "August 2026",
 		PreviousLabel: "July",
-		Summary:       DashboardSummary{TotalSpent: 40091, TransactionCount: 33},
+		Summary:       DashboardSummary{TotalSpent: 40091, TransactionCount: 33, ExpenseCount: 33},
 	}
 
 	_, body := monthlyReviewCopy(base)
@@ -140,7 +141,7 @@ func TestMonthlyReviewCopyDropsClausesItCannotSupport(t *testing.T) {
 	}
 
 	single := base
-	single.Summary = DashboardSummary{TotalSpent: 450, TransactionCount: 1}
+	single.Summary = DashboardSummary{TotalSpent: 450, TransactionCount: 1, ExpenseCount: 1}
 	if _, body := monthlyReviewCopy(single); body != "₹450 across 1 transaction." {
 		t.Fatalf("singular = %q", body)
 	}
@@ -151,7 +152,7 @@ func TestMonthlyReviewCopyReportsIncreasesAsOver(t *testing.T) {
 		Label:         "August 2026",
 		PreviousLabel: "July",
 		Summary: DashboardSummary{
-			TotalSpent: 51000, TransactionCount: 40,
+			TotalSpent: 51000, TransactionCount: 40, ExpenseCount: 40,
 			SpendChange: 27, SpendChangeComparable: true,
 		},
 	}
@@ -441,5 +442,41 @@ func TestMonthlyReviewIsScopedToItsUser(t *testing.T) {
 	}
 	if review.Summary.TotalSpent != 500 {
 		t.Fatalf("total = %v, want only this user's ₹500", review.Summary.TotalSpent)
+	}
+}
+
+// The headline pairs a spend total with a count, so the count has to be the
+// number of rows that total is made of. A salary sitting in the same month used
+// to be counted inside a sentence about money going out, which made
+// "₹67,955 across 39 transactions" describe two different sets of rows.
+func TestMonthlyReviewCopyCountsOnlyTheSpendItDescribes(t *testing.T) {
+	review := MonthlyReviewResponse{
+		Label:         "July 2026",
+		PreviousLabel: "June",
+		Summary: DashboardSummary{
+			TotalSpent:       67955,
+			TransactionCount: 39, // 38 expenses and one salary
+			ExpenseCount:     38,
+		},
+	}
+
+	_, body := monthlyReviewCopy(review)
+	if !strings.Contains(body, "across 38 transactions") {
+		t.Fatalf("body = %q, want the expense count", body)
+	}
+	if strings.Contains(body, "39") {
+		t.Fatalf("body = %q, must not count the income row", body)
+	}
+}
+
+// The floor is about whether a month has enough *spending* to describe. Four
+// salary rows beside a single expense used to clear it.
+func TestMonthlyReviewAvailabilityIgnoresIncomeRows(t *testing.T) {
+	summary := DashboardSummary{TransactionCount: 5, ExpenseCount: 1}
+	if summary.ExpenseCount >= monthlyReviewMinTransactions {
+		t.Fatal("a month with one expense must not be publishable")
+	}
+	if summary.TransactionCount < monthlyReviewMinTransactions {
+		t.Fatal("guard is meaningless unless the total count would have passed")
 	}
 }

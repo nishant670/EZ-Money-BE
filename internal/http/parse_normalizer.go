@@ -77,9 +77,12 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 	normalizeParseMode(entry, needsConfirmation, missingSet)
 	normalizeCardNetwork(entry)
 	normalizeType(entry)
-	normalizeCategory(entry, needsConfirmation, missingSet, hasTransactionSignal)
 	normalizePurposeAndTags(entry)
 	normalizeInvestmentType(entry, needsConfirmation, missingSet)
+	// Investment normalisation can change an AI-produced income into an
+	// expense. Resolve the category afterwards so it is checked against the
+	// final transaction type rather than the model's preliminary one.
+	normalizeCategory(entry, needsConfirmation, missingSet, hasTransactionSignal)
 
 	for _, field := range confirmableParseFields {
 		if parseFieldMissing(field, entry[field]) {
@@ -457,21 +460,26 @@ func normalizeCategory(
 	missingSet map[string]bool,
 	hasTransactionSignal bool,
 ) {
+	entryType, _ := entry["type"].(string)
+	fallback := defaultParseCategory
+	if strings.EqualFold(entryType, "income") {
+		fallback = defaultIncomeCategory
+	}
 	raw, ok := entry["category"].(string)
 	if !ok || strings.TrimSpace(raw) == "" {
 		if !hasTransactionSignal {
 			return
 		}
-		entry["category"] = defaultParseCategory
+		entry["category"] = fallback
 		missingSet["category"] = true
 		needsConfirmation["category"] = true
 		return
 	}
-	if normalized, ok := canonicalCategory(raw); ok {
+	if normalized, ok := canonicalCategoryForType(raw, entryType); ok {
 		entry["category"] = normalized
 		return
 	}
-	entry["category"] = defaultParseCategory
+	entry["category"] = fallback
 	missingSet["category"] = true
 	needsConfirmation["category"] = true
 }

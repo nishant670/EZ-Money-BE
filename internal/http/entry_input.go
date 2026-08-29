@@ -142,7 +142,7 @@ func validateEntryValues(amount models.Money, title, entryType, currency, source
 	}
 	if strings.TrimSpace(category) == "" {
 		fields["category"] = "is required"
-	} else if _, ok := categoryForSave(category); !ok {
+	} else if _, ok := categoryForSave(category, entryType); !ok {
 		// Custom categories from the picker are allowed through; only the length
 		// is bounded. Legacy names like "Food" are accepted and canonicalized by
 		// toModel, which keeps older app builds saving successfully.
@@ -234,7 +234,7 @@ func (input entryInput) toModel(userID uint) models.Entry {
 	// Rewrites recognised aliases to canonical form and passes a user's own
 	// custom category through untouched.
 	category := input.Category
-	if resolved, ok := categoryForSave(category); ok {
+	if resolved, ok := categoryForSave(category, input.Type); ok {
 		category = resolved
 	}
 	return models.Entry{
