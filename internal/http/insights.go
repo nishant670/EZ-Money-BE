@@ -31,6 +31,9 @@ type DashboardSummary struct {
 	TotalIncome      float64 `json:"total_income"`
 	DailyAverage     float64 `json:"daily_average"`
 	TransactionCount int     `json:"transaction_count"`
+	// Lifetime activity drives progressive disclosure; the selected period's
+	// count still describes only the period.
+	LifetimeTransactionCount int `json:"lifetime_transaction_count"`
 	// Expenses only, where TransactionCount is every entry in the window.
 	// Anything that pairs a count with a *spend* figure has to use this one:
 	// "₹67,955 across 39 transactions" counted a salary inside a sentence about
@@ -356,11 +359,18 @@ func loadDashboardSummary(userID uint, start, end string) (DashboardSummary, err
 	if err != nil {
 		return DashboardSummary{}, err
 	}
+	var lifetimeCount int64
+	if err := database.DB.Model(&models.Entry{}).
+		Where("user_id = ?"+notCardPaymentClause, userID).
+		Count(&lifetimeCount).Error; err != nil {
+		return DashboardSummary{}, err
+	}
 	return DashboardSummary{
-		TotalSpent:       row.TotalSpent,
-		TotalIncome:      row.TotalIncome,
-		TransactionCount: row.TransactionCount,
-		ExpenseCount:     row.ExpenseCount,
+		TotalSpent:               row.TotalSpent,
+		TotalIncome:              row.TotalIncome,
+		TransactionCount:         row.TransactionCount,
+		ExpenseCount:             row.ExpenseCount,
+		LifetimeTransactionCount: int(lifetimeCount),
 	}, nil
 }
 
@@ -647,6 +657,7 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		ReviewItems:        []DashboardReviewItem{},
 		Insights:           []InsightCard{}, RecurringCandidates: []DashboardRecurringCandidate{},
 	}
+	response.Summary.LifetimeTransactionCount = len(entries)
 
 	categoryCurrent := map[string]float64{}
 	categoryPrevious := map[string]comparisonBase{}

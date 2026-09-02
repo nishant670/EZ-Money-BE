@@ -156,10 +156,11 @@ func (input entryInput) validate() map[string]string {
 		input.Amount, input.Title, input.Type, input.Currency,
 		input.Source, input.Mode, input.Category, input.Date,
 	)
-	if input.AccountID == nil {
-		fields["account_id"] = "is required"
-	} else if *input.AccountID == 0 {
+	if input.AccountID != nil && *input.AccountID == 0 {
 		fields["account_id"] = "must be a positive integer"
+	}
+	if input.AccountID == nil && strings.TrimSpace(input.Mode) == "" {
+		fields["mode"] = "is required when account_id is omitted"
 	}
 	for field, message := range input.Split.validate() {
 		fields[field] = message

@@ -875,25 +875,27 @@ func (s *Server) saveEntry(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
-	var account models.Account
-	if err := database.DB.Where("user_id = ? AND id = ?", userID, *input.AccountID).First(&account).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
-		} else {
-			c.JSON(500, gin.H{"error": "account_lookup_failed"})
+	if input.AccountID != nil {
+		var account models.Account
+		if err := database.DB.Where("user_id = ? AND id = ?", userID, *input.AccountID).First(&account).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+			} else {
+				c.JSON(500, gin.H{"error": "account_lookup_failed"})
+			}
+			return
 		}
-		return
-	}
-	resolvedMode, ok := resolveEntryMode(input.Mode, account.Type)
-	if !ok {
-		message := modeMessage()
-		if strings.TrimSpace(input.Mode) == "" {
-			message = "is required when account type is other"
+		resolvedMode, ok := resolveEntryMode(input.Mode, account.Type)
+		if !ok {
+			message := modeMessage()
+			if strings.TrimSpace(input.Mode) == "" {
+				message = "is required when account type is other"
+			}
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": message}})
+			return
 		}
-		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": message}})
-		return
+		input.Mode = resolvedMode
 	}
-	input.Mode = resolvedMode
 	if fields, err := validateEntrySplitReferences(userID, input.Split); err != nil {
 		c.JSON(500, gin.H{"error": "split_lookup_failed"})
 		return
@@ -1109,41 +1111,35 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.Date != nil {
 		date = *input.Date
 	}
-	if !input.AccountID.Set {
-		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "is required"}})
-		return
-	}
-	if input.AccountID.Value == nil {
-		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "is required"}})
-		return
-	}
-	if *input.AccountID.Value == 0 {
+	if input.AccountID.Set && input.AccountID.Value != nil && *input.AccountID.Value == 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must be a positive integer"}})
 		return
 	}
-	var account models.Account
-	if err := database.DB.Where("user_id = ? AND id = ?", userID, *input.AccountID.Value).First(&account).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
-		} else {
-			c.JSON(500, gin.H{"error": "account_lookup_failed"})
-		}
-		return
-	}
-	if input.Mode != nil {
-		resolvedMode, ok := resolveEntryMode(*input.Mode, account.Type)
-		if !ok {
-			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": modeMessage()}})
+	if input.AccountID.Set && input.AccountID.Value != nil {
+		var account models.Account
+		if err := database.DB.Where("user_id = ? AND id = ?", userID, *input.AccountID.Value).First(&account).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must belong to the current user"}})
+			} else {
+				c.JSON(500, gin.H{"error": "account_lookup_failed"})
+			}
 			return
 		}
-		mode = resolvedMode
-	} else if resolvedMode, ok := paymentModeForAccountType(account.Type); ok {
-		// Re-derive even when the account is unchanged. This repairs a legacy
-		// bank/debit entry's false Credit Card mode on its next explicit edit.
-		mode = resolvedMode
-	} else if entry.AccountID == nil || *entry.AccountID != account.ID {
-		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": "is required when account type is other"}})
-		return
+		if input.Mode != nil {
+			resolvedMode, ok := resolveEntryMode(*input.Mode, account.Type)
+			if !ok {
+				c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": modeMessage()}})
+				return
+			}
+			mode = resolvedMode
+		} else if resolvedMode, ok := paymentModeForAccountType(account.Type); ok {
+			// Re-derive even when the account is unchanged. This repairs a legacy
+			// bank/debit entry's false Credit Card mode on its next explicit edit.
+			mode = resolvedMode
+		} else if entry.AccountID == nil || *entry.AccountID != account.ID {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"mode": "is required when account type is other"}})
+			return
+		}
 	}
 	if fields := validateEntryValues(amount, title, entryType, currency, source, mode, category, date); len(fields) > 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
@@ -1798,6 +1794,15 @@ func (s *Server) saveAccount(c *gin.Context) {
 		return
 	}
 	hydrateAccountProvider(&account)
+	if account.AutoCreated {
+		_ = createNotification(
+			userID,
+			"account.needs_setup",
+			"Finish setting up "+account.Name,
+			"Add the missing account details so balances, bills, and matching stay accurate.",
+			fmt.Sprintf("/accounts/%d", account.ID),
+		)
+	}
 	c.JSON(201, account)
 }
 
@@ -1854,6 +1859,9 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	input.apply(&account)
+	// Reaching the edit handler means the user intentionally reviewed the
+	// account, even when they kept some optional fields empty.
+	account.AutoCreated = false
 	if wasDefault {
 		account.IsDefault = true
 	}

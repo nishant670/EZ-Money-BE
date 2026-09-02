@@ -83,6 +83,22 @@ func TestNormalizeParsedDraftDoesNotTurnExplicitBankAccountIntoCash(t *testing.T
 	}
 }
 
+func TestNormalizeParsedDraftUsesBankAccountForReceivedIncome(t *testing.T) {
+	entry := map[string]any{
+		"type": "income", "title": "Salary", "amount": float64(90000),
+		"mode": "Credit Card", "card_network": "Visa", "account_hint": "SBI account",
+		"category": "Salary", "date": "2026-09-01",
+	}
+
+	normalizeParsedDraft(entry, "received 90000 salary in my SBI account")
+	if entry["mode"] != "Bank Account" {
+		t.Fatalf("mode = %#v, want Bank Account", entry["mode"])
+	}
+	if entry["card_network"] != nil {
+		t.Fatalf("card network leaked onto income: %#v", entry["card_network"])
+	}
+}
+
 func TestNormalizeDailySubscriptionInfersNextDate(t *testing.T) {
 	entry := map[string]any{
 		"type": "expense", "title": "SIP", "amount": float64(100), "mode": "UPI",

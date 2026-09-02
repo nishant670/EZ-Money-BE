@@ -77,6 +77,7 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 	normalizeParseMode(entry, needsConfirmation, missingSet)
 	normalizeCardNetwork(entry)
 	normalizeType(entry)
+	normalizeIncomeMode(entry)
 	normalizePurposeAndTags(entry)
 	normalizeInvestmentType(entry, needsConfirmation, missingSet)
 	// Investment normalisation can change an AI-produced income into an
@@ -111,6 +112,18 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 	normalizeSubscriptionDraft(entry)
 	normalizeSplitDraft(entry)
 	pruneKeys(entry, allowedParseRootFields)
+}
+
+// A credit card can be the source of an expense, not the destination of
+// ordinary income. Keep the receiving side usable even when the model latches
+// onto a card word elsewhere in the sentence.
+func normalizeIncomeMode(entry map[string]any) {
+	entryType, _ := entry["type"].(string)
+	mode, _ := entry["mode"].(string)
+	if strings.EqualFold(entryType, "income") && strings.EqualFold(mode, "Credit Card") {
+		entry["mode"] = "Bank Account"
+		entry["card_network"] = nil
+	}
 }
 
 // sanitizeParsedDraftFields coerces the loose shapes a model reaches for on the
