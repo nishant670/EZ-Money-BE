@@ -2107,6 +2107,7 @@ components:
               total_income,
               daily_average,
               transaction_count,
+              lifetime_transaction_count,
               previous_total_spent,
               spend_change,
               spend_change_comparable,
@@ -2120,6 +2121,9 @@ components:
               type: number
             transaction_count:
               type: integer
+            lifetime_transaction_count:
+              type: integer
+              description: Total entries recorded by the user across all dates; used for progressive insight unlocks.
             previous_total_spent:
               type: number
               description: Expense total for the window named by period.previous_start/previous_end.
@@ -2850,6 +2854,9 @@ components:
           multipleOf: 0.01
         is_default:
           type: boolean
+        auto_created:
+          type: boolean
+          description: Marks an account created from the capture shortcut until the user reviews it.
     Account:
       type: object
       required: [id, name, type]
@@ -2903,6 +2910,9 @@ components:
             first logged transaction. Never a current figure on its own.
         is_default:
           type: boolean
+        auto_created:
+          type: boolean
+          description: True until the user first edits an account created from the capture shortcut.
     AccountProvider:
       type: object
       required: [id, display_name, type_support, asset_key]

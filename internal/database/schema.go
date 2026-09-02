@@ -810,19 +810,17 @@ func runtimeSchemaStatements() []string {
 				SELECT 1 FROM accounts WHERE accounts.user_id = users.id
 			)`,
 		`UPDATE entries
-			SET account_id = defaults.id
-			FROM (
-				SELECT DISTINCT ON (user_id) id, user_id
-				FROM accounts
-				ORDER BY user_id, is_default DESC, id
-			) AS defaults
-			WHERE entries.user_id = defaults.user_id
-				AND entries.account_id IS NULL`,
-		`UPDATE entries
 			SET source = 'manual'
 			WHERE source IS NULL OR TRIM(source) = ''`,
+		// An entry may have no account. Capture must never be blocked on setting
+		// one up, so `account_id` is nullable and an unlinked row is surfaced as
+		// a review item instead (see `dashboardReviewItems`). This DROPs rather
+		// than merely omitting the constraint, because databases created before
+		// the rule changed still carry it. The backfill that used to sit above
+		// this statement was removed with it: silently attaching the default
+		// account would erase exactly the "unlinked" state the app now relies on.
 		`ALTER TABLE entries
-			ALTER COLUMN account_id SET NOT NULL,
+			ALTER COLUMN account_id DROP NOT NULL,
 			ALTER COLUMN amount SET NOT NULL,
 			ALTER COLUMN source SET DEFAULT 'manual',
 			ALTER COLUMN source SET NOT NULL`,

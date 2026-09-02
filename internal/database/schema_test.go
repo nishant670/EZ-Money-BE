@@ -23,7 +23,6 @@ func TestRuntimeSchemaIncludesDataIntegrityConstraints(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS split_groups",
 		"idx_split_group_members_unique",
 		"INSERT INTO accounts",
-		"AND entries.account_id IS NULL",
 		"SET source = 'manual'",
 		"CREATE TABLE IF NOT EXISTS plans",
 		"CREATE TABLE IF NOT EXISTS credit_grants",
@@ -55,9 +54,18 @@ func TestRuntimeSchemaIncludesDataIntegrityConstraints(t *testing.T) {
 		}
 	}
 
-	accountBackfill := strings.Index(joined, "AND entries.account_id IS NULL")
-	accountNotNull := strings.Index(joined, "ALTER COLUMN account_id SET NOT NULL")
-	if accountBackfill < 0 || accountNotNull < 0 || accountBackfill > accountNotNull {
-		t.Fatal("runtime schema must backfill null entry accounts before account_id is made non-null")
+	// The inverse of the old rule. An entry with no account is legitimate —
+	// capture is never blocked on account setup — so the runtime schema must
+	// drop the constraint on databases that predate the change, and must not
+	// backfill unlinked rows onto the default account, which would erase the
+	// state the "Unlinked" affordance and the review queue are built on.
+	if strings.Contains(joined, "ALTER COLUMN account_id SET NOT NULL") {
+		t.Fatal("runtime schema must not force entries.account_id to be non-null")
+	}
+	if strings.Contains(joined, "AND entries.account_id IS NULL") {
+		t.Fatal("runtime schema must not backfill deliberately unlinked entries")
+	}
+	if !strings.Contains(joined, "ALTER COLUMN account_id DROP NOT NULL") {
+		t.Fatal("runtime schema must drop a legacy entries.account_id NOT NULL constraint")
 	}
 }

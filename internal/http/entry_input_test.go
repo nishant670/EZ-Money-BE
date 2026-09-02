@@ -73,7 +73,7 @@ func TestEntryInputValidation(t *testing.T) {
 		valid bool
 	}{
 		{"valid with account", withAccount, true},
-		{"invalid without account", withoutAccount, false},
+		{"valid without account when mode is present", withoutAccount, true},
 		{"invalid zero account", zeroAccount, false},
 		{"invalid amount", invalidAmount, false},
 		{"invalid type", invalidType, false},
@@ -95,6 +95,15 @@ func TestEntryInputValidation(t *testing.T) {
 				t.Fatal("expected validation errors")
 			}
 		})
+	}
+}
+
+func TestEntryInputWithoutAccountRequiresMode(t *testing.T) {
+	input := validEntryInput()
+	input.AccountID = nil
+	input.Mode = ""
+	if input.validate()["mode"] == "" {
+		t.Fatal("an account-less entry must retain its payment mode")
 	}
 }
 

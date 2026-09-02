@@ -36,6 +36,7 @@ type accountInput struct {
 	FeeMonth        string       `json:"fee_month"`
 	Balance         models.Money `json:"balance"`
 	IsDefault       bool         `json:"is_default"`
+	AutoCreated     bool         `json:"auto_created"`
 
 	// Card statement settings are pointers so that omitting them means "leave
 	// as is" rather than "reset to zero". The app sends the whole account back
@@ -168,6 +169,7 @@ func (input accountInput) apply(account *models.Account) {
 	account.FeeMonth = strings.TrimSpace(input.FeeMonth)
 	account.Balance = input.Balance
 	account.IsDefault = input.IsDefault
+	account.AutoCreated = input.AutoCreated
 
 	if input.StatementDay != nil {
 		account.StatementDay = *input.StatementDay

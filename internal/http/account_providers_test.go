@@ -14,10 +14,39 @@ import (
 func stringPointer(value string) *string { return &value }
 
 func TestAccountProviderAliasesResolveToStableID(t *testing.T) {
-	for _, alias := range []string{"HDFC", "hdfc bank", "HDFC card"} {
+	tests := map[string]string{
+		"HDFC": "hdfc", "hdfc bank": "hdfc", "HDFC card": "hdfc",
+		"Federal": "federal", "IDFC First Bank": "idfc-first", "BoB": "bank-of-baroda",
+		"Digibank": "dbs", "scapia credit card": "scapia", "One Card credit card": "onecard",
+		"Jupiter Federal Bank": "jupiter", "Fi Money": "fi",
+	}
+	for alias, expectedID := range tests {
 		provider, ok := matchAccountProvider(alias)
-		if !ok || provider.ID != "hdfc" {
-			t.Fatalf("alias %q resolved to %#v, %v", alias, provider, ok)
+		if !ok || provider.ID != expectedID {
+			t.Fatalf("alias %q resolved to %#v, %v; want %q", alias, provider, ok, expectedID)
+		}
+	}
+}
+
+func TestExpandedAccountProvidersExposeCorrectTypes(t *testing.T) {
+	tests := map[string][]string{
+		"federal": {"bank", "credit_card", "debit_card"},
+		"scapia":  {"credit_card"},
+		"slice":   {"credit_card"},
+		"onecard": {"credit_card"},
+		"uni":     {"credit_card"},
+		"jupiter": {"bank", "debit_card"},
+		"fi":      {"bank", "debit_card"},
+	}
+	for id, supportedTypes := range tests {
+		provider, ok := accountProviderByID(id)
+		if !ok {
+			t.Fatalf("provider %q missing", id)
+		}
+		for _, accountType := range supportedTypes {
+			if !providerSupportsType(provider, accountType) {
+				t.Fatalf("provider %q does not support %q: %#v", id, accountType, provider.TypeSupport)
+			}
 		}
 	}
 }

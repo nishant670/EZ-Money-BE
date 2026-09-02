@@ -38,12 +38,15 @@ type Account struct {
 	CardLedgerResetAt *time.Time `json:"card_ledger_reset_at,omitempty"`
 	// EntryID is the deterministic boundary used for arithmetic. Timestamps can
 	// have database-specific precision, while entry ids preserve insertion order.
-	CardLedgerResetEntryID *uint     `json:"-"`
-	FeeMonth               string    `json:"fee_month"`
-	Balance                Money     `gorm:"type:numeric(19,2);not null;default:0" json:"balance"`
-	IsDefault              bool      `json:"is_default"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	CardLedgerResetEntryID *uint  `json:"-"`
+	FeeMonth               string `json:"fee_month"`
+	Balance                Money  `gorm:"type:numeric(19,2);not null;default:0" json:"balance"`
+	IsDefault              bool   `json:"is_default"`
+	// AutoCreated distinguishes a capture shortcut from an intentionally sparse
+	// account. The first explicit account edit clears it.
+	AutoCreated bool      `gorm:"not null;default:false" json:"auto_created"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type AccountProviderDetails struct {
