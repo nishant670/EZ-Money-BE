@@ -46,6 +46,7 @@ func main() {
 		&models.SplitBill{},
 		&models.SplitParticipant{},
 		&models.SplitSettlement{},
+		&models.SplitFriendMerge{},
 	); err != nil {
 		log.Fatalf("database schema migration failed: %v", err)
 	}

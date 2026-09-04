@@ -329,6 +329,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.SplitBill{},
 		&models.SplitParticipant{},
 		&models.SplitSettlement{},
+		&models.SplitFriendMerge{},
 	); err != nil {
 		t.Fatalf("failed to migrate smoke database: %v", err)
 	}
