@@ -28,6 +28,7 @@ import (
 	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/config"
 	"finance-parser-go/internal/database"
+	"finance-parser-go/internal/mailer"
 	"finance-parser-go/internal/models"
 )
 
@@ -35,8 +36,23 @@ type Server struct {
 	cfg               *config.Config
 	validator         *gojsonschema.Schema
 	parser            ai.Parser
+	mailer            mailer.Sender
 	providerCircuit   *providerCircuitBreaker
 	providerCircuitMu sync.Mutex
+}
+
+// emailSender returns the configured mail driver. A Server built directly —
+// which every unit test does — has no mailer field, so it falls back to one
+// derived from cfg, and finally to the no-op sender that fails loudly. The one
+// thing it must never do is return nil and panic inside a request.
+func (s *Server) emailSender() mailer.Sender {
+	if s.mailer != nil {
+		return s.mailer
+	}
+	if s.cfg != nil {
+		return mailer.FromConfig(s.cfg)
+	}
+	return mailer.NotConfigured{}
 }
 
 func NewServer(cfg *config.Config) *gin.Engine {
@@ -78,7 +94,10 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 	openai := ai.NewOpenAIClient(cfg)
 
-	s := &Server{cfg: cfg, validator: schema, parser: openai}
+	emailSender := mailer.FromConfig(cfg)
+	log.Printf("[startup] email provider: %s", emailSender.Name())
+
+	s := &Server{cfg: cfg, validator: schema, parser: openai, mailer: emailSender}
 	// Auth
 	authLimited := r.Group("/v1/auth")
 	authLimited.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))

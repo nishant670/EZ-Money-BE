@@ -102,7 +102,10 @@ func TestGuestCaptureParseConfirmSaveDashboardSmoke(t *testing.T) {
 	}
 }
 
-func smokeRouter(t *testing.T) *gin.Engine {
+// smokeRouter builds the full test router. The variadic configure hooks run
+// after the Server is built and before any route is registered, which is how a
+// test swaps in a stub mail sender or flips an OTP config flag.
+func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.Engine {
 	t.Helper()
 
 	schemaPath := filepath.Join(projectRoot(t), "schemas", "expense_entry.schema.json")
@@ -135,6 +138,10 @@ func smokeRouter(t *testing.T) *gin.Engine {
 			"merchant":"Tea Stall",
 			"date":"2026-07-12"
 		}`)},
+	}
+
+	for _, apply := range configure {
+		apply(server, cfg)
 	}
 
 	router := gin.New()

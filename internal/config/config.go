@@ -35,6 +35,19 @@ type Config struct {
 	OTPDebugResponse                bool
 	OTPDevCode                      string
 	OTPExpiresMinutes               int
+	OTPPhoneChannelEnabled          bool
+	OTPResendCooldownSeconds        int
+	EmailProvider                   string
+	EmailFromAddress                string
+	EmailFromName                   string
+	SMTPHost                        string
+	SMTPPort                        int
+	SMTPUsername                    string
+	SMTPPassword                    string
+	SMTPTLSMode                     string
+	ResendAPIKey                    string
+	ResendBaseURL                   string
+	EmailSendTimeoutSeconds         int
 	ClaimTokenMinutes               int
 	GoogleClientIDs                 []string
 	AIDailyCostAlertUSDMicros       int64
@@ -154,6 +167,22 @@ func Load() *Config {
 		OTPDebugResponse:                atob("OTP_DEBUG_RESPONSE", false),
 		OTPDevCode:                      getenv("OTP_DEV_CODE", ""),
 		OTPExpiresMinutes:               atoi("OTP_EXPIRES_MINUTES", 10),
+		// India SMS needs DLT template registration and a provider
+		// relationship; until one exists, phone OTP is off and the app is told
+		// so plainly rather than being handed a code nothing will deliver.
+		OTPPhoneChannelEnabled:          atob("OTP_PHONE_CHANNEL_ENABLED", false),
+		OTPResendCooldownSeconds:        atoi("OTP_RESEND_COOLDOWN_SECONDS", 60),
+		EmailProvider:                   getenv("EMAIL_PROVIDER", ""),
+		EmailFromAddress:                getenv("EMAIL_FROM_ADDRESS", ""),
+		EmailFromName:                   getenv("EMAIL_FROM_NAME", "Finnri"),
+		SMTPHost:                        getenv("SMTP_HOST", ""),
+		SMTPPort:                        atoi("SMTP_PORT", 587),
+		SMTPUsername:                    getenv("SMTP_USERNAME", ""),
+		SMTPPassword:                    getenv("SMTP_PASSWORD", ""),
+		SMTPTLSMode:                     getenv("SMTP_TLS_MODE", "starttls"),
+		ResendAPIKey:                    getenv("RESEND_API_KEY", ""),
+		ResendBaseURL:                   getenv("RESEND_BASE_URL", ""),
+		EmailSendTimeoutSeconds:         atoi("EMAIL_SEND_TIMEOUT_SECONDS", 15),
 		ClaimTokenMinutes:               atoi("CLAIM_TOKEN_EXPIRES_MINUTES", 15),
 		GoogleClientIDs:                 csv("GOOGLE_CLIENT_IDS"),
 		AIDailyCostAlertUSDMicros:       atoi64("AI_DAILY_COST_ALERT_USD_MICROS", 0),
