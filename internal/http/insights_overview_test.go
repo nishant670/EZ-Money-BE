@@ -131,12 +131,15 @@ func TestTypicalMonthlySpendResistsAnOutlierMonth(t *testing.T) {
 		{Month: "2026-07", Spent: 120000, Count: 20}, // a wedding
 		{Month: "2026-08", Spent: 20500, Count: 13},
 	}
-	mean, median := baselineMonthlySpend(months)
+	mean, median, used := baselineMonthlySpend(months)
 	if median > 21000 {
 		t.Fatalf("the median must describe an ordinary month, got %v", median)
 	}
 	if mean <= median {
 		t.Fatalf("this fixture exists because the mean is dragged up; mean=%v median=%v", mean, median)
+	}
+	if used != 5 {
+		t.Fatalf("expected all five months counted, got %d", used)
 	}
 }
 
@@ -148,9 +151,76 @@ func TestBaselineMonthlySpendIgnoresMonthsWithNoActivity(t *testing.T) {
 		{Month: "2026-07", Spent: 0, Count: 0},
 		{Month: "2026-08", Spent: 30000, Count: 18},
 	}
-	mean, median := baselineMonthlySpend(months)
+	mean, median, used := baselineMonthlySpend(months)
 	if mean != 30000 || median != 30000 {
 		t.Fatalf("expected the one real month to stand alone, mean=%v median=%v", mean, median)
+	}
+	if used != 1 {
+		t.Fatalf("expected one month behind the figure, got %d", used)
+	}
+}
+
+// The current month is still being lived in, so it must not set the baseline.
+//
+// It did, and the effect was visible on device: a four-day-old September went
+// into a three-month median and became the answer, so the band announced
+// "a typical month runs about ₹10,226" directly above "Jump to Sep · ₹10,226".
+// The same figure twice, which reads as a bug because it is one.
+func TestOverviewBaselineExcludesTheCurrentMonth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	user, token := createPaidBillingTestUserSession(t)
+	accounts := performJSONRequest[[]models.Account](
+		t, router, http.MethodGet, "/v1/accounts", token, nil, http.StatusOK,
+	)
+
+	now := time.Now()
+	// Three settled months, then a deliberately tiny current month.
+	for offset, amount := range map[int]string{1: "40000.00", 2: "40000.00", 3: "40000.00"} {
+		month := now.AddDate(0, -offset, 0)
+		seedOverviewEntry(t, user.ID, accounts[0].ID, month.Format("2006-01")+"-10", amount)
+	}
+	seedOverviewEntry(t, user.ID, accounts[0].ID, now.Format("2006-01")+"-01", "12.00")
+
+	dashboard := performJSONRequest[DashboardResponse](
+		t, router, http.MethodGet, "/v1/dashboard", token, nil, http.StatusOK,
+	)
+	o := dashboard.Overview
+	if o.BaselineMonths != 3 {
+		t.Fatalf("expected the three settled months to back the baseline, got %d", o.BaselineMonths)
+	}
+	if o.TypicalMonthlySpend != 40000 {
+		t.Fatalf("the part-month must not set the typical figure, got %v", o.TypicalMonthlySpend)
+	}
+}
+
+// An account younger than the six-month window must not be told about six
+// months. "Bills is your biggest category over six months" to a three-month-old
+// account describes a period half of which it did not exist for.
+func TestTopCategoryMonthsNeverExceedsHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	user, token := createPaidBillingTestUserSession(t)
+	accounts := performJSONRequest[[]models.Account](
+		t, router, http.MethodGet, "/v1/accounts", token, nil, http.StatusOK,
+	)
+	seedOverviewEntry(t, user.ID, accounts[0].ID,
+		time.Now().AddDate(0, -1, 0).Format("2006-01")+"-08", "5000.00")
+
+	dashboard := performJSONRequest[DashboardResponse](
+		t, router, http.MethodGet, "/v1/dashboard", token, nil, http.StatusOK,
+	)
+	o := dashboard.Overview
+	if o.TopCategoryMonths > o.MonthsTracked {
+		t.Fatalf("claimed %d months of category history on a %d-month account",
+			o.TopCategoryMonths, o.MonthsTracked)
+	}
+	if o.TopCategoryMonths > overviewBaselineMonths {
+		t.Fatalf("window is %d months, claimed %d", overviewBaselineMonths, o.TopCategoryMonths)
 	}
 }
 
