@@ -30,6 +30,7 @@ import (
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/mailer"
 	"finance-parser-go/internal/models"
+	"finance-parser-go/internal/payments"
 )
 
 type Server struct {
@@ -37,6 +38,7 @@ type Server struct {
 	validator         *gojsonschema.Schema
 	parser            ai.Parser
 	mailer            mailer.Sender
+	payments          *payments.Client
 	providerCircuit   *providerCircuitBreaker
 	providerCircuitMu sync.Mutex
 }
@@ -97,7 +99,15 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	emailSender := mailer.FromConfig(cfg)
 	log.Printf("[startup] email provider: %s", emailSender.Name())
 
-	s := &Server{cfg: cfg, validator: schema, parser: openai, mailer: emailSender}
+	razorpay := payments.NewClient(payments.RazorpayConfig{
+		KeyID:         cfg.RazorpayKeyID,
+		KeySecret:     cfg.RazorpayKeySecret,
+		WebhookSecret: cfg.RazorpayWebhookSecret,
+		BaseURL:       cfg.RazorpayBaseURL,
+	})
+	log.Printf("[startup] payment provider configured: %v", razorpay.Configured())
+
+	s := &Server{cfg: cfg, validator: schema, parser: openai, mailer: emailSender, payments: razorpay}
 	// Auth
 	authLimited := r.Group("/v1/auth")
 	authLimited.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))

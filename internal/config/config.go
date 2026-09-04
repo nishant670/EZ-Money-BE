@@ -64,6 +64,11 @@ type Config struct {
 	AdminIPAllowlist                []string
 	AdminAuditSalt                  string
 	USDINRRate                      float64
+	RazorpayKeyID                   string
+	RazorpayKeySecret               string
+	RazorpayWebhookSecret           string
+	RazorpayBaseURL                 string
+	CheckoutSuccessURL              string
 }
 
 func getenv(key, def string) string {
@@ -199,6 +204,14 @@ func Load() *Config {
 		AdminIPAllowlist:                csv("ADMIN_IP_ALLOWLIST"),
 		AdminAuditSalt:                  getenv("ADMIN_AUDIT_SALT", ""),
 		USDINRRate:                      atof("USD_INR_RATE", 88),
+		// Checkout stays dark until all three are present. Holding the API
+		// keys without the webhook secret would advertise a checkout whose
+		// payments could never be confirmed.
+		RazorpayKeyID:         getenv("RAZORPAY_KEY_ID", ""),
+		RazorpayKeySecret:     getenv("RAZORPAY_KEY_SECRET", ""),
+		RazorpayWebhookSecret: getenv("RAZORPAY_WEBHOOK_SECRET", ""),
+		RazorpayBaseURL:       getenv("RAZORPAY_BASE_URL", ""),
+		CheckoutSuccessURL:    getenv("CHECKOUT_SUCCESS_URL", ""),
 	}
 }
 
