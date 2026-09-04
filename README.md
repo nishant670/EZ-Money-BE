@@ -75,7 +75,15 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0031_remove_transaction_se
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0032_canonicalize_entry_categories.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0033_canonicalize_subscription_categories.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0039_correct_account_derived_payment_modes.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0043_repair_split_ledger.sql
 ```
+
+`0043` also runs itself at boot from `internal/database/schema.go`, keyed on the
+same `schema_repairs` row, so applying it by hand and letting the server do it
+are the same operation done once. Its destructive half is guarded for a reason:
+it deletes settlements for friends with no expense history, which is right for a
+leftover from a deleted group and wrong for a settlement somebody records before
+their first expense.
 
 ## Auth verification
 

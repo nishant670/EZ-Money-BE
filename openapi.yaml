@@ -2179,6 +2179,84 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DashboardRecurringCandidate"
+        overview:
+          $ref: "#/components/schemas/DashboardOverview"
+    DashboardOverview:
+      type: object
+      required: [has_history, months_tracked, lifetime_spent, lifetime_income, lifetime_transaction_count, average_monthly_spend, typical_monthly_spend, recent_months, top_category_amount, top_category_share]
+      description: >-
+        What the Insights tab knows regardless of which period is selected.
+        Deliberately not filtered by start_date/end_date: everything else on the
+        response is, which is why the tab went blank every month until the first
+        transaction was captured. A window with nothing in it is not the same
+        thing as an account with nothing in it, and a single month means little
+        without the months either side to read it against.
+      properties:
+        has_history:
+          type: boolean
+          description: >-
+            False only for a genuinely new account — the one case where an empty
+            screen is the honest one.
+        tracked_since:
+          type: string
+          format: date
+          description: Date of the first transaction ever recorded.
+        months_tracked:
+          type: integer
+        lifetime_spent:
+          type: number
+        lifetime_income:
+          type: number
+        lifetime_transaction_count:
+          type: integer
+        average_monthly_spend:
+          type: number
+          description: Mean over the last six months that had activity.
+        typical_monthly_spend:
+          type: number
+          description: >-
+            Median over the same months. Lead with this one: a single holiday or
+            insurance renewal drags the mean far enough to make an ordinary
+            month look frugal.
+        recent_months:
+          type: array
+          description: >-
+            The last twelve calendar months, oldest first, including the ones
+            with no activity — dropping those compresses time and draws a gap as
+            a decline.
+          items:
+            $ref: "#/components/schemas/DashboardOverviewMonth"
+        last_active_month:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/DashboardOverviewMonth"
+          description: >-
+            The most recent month with any activity. This is what turns an empty
+            selected period from a dead end into one tap to where the data is.
+        top_category:
+          type: string
+          description: Largest expense category across the last six months.
+        top_category_amount:
+          type: number
+        top_category_share:
+          type: number
+          description: That category's percentage of six-month spend.
+    DashboardOverviewMonth:
+      type: object
+      required: [month, label, spent, income, count]
+      properties:
+        month:
+          type: string
+          description: YYYY-MM.
+        label:
+          type: string
+          description: Short month name for the strip.
+        spent:
+          type: number
+        income:
+          type: number
+        count:
+          type: integer
     DashboardCategory:
       type: object
       required: [category, amount, percentage, change, change_comparable]
@@ -3742,6 +3820,12 @@ components:
         kind:
           type: string
           enum: [trip, home, couple, other]
+        photo_url:
+          type: string
+          description: >-
+            The group's picture, always a URL issued by POST /v1/upload. A photo
+            belongs to the group rather than to whoever picked it, so every
+            member sees the same one. Empty when the group has none.
         default_split:
           nullable: true
           allOf:
@@ -3871,6 +3955,15 @@ components:
       properties:
         friend_id:
           type: integer
+        group_id:
+          type: integer
+          nullable: true
+          description: >-
+            The group whose expenses this payment closes. Omit for a settlement
+            recorded straight against a friend. A settlement that names a group
+            is deleted with it: once the group's expenses are gone it has
+            nothing left to settle, and applying it anyway leaves a balance no
+            screen can account for.
         amount:
           type: number
           multipleOf: 0.01

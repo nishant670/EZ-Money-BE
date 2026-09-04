@@ -1028,6 +1028,113 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE split_settlements
 			ADD CONSTRAINT split_settlements_direction_check
 			CHECK (direction IN ('friend_paid_user', 'user_paid_friend'))`,
+		// --- Split ledger integrity. See migrations/0043_repair_split_ledger.sql
+		// for the full account of what these repair and why.
+		//
+		// The structural half runs every boot, because every statement in it is a
+		// no-op once it has been applied. The repair half below does not: it
+		// deletes rows, and this function runs on every start.
+		`ALTER TABLE split_groups
+			ADD COLUMN IF NOT EXISTS photo_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE split_settlements
+			ADD COLUMN IF NOT EXISTS group_id BIGINT REFERENCES split_groups(id) ON DELETE CASCADE`,
+		`CREATE INDEX IF NOT EXISTS idx_split_settlements_group
+			ON split_settlements (group_id) WHERE group_id IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS split_friend_merges (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			from_friend_id BIGINT NOT NULL REFERENCES split_friends(id) ON DELETE CASCADE,
+			to_friend_id BIGINT NOT NULL REFERENCES split_friends(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_friend_merges_target
+			ON split_friend_merges (user_id, to_friend_id)`,
+		// A row can only be merged away once. Stated as its own index rather
+		// than an inline UNIQUE on the column: an inline one becomes a
+		// *constraint* named by Postgres, AutoMigrate looks for a GORM-named
+		// one, and finding neither it tries to drop the name it expected and
+		// fails the boot outright. An index the model does not declare is a
+		// thing AutoMigrate has no opinion about.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_friend_merges_source
+			ON split_friend_merges (from_friend_id)`,
+		// Participants are now a bill's rows in the schema, not just by
+		// convention. Applied after the repair below has cleared the ones that
+		// already have no bill, since the constraint cannot be added over them.
+		`DELETE FROM split_participants
+			WHERE NOT EXISTS (
+				SELECT 1 FROM split_bills WHERE split_bills.id = split_participants.bill_id
+			)`,
+		`ALTER TABLE split_participants
+			DROP CONSTRAINT IF EXISTS fk_split_participants_bill`,
+		`ALTER TABLE split_participants
+			ADD CONSTRAINT fk_split_participants_bill
+			FOREIGN KEY (bill_id) REFERENCES split_bills(id) ON DELETE CASCADE`,
+
+		// A ledger for one-time repairs, so a destructive fix can ship in this
+		// function without running again on the next start.
+		`CREATE TABLE IF NOT EXISTS schema_repairs (
+			name TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		// The one-time half. Every statement here deletes or rewrites rows that
+		// predate the fixes above, and none of them should be applied to data
+		// written afterwards:
+		//
+		//   - Bills stranded on an archived group. Deleting a group already takes
+		//     the owner's own bills; a group shared with another member kept
+		//     theirs, on a group no screen will open.
+		//   - Settlements for a friend with no expense history at all. A
+		//     settlement means "this much of what we owed each other is paid", so
+		//     with nothing on either side it cannot describe a debt — only invent
+		//     one. Re-running this on live data would silently delete a legitimate
+		//     settlement recorded before the first expense, which is exactly why
+		//     it is guarded.
+		//   - Backfilling the group a legacy settlement belongs to, where the
+		//     friend shares exactly one group with the user and there is no other
+		//     ledger it could have settled.
+		`DO $$
+		BEGIN
+			IF EXISTS (SELECT 1 FROM schema_repairs WHERE name = '0043_repair_split_ledger') THEN
+				RETURN;
+			END IF;
+
+			DELETE FROM split_participants
+			WHERE bill_id IN (
+				SELECT b.id FROM split_bills b
+				LEFT JOIN split_groups g ON g.id = b.group_id
+				WHERE b.group_id IS NOT NULL AND (g.id IS NULL OR g.archived)
+			);
+
+			DELETE FROM split_bills b USING split_groups g
+			WHERE b.group_id = g.id AND g.archived;
+
+			DELETE FROM split_bills
+			WHERE group_id IS NOT NULL
+				AND NOT EXISTS (SELECT 1 FROM split_groups g WHERE g.id = split_bills.group_id);
+
+			DELETE FROM split_settlements s
+			WHERE s.group_id IS NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM split_participants p
+					WHERE p.user_id = s.user_id AND p.friend_id = s.friend_id
+				);
+
+			UPDATE split_settlements s
+			SET group_id = single.group_id
+			FROM (
+				SELECT m.user_id, m.friend_id, MIN(m.group_id) AS group_id
+				FROM split_group_members m
+				JOIN split_groups g ON g.id = m.group_id AND NOT g.archived
+				GROUP BY m.user_id, m.friend_id
+				HAVING COUNT(DISTINCT m.group_id) = 1
+			) AS single
+			WHERE s.group_id IS NULL
+				AND s.user_id = single.user_id
+				AND s.friend_id = single.friend_id;
+
+			INSERT INTO schema_repairs (name) VALUES ('0043_repair_split_ledger');
+		END
+		$$`,
 		// The monthly review's once-per-month guarantee lives in this index
 		// rather than in the job that writes through it.
 		`CREATE TABLE IF NOT EXISTS monthly_reviews (

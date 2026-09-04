@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -41,9 +42,14 @@ type splitParticipantInput struct {
 }
 
 type splitGroupInput struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	FriendIDs []uint `json:"friend_ids"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// PhotoURL is a URL this server issued from POST /v1/upload. It is nil when
+	// the client is not touching the photo, so an app build that does not know
+	// about group photos cannot clear one by omission — an empty string is the
+	// explicit "remove it".
+	PhotoURL  *string `json:"photo_url"`
+	FriendIDs []uint  `json:"friend_ids"`
 }
 
 type splitGroupDefaultSplitInput struct {
@@ -81,7 +87,10 @@ type splitBillInput struct {
 }
 
 type splitSettlementInput struct {
-	FriendID  uint         `json:"friend_id"`
+	FriendID uint `json:"friend_id"`
+	// Optional: the group whose expenses this payment closes. Absent for a
+	// settlement recorded straight against a friend.
+	GroupID   *uint        `json:"group_id"`
 	Amount    models.Money `json:"amount"`
 	Direction string       `json:"direction"`
 	Date      string       `json:"date"`
@@ -860,6 +869,9 @@ func (s *Server) createSplitGroup(c *gin.Context) {
 			Name:   strings.TrimSpace(input.Name),
 			Kind:   normalizedSplitGroupKind(input.Kind),
 		}
+		if input.PhotoURL != nil {
+			group.PhotoURL, _ = splitGroupPhotoURL(*input.PhotoURL)
+		}
 		if err := tx.Create(&group).Error; err != nil {
 			return err
 		}
@@ -944,6 +956,12 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 		}
 		group.Name = strings.TrimSpace(input.Name)
 		group.Kind = normalizedSplitGroupKind(input.Kind)
+		// Absent means "leave it alone", empty string means "remove it". An
+		// older app build sends neither the field nor a photo, and must not
+		// wipe one set from a newer build on another device.
+		if input.PhotoURL != nil {
+			group.PhotoURL, _ = splitGroupPhotoURL(*input.PhotoURL)
+		}
 		if err := tx.Save(&group).Error; err != nil {
 			return err
 		}
@@ -1207,6 +1225,17 @@ func (s *Server) archiveSplitGroup(c *gin.Context) {
 			return gorm.ErrRecordNotFound
 		}
 
+		// Settlements first, and unconditionally: they are not attached to a
+		// bill, so an early return on "this group had no bills" would leave
+		// them behind. A settlement closes debts from this group's expenses,
+		// and once those are gone it is applying its amount against nothing —
+		// which is how a deleted group used to leave a permanent balance on a
+		// screen with nothing on it.
+		if err := tx.Where("user_id = ? AND group_id = ?", userID, id).
+			Delete(&models.SplitSettlement{}).Error; err != nil {
+			return err
+		}
+
 		var bills []models.SplitBill
 		if err := tx.Where("user_id = ? AND group_id = ?", userID, id).Find(&bills).Error; err != nil {
 			return err
@@ -1335,6 +1364,10 @@ func (s *Server) createSplitBill(c *gin.Context) {
 			return
 		}
 	}
+	if err := resolveMergedSplitBillParticipants(userID, input.Participants); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	}
 	if fields, err := validateSplitBillParticipantFriends(userID, input.GroupID, input.Participants); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
 		return
@@ -1453,6 +1486,10 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 			return
 		}
 	}
+	if err := resolveMergedSplitBillParticipants(userID, input.Participants); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	}
 	if fields, err := validateSplitBillParticipantFriends(userID, input.GroupID, input.Participants); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
 		return
@@ -1552,12 +1589,31 @@ func (s *Server) createSplitSettlement(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_settlement", "fields": fields})
 		return
 	}
+	resolvedFriendID, err := resolveMergedSplitFriendID(database.DB, userID, input.FriendID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	}
+	input.FriendID = resolvedFriendID
 	if ok, err := userOwnsActiveSplitFriend(userID, input.FriendID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
 		return
 	} else if !ok {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_settlement", "fields": gin.H{"friend_id": "must belong to the current user"}})
 		return
+	}
+
+	if input.GroupID != nil {
+		if ok, err := userCanAccessActiveSplitGroup(userID, *input.GroupID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "split_group_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":  "invalid_split_settlement",
+				"fields": gin.H{"group_id": "must be a group you can access"},
+			})
+			return
+		}
 	}
 
 	settlement := input.toModel(userID)
@@ -1573,9 +1629,8 @@ func (s *Server) listSplitSettlements(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
 	var settlements []models.SplitSettlement
-	if err := database.DB.Preload("Friend").
-		Where("user_id = ?", userID).
-		Order("date desc, created_at desc").
+	if err := activeLedgerSettlements(database.DB, userID).Preload("Friend").
+		Order("split_settlements.date desc, split_settlements.created_at desc").
 		Find(&settlements).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_settlements"})
 		return
@@ -1587,30 +1642,35 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	page, pageSize := parseBillingPagination(c.Query("page"), c.Query("page_size"))
 
+	// Activity is a history of the ledger the user still has, not of everything
+	// that ever happened to it. A deleted group kept narrating itself here —
+	// "Ma Beta created", the expenses inside it, the settlements that closed
+	// them — for a group no other screen would open.
 	var bills []models.SplitBill
 	if err := database.DB.Preload("Group").Preload("Participants.Friend").
-		Where("user_id = ?", userID).
+		Joins("LEFT JOIN split_groups ON split_groups.id = split_bills.group_id").
+		Where("split_bills.user_id = ?", userID).
+		Where("split_bills.group_id IS NULL OR (split_groups.id IS NOT NULL AND split_groups.archived = ?)", false).
 		Find(&bills).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
 	}
 	var settlements []models.SplitSettlement
-	if err := database.DB.Preload("Friend").
-		Where("user_id = ?", userID).
+	if err := activeLedgerSettlements(database.DB, userID).Preload("Friend").
 		Find(&settlements).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
 	}
 	var groups []models.SplitGroup
 	if err := database.DB.Preload("Members.Friend").
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND archived = ?", userID, false).
 		Find(&groups).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
 	}
 	var friends []models.SplitFriend
 	if err := database.DB.
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND archived = ?", userID, false).
 		Find(&friends).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
@@ -1780,6 +1840,27 @@ func normalizedSplitGroupKind(kind string) string {
 	return normalized
 }
 
+// splitGroupPhotoURL keeps a group photo pointing at our own upload origin.
+//
+// The value is rendered by every member's app, so accepting an arbitrary URL
+// would let one member's group settings pull an image — and the request that
+// fetches it — from anywhere. Uploading through POST /v1/upload is the only way
+// to get a URL this accepts, and that handler already sniffs the bytes.
+func splitGroupPhotoURL(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", true
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", false
+	}
+	if !strings.HasPrefix(strings.TrimPrefix(parsed.Path, "/"), uploadDir+"/") {
+		return "", false
+	}
+	return trimmed, true
+}
+
 func (input splitGroupInput) validate() map[string]string {
 	fields := map[string]string{}
 	if strings.TrimSpace(input.Name) == "" {
@@ -1800,6 +1881,11 @@ func (input splitGroupInput) validate() map[string]string {
 			fields[fmt.Sprintf("friend_ids[%d]", index)] = "duplicate friend"
 		}
 		seen[friendID] = true
+	}
+	if input.PhotoURL != nil {
+		if _, ok := splitGroupPhotoURL(*input.PhotoURL); !ok {
+			fields["photo_url"] = "must be an image uploaded to Finnri"
+		}
 	}
 	return fields
 }
@@ -1899,6 +1985,7 @@ func (input splitSettlementInput) toModel(userID uint) models.SplitSettlement {
 	return models.SplitSettlement{
 		UserID:    userID,
 		FriendID:  input.FriendID,
+		GroupID:   input.GroupID,
 		Amount:    input.Amount,
 		Direction: normalizeSettlementDirection(input.Direction),
 		Date:      input.Date,
@@ -1918,8 +2005,22 @@ func buildSplitBalances(db *gorm.DB, userID uint) ([]splitBalance, error) {
 		balancesByFriend[friend.ID] = &splitBalance{Friend: friend}
 	}
 
+	// Joined to the bill rather than read on its own. A participant row is a
+	// line on a bill and has no meaning without one: when the bill is gone the
+	// share is not an unpaid debt, it is a fragment of a deleted record. Read
+	// flat, those fragments moved the headline figure while appearing on no
+	// screen that could explain or clear them — an account with every group
+	// deleted still reported an outstanding balance.
+	//
+	// Bills belonging to an archived group are excluded for the same reason:
+	// the group is off every list, so nothing that sums it can be reconciled.
 	var participants []models.SplitParticipant
-	if err := db.Where("user_id = ?", userID).Find(&participants).Error; err != nil {
+	if err := db.Model(&models.SplitParticipant{}).
+		Joins("JOIN split_bills ON split_bills.id = split_participants.bill_id").
+		Joins("LEFT JOIN split_groups ON split_groups.id = split_bills.group_id").
+		Where("split_participants.user_id = ?", userID).
+		Where("split_bills.group_id IS NULL OR (split_groups.id IS NOT NULL AND split_groups.archived = ?)", false).
+		Find(&participants).Error; err != nil {
 		return nil, err
 	}
 	for _, participant := range participants {
@@ -1937,8 +2038,16 @@ func buildSplitBalances(db *gorm.DB, userID uint) ([]splitBalance, error) {
 		}
 	}
 
+	// Same rule for the other side of the ledger. A settlement recorded inside
+	// a group is only meaningful while that group's expenses exist; once the
+	// group is gone it has nothing left to settle, and applying it anyway is
+	// what turned a deleted group into a permanent phantom balance.
 	var settlements []models.SplitSettlement
-	if err := db.Where("user_id = ?", userID).Find(&settlements).Error; err != nil {
+	if err := db.Model(&models.SplitSettlement{}).
+		Joins("LEFT JOIN split_groups ON split_groups.id = split_settlements.group_id").
+		Where("split_settlements.user_id = ?", userID).
+		Where("split_settlements.group_id IS NULL OR (split_groups.id IS NOT NULL AND split_groups.archived = ?)", false).
+		Find(&settlements).Error; err != nil {
 		return nil, err
 	}
 	for _, settlement := range settlements {
@@ -1961,6 +2070,27 @@ func buildSplitBalances(db *gorm.DB, userID uint) ([]splitBalance, error) {
 		result = append(result, *balancesByFriend[friend.ID])
 	}
 	return result, nil
+}
+
+// resolveMergedSplitBillParticipants rewrites friend ids the caller is holding
+// to the rows that absorbed them, in place.
+//
+// The composer reads its people list once and is then open for as long as the
+// user takes. A duplicate merged away in between leaves it naming an archived
+// row, and rejecting that is a validation error about somebody the user can see
+// on screen and cannot do anything about.
+func resolveMergedSplitBillParticipants(userID uint, participants []splitParticipantInput) error {
+	for index := range participants {
+		if participants[index].FriendID == 0 {
+			continue
+		}
+		resolved, err := resolveMergedSplitFriendID(database.DB, userID, participants[index].FriendID)
+		if err != nil {
+			return err
+		}
+		participants[index].FriendID = resolved
+	}
+	return nil
 }
 
 func validateSplitParticipantFriends(userID uint, participants []splitParticipantInput) (gin.H, error) {
@@ -1996,17 +2126,9 @@ func validateSplitBillParticipantFriends(userID uint, groupID *uint, participant
 	// Membership always names the *owner's* friend rows, and a member recording
 	// an expense in a shared group names them too — so the caller is usually
 	// not the person those rows belong to.
-	var groupFriendIDs []uint
-	if err := database.DB.Model(&models.SplitGroupMember{}).
-		Joins("JOIN split_friends ON split_friends.id = split_group_members.friend_id").
-		Where("split_group_members.group_id = ?", *groupID).
-		Where("split_friends.archived = ?", false).
-		Pluck("split_group_members.friend_id", &groupFriendIDs).Error; err != nil {
+	allowedFriendIDs, err := activeSplitGroupFriendIDs(*groupID)
+	if err != nil {
 		return nil, err
-	}
-	allowedFriendIDs := map[uint]bool{}
-	for _, friendID := range groupFriendIDs {
-		allowedFriendIDs[friendID] = true
 	}
 
 	fields := gin.H{}
@@ -2155,20 +2277,72 @@ func applySplitBillListViewerPermissions(bills []models.SplitBill, viewerUserID 
 	}
 }
 
+// validateEntrySplitReferences checks the split attached to a transaction, and
+// repairs the ids it can before judging them.
+//
+// It used to apply a stricter rule than the standalone split composer next to
+// it, and rejected two things that composer accepts:
+//
+//   - A group somebody else owns. Membership of a shared group is exactly the
+//     permission to record expenses in it, so "must belong to the current user"
+//     was wrong about a group the user was actively splitting with.
+//   - The owner's friend rows inside such a group. A member's own friend list
+//     never contains them, so every participant in a shared group failed.
+//
+// The third failure was self-inflicted: merging two duplicate friends archives
+// one of them, and a composer opened before the merge still names the archived
+// id. All three arrived together as a wall of "must belong to the current
+// user" under a Save button, about people plainly on screen, with nothing the
+// user could do about any of it.
+//
+// Stale ids are rewritten in place rather than reported, so the bill this input
+// goes on to create is recorded against the surviving row.
 func validateEntrySplitReferences(userID uint, input *entrySplitInput) (gin.H, error) {
 	fields := gin.H{}
 	if input == nil {
 		return fields, nil
 	}
 	if input.GroupID != nil {
-		ok, err := userOwnsActiveSplitGroup(userID, *input.GroupID)
+		ok, err := userCanAccessActiveSplitGroup(userID, *input.GroupID)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			fields["split.group_id"] = "must belong to the current user"
+			fields["split.group_id"] = "must be a group you can access"
 		}
 	}
+
+	for index := range input.Participants {
+		if input.Participants[index].FriendID == nil {
+			continue
+		}
+		resolved, err := resolveMergedSplitFriendID(database.DB, userID, *input.Participants[index].FriendID)
+		if err != nil {
+			return nil, err
+		}
+		input.Participants[index].FriendID = &resolved
+	}
+
+	// Inside a group, membership is the rule — the same one createSplitBill
+	// uses — because the people in a shared group are the owner's friend rows,
+	// not the caller's. Outside one there is no roster to check against, so
+	// ownership is all there is.
+	if input.GroupID != nil {
+		allowed, err := activeSplitGroupFriendIDs(*input.GroupID)
+		if err != nil {
+			return nil, err
+		}
+		for index, participant := range input.Participants {
+			if participant.FriendID == nil {
+				continue
+			}
+			if !allowed[*participant.FriendID] {
+				fields[fmt.Sprintf("split.participants[%d].friend_id", index)] = "must belong to this group"
+			}
+		}
+		return fields, nil
+	}
+
 	for index, participant := range input.Participants {
 		if participant.FriendID == nil {
 			continue
@@ -2182,6 +2356,33 @@ func validateEntrySplitReferences(userID uint, input *entrySplitInput) (gin.H, e
 		}
 	}
 	return fields, nil
+}
+
+// activeSplitGroupFriendIDs is the set of friend rows a group expense may name.
+//
+// Joined against the friend rows rather than read from the membership table
+// alone, because membership survives archiving: a share recorded against an
+// archived friend is money that leaves the payer's side of the ledger and
+// arrives nowhere, since buildSplitBalances walks active friends and never
+// reaches that participant row.
+//
+// Deliberately not scoped by the caller's user id. Membership always names the
+// group *owner's* friend rows, and a member recording an expense in a shared
+// group names them too.
+func activeSplitGroupFriendIDs(groupID uint) (map[uint]bool, error) {
+	var friendIDs []uint
+	if err := database.DB.Model(&models.SplitGroupMember{}).
+		Joins("JOIN split_friends ON split_friends.id = split_group_members.friend_id").
+		Where("split_group_members.group_id = ?", groupID).
+		Where("split_friends.archived = ?", false).
+		Pluck("split_group_members.friend_id", &friendIDs).Error; err != nil {
+		return nil, err
+	}
+	allowed := make(map[uint]bool, len(friendIDs))
+	for _, friendID := range friendIDs {
+		allowed[friendID] = true
+	}
+	return allowed, nil
 }
 
 func createEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *entrySplitInput) error {
@@ -2733,6 +2934,19 @@ func userOwnsEntry(userID, entryID uint) (bool, error) {
 		Where("id = ?", entryID).
 		Count(&count).Error
 	return count == 1, err
+}
+
+// activeLedgerSettlements scopes settlements to the ledger that still exists.
+//
+// A settlement recorded inside a group only means anything while that group's
+// expenses do. Deleting a group removes its bills, and a settlement left
+// applying its full amount against nothing is what made a Splits screen with no
+// groups on it report an outstanding balance.
+func activeLedgerSettlements(db *gorm.DB, userID uint) *gorm.DB {
+	return db.Model(&models.SplitSettlement{}).
+		Joins("LEFT JOIN split_groups ON split_groups.id = split_settlements.group_id").
+		Where("split_settlements.user_id = ?", userID).
+		Where("split_settlements.group_id IS NULL OR (split_groups.id IS NOT NULL AND split_groups.archived = ?)", false)
 }
 
 func ownedSplitFriends(db *gorm.DB, userID uint) *gorm.DB {

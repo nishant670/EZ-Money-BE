@@ -118,7 +118,53 @@ func mergeSplitFriendsTx(tx *gorm.DB, ownerID, loserID, survivorID uint) (models
 	}).Error; err != nil {
 		return models.SplitFriend{}, err
 	}
+
+	// The redirect outlives the row. Everything already holding the loser's id
+	// — an expense composer open on another screen, a draft the app has not
+	// sent yet — would otherwise be rejected with "must belong to the current
+	// user" about somebody visibly in the group, and the row it names no longer
+	// exists for the user to go and fix.
+	//
+	// Any redirect that pointed at the loser now points through it, so the
+	// trail never grows a hop per merge and never loops.
+	if err := tx.Model(&models.SplitFriendMerge{}).
+		Where("user_id = ? AND to_friend_id = ?", ownerID, loserID).
+		Update("to_friend_id", survivorID).Error; err != nil {
+		return models.SplitFriend{}, err
+	}
+	redirect := models.SplitFriendMerge{UserID: ownerID, FromFriendID: loserID, ToFriendID: survivorID}
+	if err := tx.Where("from_friend_id = ?", loserID).
+		Assign(map[string]any{"user_id": ownerID, "to_friend_id": survivorID}).
+		FirstOrCreate(&redirect).Error; err != nil {
+		return models.SplitFriend{}, err
+	}
 	return survivor, nil
+}
+
+// resolveMergedSplitFriendID follows the merge trail from a friend id the
+// caller is holding to the row that absorbed it.
+//
+// Returns the id unchanged when there is no redirect, which is the common case
+// and costs one indexed lookup. The hop limit is defence against a cycle the
+// merge path is not supposed to be able to create; hitting it means giving back
+// the last id reached rather than spinning.
+func resolveMergedSplitFriendID(db *gorm.DB, userID, friendID uint) (uint, error) {
+	current := friendID
+	for hops := 0; hops < 8; hops++ {
+		var redirect models.SplitFriendMerge
+		err := db.Where("user_id = ? AND from_friend_id = ?", userID, current).First(&redirect).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return current, nil
+		}
+		if err != nil {
+			return friendID, err
+		}
+		if redirect.ToFriendID == current {
+			return current, nil
+		}
+		current = redirect.ToFriendID
+	}
+	return current, nil
 }
 
 // reconcileSplitIdentities revisits shared groups after stronger evidence

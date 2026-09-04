@@ -154,6 +154,11 @@ type DashboardResponse struct {
 	ReviewItems         []DashboardReviewItem         `json:"review_items"`
 	Insights            []InsightCard                 `json:"insights"`
 	RecurringCandidates []DashboardRecurringCandidate `json:"recurring_candidates"`
+	// Overview is deliberately not filtered by the selected period. See
+	// DashboardOverview: the tab used to go blank every month until the first
+	// transaction was captured, and a window with nothing in it is not the same
+	// thing as an account with nothing in it.
+	Overview DashboardOverview `json:"overview"`
 }
 
 type dashboardRange struct {
@@ -252,6 +257,14 @@ func (s *Server) getDashboard(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
 		return
 	}
+	// Built from "now" rather than from the selected range: the point of the
+	// overview is to be the thing that is still true when the range is empty.
+	overview, err := loadDashboardOverview(userID, time.Now().In(location))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_dashboard"})
+		return
+	}
+	dashboard.Overview = overview
 	c.JSON(http.StatusOK, dashboard)
 }
 

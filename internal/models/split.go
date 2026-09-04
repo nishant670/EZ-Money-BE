@@ -99,6 +99,11 @@ type SplitGroup struct {
 	// group screen (only a trip has dates), so it belongs to the group rather
 	// than to whoever happens to be looking at it.
 	Kind string `gorm:"type:varchar(16);not null;default:other" json:"kind"`
+	// PhotoURL is the group's picture, hosted on our own upload origin. It is a
+	// property of the group rather than of whoever is looking at it: a photo
+	// kept on the device that picked it would be invisible to every other
+	// member, which is not a group photo but a private note.
+	PhotoURL string `gorm:"type:text;not null;default:''" json:"photo_url"`
 	// DefaultSplit is stored as JSON text rather than a column per field: it is
 	// read and written whole, and the shape is the client's to interpret.
 	DefaultSplit *SplitGroupDefaultSplit `gorm:"type:text" json:"default_split"`
@@ -224,15 +229,64 @@ type SplitParticipant struct {
 	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
+// SplitSettlement records a payment that closes part of a running balance.
+//
+// GroupID is what ties it to the expenses it settles. Without it a settlement
+// outlived the ledger it belonged to: deleting a group removes its bills and
+// participants, and a friend-level settlement left behind kept contributing its
+// full amount to the running total — so an account with no groups, no bills and
+// nothing on screen still reported being owed money, with nothing anywhere to
+// explain the figure.
 type SplitSettlement struct {
-	ID        uint        `gorm:"primaryKey" json:"id"`
-	UserID    uint        `gorm:"index;not null" json:"user_id"`
-	FriendID  uint        `gorm:"index;not null" json:"friend_id"`
-	Friend    SplitFriend `json:"friend,omitempty" gorm:"foreignKey:FriendID;constraint:OnDelete:CASCADE"`
-	Amount    Money       `gorm:"type:numeric(19,2);not null" json:"amount"`
-	Direction string      `gorm:"type:varchar(24);not null" json:"direction"`
-	Date      string      `gorm:"not null" json:"date"`
-	Notes     string      `json:"notes"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	ID       uint        `gorm:"primaryKey" json:"id"`
+	UserID   uint        `gorm:"index;not null" json:"user_id"`
+	FriendID uint        `gorm:"index;not null" json:"friend_id"`
+	Friend   SplitFriend `json:"friend,omitempty" gorm:"foreignKey:FriendID;constraint:OnDelete:CASCADE"`
+	// Nil for a settlement recorded straight against a friend rather than
+	// inside a group. Those are still deleted with their friend, but they
+	// survive a group being removed, which is correct: they never named one.
+	//
+	// Deliberately carries no `index` tag and no association struct. The
+	// partial index and the cascading foreign key are created by
+	// `EnsureRuntimeSchema`, and declaring them here as well is not duplication
+	// so much as a fight over names: AutoMigrate expects
+	// `fk_split_settlements_group`, hand-written SQL gets Postgres's
+	// `split_settlements_group_id_fkey`, and AutoMigrate then tries to drop a
+	// constraint that does not exist under the name it looked for and aborts
+	// boot. Nothing preloads the group, so the association bought nothing.
+	GroupID   *uint     `json:"group_id,omitempty"`
+	Amount    Money     `gorm:"type:numeric(19,2);not null" json:"amount"`
+	Direction string    `gorm:"type:varchar(24);not null" json:"direction"`
+	Date      string    `gorm:"not null" json:"date"`
+	Notes     string    `json:"notes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SplitFriendMerge remembers that one friend row was folded into another.
+//
+// A merge archives the loser, and every id the app was already holding — an
+// expense composer left open, a draft on another device — instantly names a row
+// the server will refuse. The user sees "must belong to the current user" about
+// somebody who is plainly in the group, with no way to act on it: the row it
+// names no longer exists to fix.
+//
+// Keeping the redirect is what lets a stale id be resolved to the row that
+// absorbed it instead of rejected. Merges chain (a into b, later b into c), so
+// resolution follows the trail rather than taking one hop.
+type SplitFriendMerge struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+	// The owner of both rows. A merge is always within one user's friend list.
+	//
+	// Every index on this table is created by `EnsureRuntimeSchema` — see
+	// SplitSettlement.GroupID for why the schema owns them rather than the
+	// tags. The composite (user_id, to_friend_id) serves the rewrite a chained
+	// merge performs; single-column tags here would only duplicate half of it.
+	UserID uint `gorm:"not null" json:"user_id"`
+	// FromFriendID is the row that was archived. A row can only be merged away
+	// once, and that uniqueness is a unique index the schema creates — not a
+	// `uniqueIndex` tag, for the reason spelled out on SplitSettlement.GroupID.
+	FromFriendID uint      `gorm:"not null" json:"from_friend_id"`
+	ToFriendID   uint      `gorm:"not null" json:"to_friend_id"`
+	CreatedAt    time.Time `json:"created_at"`
 }
