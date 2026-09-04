@@ -2217,7 +2217,14 @@ components:
           description: >-
             Median over the same months. Lead with this one: a single holiday or
             insurance renewal drags the mean far enough to make an ordinary
-            month look frugal.
+            month look frugal. Both figures exclude the current month, which is
+            partial by definition — on the 4th it describes four days.
+        baseline_months:
+          type: integer
+          description: >-
+            How many complete months backed the two figures above. Check it
+            before calling anything "typical": one or two months is a sample,
+            not a habit.
         recent_months:
           type: array
           description: >-
@@ -2240,7 +2247,13 @@ components:
           type: number
         top_category_share:
           type: number
-          description: That category's percentage of six-month spend.
+          description: That category's percentage of the window's spend.
+        top_category_months:
+          type: integer
+          description: >-
+            How many months that window actually spans, capped by how long the
+            account has existed. Saying "over six months" to a three-month-old
+            account describes a period half of which it did not exist for.
     DashboardOverviewMonth:
       type: object
       required: [month, label, spent, income, count]

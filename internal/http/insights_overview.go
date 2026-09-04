@@ -59,8 +59,19 @@ type DashboardOverview struct {
 	// activity; TypicalMonthlySpend is the median over the same set. The median
 	// is what the app should lead with — one holiday or one insurance renewal
 	// drags a six-month mean far enough to make an ordinary month look frugal.
+	//
+	// Both exclude the current month, which is still being lived in. Including
+	// it put a four-day-old month into a three-month median and made it the
+	// answer: the app announced "a typical month runs about ₹10,226" next to
+	// "Jump to Sep · ₹10,226", the same figure twice, which reads as a bug
+	// because it is one.
 	AverageMonthlySpend float64 `json:"average_monthly_spend"`
 	TypicalMonthlySpend float64 `json:"typical_monthly_spend"`
+	// How many complete months actually backed those two figures. A caller must
+	// check this before calling anything "typical": one or two months is a
+	// sample, not a habit, and with a holiday in it the median swings further
+	// than the number it replaces.
+	BaselineMonths int `json:"baseline_months"`
 
 	// RecentMonths is oldest first so the app can draw it straight as a strip.
 	RecentMonths []DashboardOverviewMonth `json:"recent_months"`
@@ -74,6 +85,11 @@ type DashboardOverview struct {
 	TopCategory       string  `json:"top_category,omitempty"`
 	TopCategoryAmount float64 `json:"top_category_amount"`
 	TopCategoryShare  float64 `json:"top_category_share"`
+	// How many months the top-category window actually spans. The window asks
+	// for six; an account three months old has three, and saying "over six
+	// months" to that account describes a period half of which it was not
+	// being used for.
+	TopCategoryMonths int `json:"top_category_months"`
 }
 
 type overviewMonthRow struct {
@@ -175,7 +191,15 @@ func loadDashboardOverview(userID uint, now time.Time) (DashboardOverview, error
 		overview.MonthsTracked = months
 	}
 
-	overview.AverageMonthlySpend, overview.TypicalMonthlySpend = baselineMonthlySpend(overview.RecentMonths)
+	// The current month is dropped before the baseline is taken: it is partial
+	// by definition, and on the 4th it describes four days.
+	baselineSource := overview.RecentMonths
+	currentKey := now.Format("2006-01")
+	if n := len(baselineSource); n > 0 && baselineSource[n-1].Month == currentKey {
+		baselineSource = baselineSource[:n-1]
+	}
+	overview.AverageMonthlySpend, overview.TypicalMonthlySpend, overview.BaselineMonths =
+		baselineMonthlySpend(baselineSource)
 
 	topCategory, topAmount, baselineSpend, err := loadOverviewTopCategory(userID, now)
 	if err != nil {
@@ -186,6 +210,10 @@ func loadDashboardOverview(userID uint, now time.Time) (DashboardOverview, error
 	if baselineSpend > 0 {
 		overview.TopCategoryShare = topAmount / baselineSpend * 100
 	}
+	overview.TopCategoryMonths = overviewBaselineMonths
+	if overview.MonthsTracked < overview.TopCategoryMonths {
+		overview.TopCategoryMonths = overview.MonthsTracked
+	}
 	return overview, nil
 }
 
@@ -195,7 +223,7 @@ func loadDashboardOverview(userID uint, now time.Time) (DashboardOverview, error
 // somebody started using the app — or the current month on its second day —
 // describes the app's adoption curve rather than the person's spending, and
 // always downward.
-func baselineMonthlySpend(months []DashboardOverviewMonth) (mean float64, median float64) {
+func baselineMonthlySpend(months []DashboardOverviewMonth) (mean float64, median float64, used int) {
 	start := len(months) - overviewBaselineMonths
 	if start < 0 {
 		start = 0
@@ -207,7 +235,7 @@ func baselineMonthlySpend(months []DashboardOverviewMonth) (mean float64, median
 		}
 	}
 	if len(amounts) == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 
 	total := 0.0
@@ -224,7 +252,7 @@ func baselineMonthlySpend(months []DashboardOverviewMonth) (mean float64, median
 	} else {
 		median = (sorted[middle-1] + sorted[middle]) / 2
 	}
-	return mean, median
+	return mean, median, len(amounts)
 }
 
 // loadOverviewTopCategory names the biggest category across the baseline
