@@ -161,6 +161,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	billingPublic := router.Group("/v1/billing")
 	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
 	billingPublic.GET("/plans", server.listBillingPlans)
+	billingPublic.GET("/checkout/:order_id", server.getBillingCheckoutOrder)
 	billingPublic.POST("/webhook", server.handleBillingWebhook)
 
 	admin := router.Group("/v1/admin")

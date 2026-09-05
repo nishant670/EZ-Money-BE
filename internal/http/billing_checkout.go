@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,6 +34,30 @@ type checkoutOrderResponse struct {
 	// entitlement is not granted there — it is granted by the webhook — so the
 	// page polls /v1/billing/status rather than trusting its own query string.
 	SuccessURL string `json:"success_url,omitempty"`
+	// CheckoutURL is the hosted page that opens Razorpay for this order. The
+	// mobile app opens it in a browser tab rather than building the URL
+	// itself, so the web origin is configured server-side in one place.
+	CheckoutURL string `json:"checkout_url,omitempty"`
+}
+
+// publicCheckoutOrderResponse is what the hosted pay page reads to render an
+// order it was handed by id.
+//
+// Everything here is already public: the key id is the publishable one the
+// browser needs, and the amount is the order's own. Nothing identifies the
+// buyer, so the page needs no session — which is the point, since it opens in
+// a browser tab that has never signed in.
+type publicCheckoutOrderResponse struct {
+	Provider    string `json:"provider"`
+	OrderID     string `json:"order_id"`
+	KeyID       string `json:"key_id"`
+	AmountMinor int64  `json:"amount_minor"`
+	Currency    string `json:"currency"`
+	PlanCode    string `json:"plan_code"`
+	PlanName    string `json:"plan_name"`
+	// Status lets the page say "already paid" instead of opening a second
+	// checkout for an order the webhook has already settled.
+	Status string `json:"status"`
 }
 
 // checkoutOrderReuseWindow lets a double-click, a back-button, or a reloaded
@@ -176,6 +201,63 @@ func (s *Server) createBillingCheckout(c *gin.Context) {
 	c.JSON(http.StatusCreated, s.checkoutResponse(payment, plan))
 }
 
+// hostedCheckoutURL is the pay page for one order, or "" when no web origin is
+// configured — in which case the client simply gets no URL to open rather than
+// a broken one.
+func (s *Server) hostedCheckoutURL(orderID string) string {
+	if s.cfg == nil || strings.TrimSpace(s.cfg.WebBaseURL) == "" || orderID == "" {
+		return ""
+	}
+	return strings.TrimRight(s.cfg.WebBaseURL, "/") + "/pay?order=" + url.QueryEscape(orderID)
+}
+
+// getBillingCheckoutOrder answers with the non-secret detail of one order.
+//
+// Public on purpose. The page that reads it runs in a browser tab opened from
+// the app, which has no Finnri session and cannot be given one without putting
+// a credential in a URL. Nothing here identifies the buyer, and knowing an
+// order id only lets someone pay for it — a gift, not an attack.
+func (s *Server) getBillingCheckoutOrder(c *gin.Context) {
+	if !s.paymentProviderConfigured() {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "payment_provider_not_configured"})
+		return
+	}
+	orderID := strings.TrimSpace(c.Param("order_id"))
+	if orderID == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_order"})
+		return
+	}
+
+	var payment models.Payment
+	err := database.DB.Where("provider = ? AND provider_order_id = ?", payments.ProviderRazorpay, orderID).
+		First(&payment).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order_not_found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_payment"})
+		return
+	}
+
+	var plan models.Plan
+	if err := database.DB.First(&plan, payment.PlanID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_billing_plan"})
+		return
+	}
+
+	c.JSON(http.StatusOK, publicCheckoutOrderResponse{
+		Provider:    payment.Provider,
+		OrderID:     payment.ProviderOrderID,
+		KeyID:       s.razorpayClient().KeyID(),
+		AmountMinor: payment.AmountMinor,
+		Currency:    payment.Currency,
+		PlanCode:    plan.Code,
+		PlanName:    plan.Name,
+		Status:      payment.Status,
+	})
+}
+
 func (s *Server) checkoutResponse(payment models.Payment, plan billingPlanResponse) checkoutOrderResponse {
 	successURL := ""
 	if s.cfg != nil {
@@ -191,6 +273,7 @@ func (s *Server) checkoutResponse(payment models.Payment, plan billingPlanRespon
 		PlanName:    plan.Name,
 		PaymentID:   payment.ID,
 		SuccessURL:  successURL,
+		CheckoutURL: s.hostedCheckoutURL(payment.ProviderOrderID),
 	}
 }
 

@@ -65,6 +65,7 @@ func withRazorpay(fake *fakeRazorpay) func(*Server, *config.Config) {
 		cfg.RazorpayKeySecret = testKeySecret
 		cfg.RazorpayWebhookSecret = testWebhookSecret
 		cfg.RazorpayBaseURL = fake.server.URL
+		cfg.WebBaseURL = "https://finnri.example"
 		s.payments = payments.NewClient(payments.RazorpayConfig{
 			KeyID:         testKeyID,
 			KeySecret:     testKeySecret,
@@ -613,4 +614,107 @@ func TestUnhandledEventIsAcknowledged(t *testing.T) {
 	if event.Status != models.WebhookStatusIgnored {
 		t.Fatalf("expected ignored, got %q", event.Status)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The hosted pay page
+// ---------------------------------------------------------------------------
+
+// TestCheckoutHandsBackAHostedPayURL: the app opens the URL the server gives
+// it rather than assembling one, so a staging build cannot send somebody to
+// production's checkout.
+func TestCheckoutHandsBackAHostedPayURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake))
+	_, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+
+	order := startCheckout(t, router, token, "monthly", http.StatusCreated)
+	want := "https://finnri.example/pay?order=" + order.OrderID
+	if order.CheckoutURL != want {
+		t.Fatalf("expected %q, got %q", want, order.CheckoutURL)
+	}
+}
+
+func TestCheckoutOmitsPayURLWithoutAWebOrigin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, func(s *Server, cfg *config.Config) {
+		withRazorpay(fake)(s, cfg)
+		cfg.WebBaseURL = ""
+	})
+	_, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+
+	// No origin configured means no URL, rather than a broken one the app
+	// would open into an error page.
+	if order := startCheckout(t, router, token, "monthly", http.StatusCreated); order.CheckoutURL != "" {
+		t.Fatalf("expected no checkout URL, got %q", order.CheckoutURL)
+	}
+}
+
+// TestPublicOrderLookupServesThePayPage covers the endpoint the hosted page
+// reads. It is deliberately unauthenticated: the page runs in a browser tab
+// opened from the app, which has no Finnri session.
+func TestPublicOrderLookupServesThePayPage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake))
+	_, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+	order := startCheckout(t, router, token, "monthly", http.StatusCreated)
+
+	// No Authorization header at all.
+	public := performJSONRequest[map[string]any](
+		t, router, http.MethodGet, "/v1/billing/checkout/"+order.OrderID, "", nil, http.StatusOK,
+	)
+	if public["key_id"] != testKeyID || public["order_id"] != order.OrderID {
+		t.Fatalf("unexpected public order: %#v", public)
+	}
+	if public["amount_minor"] != float64(14900) || public["status"] != models.PaymentStatusCreated {
+		t.Fatalf("unexpected public order: %#v", public)
+	}
+
+	// Nothing about the buyer, and neither secret, may appear here.
+	encoded, _ := json.Marshal(public)
+	for _, forbidden := range []string{testKeySecret, testWebhookSecret, "user_id", "email"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("public order leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+// TestPublicOrderLookupReportsSettledOrders lets the page say "already paid"
+// instead of opening a second checkout against a settled order.
+func TestPublicOrderLookupReportsSettledOrders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake))
+	_, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+	order := startCheckout(t, router, token, "monthly", http.StatusCreated)
+	postWebhook(t, router, captureBody(order.OrderID, "pay_1", 14900), "evt_1")
+
+	public := performJSONRequest[map[string]any](
+		t, router, http.MethodGet, "/v1/billing/checkout/"+order.OrderID, "", nil, http.StatusOK,
+	)
+	if public["status"] != models.PaymentStatusCaptured {
+		t.Fatalf("expected a captured status, got %#v", public["status"])
+	}
+}
+
+func TestPublicOrderLookupRejectsUnknownOrders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake))
+
+	performJSONRequest[map[string]any](
+		t, router, http.MethodGet, "/v1/billing/checkout/order_nope", "", nil, http.StatusNotFound,
+	)
 }

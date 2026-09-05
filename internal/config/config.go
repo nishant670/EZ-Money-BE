@@ -70,6 +70,7 @@ type Config struct {
 	RazorpayWebhookSecret           string
 	RazorpayBaseURL                 string
 	CheckoutSuccessURL              string
+	WebBaseURL                      string
 }
 
 func getenv(key, def string) string {

@@ -128,6 +128,9 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
 	{
 		billingPublic.GET("/plans", s.listBillingPlans)
+		// Read by the hosted pay page, which opens in a browser tab with no
+		// Finnri session. Returns nothing secret and nothing about the buyer.
+		billingPublic.GET("/checkout/:order_id", s.getBillingCheckoutOrder)
 		billingPublic.POST("/webhook", s.handleBillingWebhook)
 	}
 
