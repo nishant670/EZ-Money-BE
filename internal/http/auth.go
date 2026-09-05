@@ -453,8 +453,31 @@ func (s *Server) authIdentify(c *gin.Context) {
 	c.JSON(200, gin.H{"exists": true, "is_guest": user.IsGuest, "has_pin": user.PinHash != ""})
 }
 
+// otpSignInDisabled answers the request and reports true when OTP sign-in is
+// switched off.
+//
+// The gate sits in front of both OTP endpoints rather than only in front of
+// the client's UI, for two reasons. A disabled flow that still answers is a
+// flow someone can still drive with curl. And with `send` refusing outright,
+// the debug-code path is unreachable — so OTP_DEBUG_RESPONSE left on in a
+// deployed environment is inert instead of handing out working sign-in codes,
+// which is exactly how production came to be exploitable.
+func (s *Server) otpSignInDisabled(c *gin.Context) bool {
+	if s.cfg != nil && s.cfg.AuthOTPEnabled {
+		return false
+	}
+	c.JSON(503, gin.H{
+		"error":              "otp_sign_in_disabled",
+		"available_channels": []string{"google", "guest"},
+	})
+	return true
+}
+
 // POST /v1/auth/otp/send
 func (s *Server) authOtpSend(c *gin.Context) {
+	if s.otpSignInDisabled(c) {
+		return
+	}
 	var input struct {
 		Identifier string `json:"identifier" binding:"required"`
 	}
@@ -588,6 +611,9 @@ func otpResendCooldownRemaining(identifierType, identifier string, cooldownSecon
 
 // POST /v1/auth/otp/verify
 func (s *Server) authOtpVerify(c *gin.Context) {
+	if s.otpSignInDisabled(c) {
+		return
+	}
 	var input struct {
 		Identifier string `json:"identifier" binding:"required"`
 		OTP        string `json:"otp" binding:"required"`

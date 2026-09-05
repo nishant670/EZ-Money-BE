@@ -35,6 +35,7 @@ type Config struct {
 	OTPDebugResponse                bool
 	OTPDevCode                      string
 	OTPExpiresMinutes               int
+	AuthOTPEnabled                  bool
 	OTPPhoneChannelEnabled          bool
 	OTPResendCooldownSeconds        int
 	EmailProvider                   string
@@ -172,6 +173,12 @@ func Load() *Config {
 		OTPDebugResponse:                atob("OTP_DEBUG_RESPONSE", false),
 		OTPDevCode:                      getenv("OTP_DEV_CODE", ""),
 		OTPExpiresMinutes:               atoi("OTP_EXPIRES_MINUTES", 10),
+		// OTP sign-in is off for launch: Google and guest are the two doors in,
+		// and email-plus-SMS OTP ships as one piece later. Off also means the
+		// dev-code path cannot be reached at all, so a stray
+		// OTP_DEBUG_RESPONSE=true in a deployed environment is inert rather
+		// than an account-takeover.
+		AuthOTPEnabled: atob("AUTH_OTP_ENABLED", false),
 		// India SMS needs DLT template registration and a provider
 		// relationship; until one exists, phone OTP is off and the app is told
 		// so plainly rather than being handed a code nothing will deliver.

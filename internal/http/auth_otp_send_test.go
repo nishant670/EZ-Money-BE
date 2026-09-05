@@ -41,10 +41,16 @@ func (s *stubMailer) messages() []mailer.Message {
 	return append([]mailer.Message(nil), s.sent...)
 }
 
+// withMailer configures a deployment that has OTP sign-in switched on and a
+// working mail sender. OTP is off by default now — Google and guest are the
+// launch doors in — so the tests covering the delivery machinery have to ask
+// for it. They still earn their place: the machinery is what comes back when
+// email and SMS OTP ship together.
 func withMailer(sender mailer.Sender) func(*Server, *config.Config) {
 	return func(s *Server, cfg *config.Config) {
 		s.mailer = sender
 		cfg.OTPExpiresMinutes = 10
+		cfg.AuthOTPEnabled = true
 	}
 }
 
@@ -114,7 +120,7 @@ func TestAuthOtpSendSurfacesDeliveryFailure(t *testing.T) {
 // claiming to have sent codes.
 func TestAuthOtpSendWithNoProviderConfiguredFails(t *testing.T) {
 	useSmokeDatabase(t)
-	router := smokeRouter(t)
+	router := smokeRouter(t, func(_ *Server, cfg *config.Config) { cfg.AuthOTPEnabled = true })
 
 	body := performJSONRequest[map[string]any](
 		t, router, http.MethodPost, "/v1/auth/otp/send", "",
@@ -219,4 +225,66 @@ func extractOTPCode(t *testing.T, msg mailer.Message) string {
 		t.Fatalf("html body does not carry the subject's code %q", code)
 	}
 	return code
+}
+
+// ---------------------------------------------------------------------------
+// The OTP sign-in gate
+// ---------------------------------------------------------------------------
+
+// TestOtpSignInIsOffByDefault is the structural half of the production
+// incident. A deployed environment was serving a static dev_otp, which turned
+// an email address into an account takeover. With the flow off by default that
+// is unreachable no matter what OTP_DEBUG_RESPONSE says, so the hole cannot be
+// reopened by an environment variable alone.
+func TestOtpSignInIsOffByDefault(t *testing.T) {
+	useSmokeDatabase(t)
+	sender := &stubMailer{}
+	// Every ingredient of the old exploit, deliberately: a working mailer, and
+	// debug responses on with a static code.
+	router := smokeRouter(t, func(s *Server, cfg *config.Config) {
+		s.mailer = sender
+		cfg.OTPDebugResponse = true
+		cfg.OTPDevCode = "123456"
+	})
+
+	for _, target := range []string{"/v1/auth/otp/send", "/v1/auth/otp/verify"} {
+		response := performRawRequest(t, router, http.MethodPost, target, "",
+			strings.NewReader(`{"identifier":"someone@example.com","otp":"123456"}`))
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s answered %d with OTP disabled: %s", target, response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "otp_sign_in_disabled") {
+			t.Fatalf("%s should name the reason: %s", target, response.Body.String())
+		}
+		// The whole point: no code reaches the caller, and none is stored.
+		if strings.Contains(response.Body.String(), "123456") {
+			t.Fatalf("%s leaked a code while disabled: %s", target, response.Body.String())
+		}
+	}
+
+	if len(sender.messages()) != 0 {
+		t.Fatal("a disabled flow sent mail")
+	}
+	var stored int64
+	database.DB.Model(&models.AuthVerification{}).Count(&stored)
+	if stored != 0 {
+		t.Fatalf("a disabled flow stored %d verification rows", stored)
+	}
+}
+
+// TestOtpSignInGateNamesTheWorkingDoors keeps the client honest: a 503 with no
+// guidance would leave the app showing "something went wrong" on the one screen
+// a person cannot get past.
+func TestOtpSignInGateNamesTheWorkingDoors(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+
+	body := performJSONRequest[map[string]any](
+		t, router, http.MethodPost, "/v1/auth/otp/send", "",
+		map[string]string{"identifier": "someone@example.com"}, http.StatusServiceUnavailable,
+	)
+	channels, _ := body["available_channels"].([]any)
+	if len(channels) != 2 || channels[0] != "google" || channels[1] != "guest" {
+		t.Fatalf("expected google and guest to be named, got %#v", body["available_channels"])
+	}
 }
