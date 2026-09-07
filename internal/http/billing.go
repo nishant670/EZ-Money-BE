@@ -14,6 +14,7 @@ import (
 	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/models"
+	"finance-parser-go/internal/payments"
 )
 
 const lifetimeQuoteRequiredPaidMonths = 3
@@ -98,7 +99,7 @@ type aiUsageListResponse struct {
 }
 
 func (s *Server) listBillingPlans(c *gin.Context) {
-	plans, err := publicBillingPlans()
+	plans, err := s.publicBillingPlans()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_billing_plans"})
 		return
@@ -136,7 +137,7 @@ func (s *Server) getBillingStatus(c *gin.Context) {
 			response.SubscriptionStatus = subscription.Status
 			response.CurrentPeriodStart = &subscription.CurrentPeriodStart
 			response.CurrentPeriodEnd = &subscription.CurrentPeriodEnd
-			plan := planResponseFromModel(subscription.Plan)
+			plan := s.planResponseFromModel(subscription.Plan)
 			response.Plan = &plan
 		}
 		paidMonths, err := paidMonthsCompleted(user.ID)
@@ -148,53 +149,6 @@ func (s *Server) getBillingStatus(c *gin.Context) {
 		response.LifetimeEligibility.Eligible = paidMonths >= lifetimeQuoteRequiredPaidMonths
 	}
 	c.JSON(http.StatusOK, response)
-}
-
-func (s *Server) createBillingCheckout(c *gin.Context) {
-	user := currentUser(c)
-	if user == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	if user.IsGuest {
-		c.JSON(http.StatusForbidden, gin.H{"error": "login_required_for_checkout"})
-		return
-	}
-
-	var input struct {
-		PlanCode string `json:"plan_code"`
-	}
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
-		return
-	}
-	planCode := strings.TrimSpace(input.PlanCode)
-	if planCode == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_checkout", "fields": gin.H{"plan_code": "is required"}})
-		return
-	}
-	plan, found, err := findPublicBillingPlan(planCode)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_billing_plan"})
-		return
-	}
-	if !found {
-		c.JSON(http.StatusNotFound, gin.H{"error": "plan_not_found"})
-		return
-	}
-	if plan.BillingInterval == "lifetime_quote" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "lifetime_direct_purchase_not_allowed"})
-		return
-	}
-
-	c.JSON(http.StatusNotImplemented, gin.H{
-		"error":     "payment_provider_not_configured",
-		"plan_code": plan.Code,
-	})
-}
-
-func (s *Server) handleBillingWebhook(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "payment_webhook_not_configured"})
 }
 
 func (s *Server) requestLifetimeQuote(c *gin.Context) {
@@ -296,7 +250,7 @@ func (s *Server) getAICredits(c *gin.Context) {
 	c.JSON(http.StatusOK, summary)
 }
 
-func publicBillingPlans() ([]billingPlanResponse, error) {
+func (s *Server) publicBillingPlans() ([]billingPlanResponse, error) {
 	var plans []models.Plan
 	err := database.DB.Where("is_public = ?", true).
 		Order("CASE billing_interval WHEN 'weekly' THEN 1 WHEN 'monthly' THEN 2 WHEN 'quarterly' THEN 3 WHEN 'yearly' THEN 4 WHEN 'lifetime_quote' THEN 5 ELSE 6 END").
@@ -306,16 +260,16 @@ func publicBillingPlans() ([]billingPlanResponse, error) {
 		return nil, err
 	}
 	if len(plans) == 0 {
-		return defaultBillingPlans(), nil
+		return s.defaultBillingPlans(), nil
 	}
 	response := make([]billingPlanResponse, 0, len(plans))
 	for _, plan := range plans {
-		response = append(response, planResponseFromModel(plan))
+		response = append(response, s.planResponseFromModel(plan))
 	}
 	return response, nil
 }
 
-func defaultBillingPlans() []billingPlanResponse {
+func (s *Server) defaultBillingPlans() []billingPlanResponse {
 	return []billingPlanResponse{
 		{
 			Code:             "weekly_pass",
@@ -327,7 +281,7 @@ func defaultBillingPlans() []billingPlanResponse {
 			IncludedCredits:  800,
 			DailyCreditLimit: 200,
 			RequiresLogin:    true,
-			CheckoutEnabled:  false,
+			CheckoutEnabled:  s.checkoutEnabledFor("weekly"),
 			FeatureGates:     paidFeatureGates(),
 		},
 		{
@@ -340,7 +294,7 @@ func defaultBillingPlans() []billingPlanResponse {
 			IncludedCredits:  3600,
 			DailyCreditLimit: 250,
 			RequiresLogin:    true,
-			CheckoutEnabled:  false,
+			CheckoutEnabled:  s.checkoutEnabledFor("monthly"),
 			FeatureGates:     paidFeatureGates(),
 		},
 		{
@@ -353,7 +307,7 @@ func defaultBillingPlans() []billingPlanResponse {
 			IncludedCredits:  11000,
 			DailyCreditLimit: 300,
 			RequiresLogin:    true,
-			CheckoutEnabled:  false,
+			CheckoutEnabled:  s.checkoutEnabledFor("quarterly"),
 			FeatureGates:     paidFeatureGates(),
 		},
 		{
@@ -366,7 +320,7 @@ func defaultBillingPlans() []billingPlanResponse {
 			IncludedCredits:  48000,
 			DailyCreditLimit: 350,
 			RequiresLogin:    true,
-			CheckoutEnabled:  false,
+			CheckoutEnabled:  s.checkoutEnabledFor("yearly"),
 			FeatureGates:     paidFeatureGates(),
 		},
 		{
@@ -380,13 +334,13 @@ func defaultBillingPlans() []billingPlanResponse {
 			DailyCreditLimit:        500,
 			RequiresLogin:           true,
 			RequiresPriorPaidMonths: lifetimeQuoteRequiredPaidMonths,
-			CheckoutEnabled:         false,
+			CheckoutEnabled:         s.checkoutEnabledFor("lifetime_quote"),
 			FeatureGates:            paidFeatureGates(),
 		},
 	}
 }
 
-func planResponseFromModel(plan models.Plan) billingPlanResponse {
+func (s *Server) planResponseFromModel(plan models.Plan) billingPlanResponse {
 	price := plan.PriceMinor
 	listPrice := plan.ListPriceMinor
 	return billingPlanResponse{
@@ -400,27 +354,63 @@ func planResponseFromModel(plan models.Plan) billingPlanResponse {
 		DailyCreditLimit:        plan.DailyCreditLimit,
 		RequiresLogin:           plan.RequiresLogin,
 		RequiresPriorPaidMonths: plan.RequiresPriorPaidMonths,
-		CheckoutEnabled:         paymentProviderConfigured() && plan.BillingInterval != "lifetime_quote",
+		CheckoutEnabled:         s.checkoutEnabledFor(plan.BillingInterval),
 		FeatureGates:            planFeatureGates(plan.Code),
 	}
 }
 
 func int64Pointer(value int64) *int64 { return &value }
 
-func paymentProviderConfigured() bool {
-	return false
+// razorpayConfig reads the provider secrets. A Server built directly, which
+// every unit test does, has no cfg and therefore no configured provider — so
+// checkout stays advertised as off rather than panicking.
+func (s *Server) razorpayConfig() payments.RazorpayConfig {
+	if s.cfg == nil {
+		return payments.RazorpayConfig{}
+	}
+	return payments.RazorpayConfig{
+		KeyID:         s.cfg.RazorpayKeyID,
+		KeySecret:     s.cfg.RazorpayKeySecret,
+		WebhookSecret: s.cfg.RazorpayWebhookSecret,
+		BaseURL:       s.cfg.RazorpayBaseURL,
+	}
 }
 
-func findPublicBillingPlan(code string) (billingPlanResponse, bool, error) {
+// paymentProviderConfigured was a literal `return false` for the whole life of
+// the billing code, which is why checkout_enabled was false on every plan and
+// no rupee could be collected. It now reads real configuration.
+func (s *Server) paymentProviderConfigured() bool {
+	return s.razorpayClient().Configured()
+}
+
+// razorpayClient returns the provider client, building one from cfg when the
+// Server was constructed without going through NewServer.
+func (s *Server) razorpayClient() *payments.Client {
+	if s.payments != nil {
+		return s.payments
+	}
+	return payments.NewClient(s.razorpayConfig())
+}
+
+// checkoutEnabledFor answers whether the buy button may be drawn for a plan.
+//
+// Lifetime is excluded by design and not only because the provider is off: the
+// launch plan requires it be non-purchasable in store builds, and it is sold
+// by quote after three paid months rather than off a price tag.
+func (s *Server) checkoutEnabledFor(billingInterval string) bool {
+	return s.paymentProviderConfigured() && billingInterval != "lifetime_quote"
+}
+
+func (s *Server) findPublicBillingPlan(code string) (billingPlanResponse, bool, error) {
 	var plan models.Plan
 	err := database.DB.Where("code = ? AND is_public = ?", code, true).First(&plan).Error
 	if err == nil {
-		return planResponseFromModel(plan), true, nil
+		return s.planResponseFromModel(plan), true, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return billingPlanResponse{}, false, err
 	}
-	for _, fallback := range defaultBillingPlans() {
+	for _, fallback := range s.defaultBillingPlans() {
 		if fallback.Code == code {
 			return fallback, true, nil
 		}

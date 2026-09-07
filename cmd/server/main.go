@@ -47,6 +47,8 @@ func main() {
 		&models.SplitParticipant{},
 		&models.SplitSettlement{},
 		&models.SplitFriendMerge{},
+		&models.Payment{},
+		&models.PaymentWebhookEvent{},
 	); err != nil {
 		log.Fatalf("database schema migration failed: %v", err)
 	}

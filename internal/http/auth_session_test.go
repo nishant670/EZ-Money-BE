@@ -3,7 +3,24 @@ package http
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"finance-parser-go/internal/config"
 )
+
+func TestSessionTTLUsesSafeConfigBound(t *testing.T) {
+	if got := sessionTTLForConfig(nil); got != 7*24*time.Hour {
+		t.Fatalf("expected nil config to use seven-day TTL, got %s", got)
+	}
+	if got := sessionTTLForConfig(&config.Config{AuthSessionTTLDays: 14}); got != 14*24*time.Hour {
+		t.Fatalf("expected configured fourteen-day TTL, got %s", got)
+	}
+	for _, invalid := range []int{0, -1, 31} {
+		if got := sessionTTLForConfig(&config.Config{AuthSessionTTLDays: invalid}); got != 7*24*time.Hour {
+			t.Fatalf("expected invalid TTL %d to use safe default, got %s", invalid, got)
+		}
+	}
+}
 
 func TestGenerateSessionTokenIsOpaqueAndNotMockToken(t *testing.T) {
 	token := generateSessionToken()

@@ -28,15 +28,33 @@ import (
 	"finance-parser-go/internal/billing"
 	"finance-parser-go/internal/config"
 	"finance-parser-go/internal/database"
+	"finance-parser-go/internal/mailer"
 	"finance-parser-go/internal/models"
+	"finance-parser-go/internal/payments"
 )
 
 type Server struct {
 	cfg               *config.Config
 	validator         *gojsonschema.Schema
 	parser            ai.Parser
+	mailer            mailer.Sender
+	payments          *payments.Client
 	providerCircuit   *providerCircuitBreaker
 	providerCircuitMu sync.Mutex
+}
+
+// emailSender returns the configured mail driver. A Server built directly —
+// which every unit test does — has no mailer field, so it falls back to one
+// derived from cfg, and finally to the no-op sender that fails loudly. The one
+// thing it must never do is return nil and panic inside a request.
+func (s *Server) emailSender() mailer.Sender {
+	if s.mailer != nil {
+		return s.mailer
+	}
+	if s.cfg != nil {
+		return mailer.FromConfig(s.cfg)
+	}
+	return mailer.NotConfigured{}
 }
 
 func NewServer(cfg *config.Config) *gin.Engine {
@@ -53,12 +71,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	if cfg.AuthBearer != "" {
 		r.Use(func(c *gin.Context) {
 			if skipsStaticBearer(c.Request.URL.Path) {
-				log.Printf("[DEBUG] Auth Skip: %s", c.Request.URL.Path)
 				c.Next()
 				return
 			}
 			if c.GetHeader("Authorization") != "Bearer "+cfg.AuthBearer {
-				log.Printf("[ERROR] Auth Fail: %s (Header: %s)", c.Request.URL.Path, c.GetHeader("Authorization"))
+				log.Printf("[ERROR] Auth Fail: %s (authorization header present: %t)", c.Request.URL.Path, c.GetHeader("Authorization") != "")
 				c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
 				return
 			}
@@ -78,7 +95,18 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 	openai := ai.NewOpenAIClient(cfg)
 
-	s := &Server{cfg: cfg, validator: schema, parser: openai}
+	emailSender := mailer.FromConfig(cfg)
+	log.Printf("[startup] email provider: %s", emailSender.Name())
+
+	razorpay := payments.NewClient(payments.RazorpayConfig{
+		KeyID:         cfg.RazorpayKeyID,
+		KeySecret:     cfg.RazorpayKeySecret,
+		WebhookSecret: cfg.RazorpayWebhookSecret,
+		BaseURL:       cfg.RazorpayBaseURL,
+	})
+	log.Printf("[startup] payment provider configured: %v", razorpay.Configured())
+
+	s := &Server{cfg: cfg, validator: schema, parser: openai, mailer: emailSender, payments: razorpay}
 	// Auth
 	authLimited := r.Group("/v1/auth")
 	authLimited.Use(jsonRequestLimits(cfg), rateLimit(cfg, "auth"))
@@ -96,11 +124,19 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	}
 
 	billingPublic := r.Group("/v1/billing")
-	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
+	billingPublic.Use(jsonRequestLimits(cfg))
 	{
-		billingPublic.GET("/plans", s.listBillingPlans)
-		billingPublic.POST("/webhook", s.handleBillingWebhook)
+		billingPublic.GET("/plans", rateLimit(cfg, "billing"), s.listBillingPlans)
+		// Read by the hosted pay page, which opens in a browser tab with no
+		// Finnri session. Returns nothing secret and nothing about the buyer.
+		billingPublic.GET("/checkout/:order_id", rateLimit(cfg, "billing"), s.getBillingCheckoutOrder)
+		billingPublic.POST("/webhook", webhookRateLimit(cfg), s.handleBillingWebhook)
 	}
+
+	// A recipient must be able to understand an invite before creating or
+	// signing into an account. This preview deliberately exposes only the group
+	// name, inviter display name, member count and expiry.
+	r.GET("/v1/split/invites/:token/preview", jsonRequestLimits(cfg), rateLimit(cfg, "split-invite-preview"), s.previewSplitGroupInvite)
 
 	admin := r.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
@@ -167,6 +203,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/quick-prompts/:id", s.deleteQuickPrompt)
 		authorized.PUT("/user", s.updateProfile)
 		authorized.DELETE("/user", s.deleteUser)
+		authorized.POST("/auth/logout", s.authLogout)
+		authorized.POST("/auth/sessions/revoke-all", s.authRevokeAllSessions)
 		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
 		authorized.POST("/feedback", s.createFeedback)
 

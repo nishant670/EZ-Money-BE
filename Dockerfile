@@ -24,7 +24,12 @@ COPY migrations /app/migrations
 
 # Receipt uploads are written here. Mount a Railway volume on this path so the
 # files survive redeploys.
-RUN mkdir -p /app/uploads
+RUN addgroup -S finnri \
+    && adduser -S -G finnri finnri \
+    && mkdir -p /app/uploads \
+    && chown -R finnri:finnri /app/uploads
+
+USER finnri
 
 EXPOSE 8080
 

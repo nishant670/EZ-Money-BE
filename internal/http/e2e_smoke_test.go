@@ -102,7 +102,10 @@ func TestGuestCaptureParseConfirmSaveDashboardSmoke(t *testing.T) {
 	}
 }
 
-func smokeRouter(t *testing.T) *gin.Engine {
+// smokeRouter builds the full test router. The variadic configure hooks run
+// after the Server is built and before any route is registered, which is how a
+// test swaps in a stub mail sender or flips an OTP config flag.
+func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.Engine {
 	t.Helper()
 
 	schemaPath := filepath.Join(projectRoot(t), "schemas", "expense_entry.schema.json")
@@ -112,15 +115,18 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	}
 
 	cfg := &config.Config{
-		TZDefault:          "Asia/Kolkata",
-		AuthBearer:         "admin-test-token",
-		ReqTimeoutSec:      2,
-		RateLimitRPS:       1000,
-		RateLimitBurst:     1000,
-		MaxJSONKB:          64,
-		MaxUploadMB:        1,
-		MaxTranscriptChars: 1000,
-		GoogleClientIDs:    []string{"test-google-client"},
+		TZDefault:             "Asia/Kolkata",
+		AuthBearer:            "admin-test-token",
+		ReqTimeoutSec:         2,
+		RateLimitRPS:          1000,
+		RateLimitBurst:        1000,
+		MaxJSONKB:             64,
+		MaxUploadMB:           1,
+		MaxTranscriptChars:    1000,
+		GoogleClientIDs:       []string{"test-google-client"},
+		WebBaseURL:            "https://finnri.example",
+		WebhookRateLimitRPS:   1000,
+		WebhookRateLimitBurst: 1000,
 	}
 	server := &Server{
 		cfg:       cfg,
@@ -135,6 +141,10 @@ func smokeRouter(t *testing.T) *gin.Engine {
 			"merchant":"Tea Stall",
 			"date":"2026-07-12"
 		}`)},
+	}
+
+	for _, apply := range configure {
+		apply(server, cfg)
 	}
 
 	router := gin.New()
@@ -154,7 +164,9 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	billingPublic := router.Group("/v1/billing")
 	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
 	billingPublic.GET("/plans", server.listBillingPlans)
+	billingPublic.GET("/checkout/:order_id", server.getBillingCheckoutOrder)
 	billingPublic.POST("/webhook", server.handleBillingWebhook)
+	router.GET("/v1/split/invites/:token/preview", server.previewSplitGroupInvite)
 
 	admin := router.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), rateLimit(cfg, "admin"), server.requireAdminSession(), server.adminAuditMiddleware())
@@ -218,6 +230,8 @@ func smokeRouter(t *testing.T) *gin.Engine {
 	authorized.GET("/subscriptions", server.listSubscriptions)
 	authorized.POST("/subscriptions/reminders", server.requireEntitlement(billing.FeatureSubscriptionReminders), server.createSubscriptionReminders)
 	authorized.POST("/feedback", server.createFeedback)
+	authorized.POST("/auth/logout", server.authLogout)
+	authorized.POST("/auth/sessions/revoke-all", server.authRevokeAllSessions)
 	authorized.POST("/entries", server.saveEntry)
 	// The list route was missing here, which is why nothing covered listEntries
 	// and why the mode whitelist could disagree with the save validation for as
@@ -330,6 +344,8 @@ func useSmokeDatabase(t *testing.T) {
 		&models.SplitParticipant{},
 		&models.SplitSettlement{},
 		&models.SplitFriendMerge{},
+		&models.Payment{},
+		&models.PaymentWebhookEvent{},
 	); err != nil {
 		t.Fatalf("failed to migrate smoke database: %v", err)
 	}

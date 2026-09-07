@@ -60,6 +60,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		// Store user in context
 		c.Set("user", &user)
 		c.Set("userID", user.ID)
+		c.Set("authSessionID", session.ID)
 		// Coarse enough for "last active" on the admin console, and it keeps the
 		// hottest path in the product from issuing a row update on every single
 		// authenticated request.
@@ -79,19 +80,29 @@ type tokenBucket struct {
 }
 
 type memoryRateLimiter struct {
-	mu      sync.Mutex
-	rps     float64
-	burst   int
-	buckets map[string]*tokenBucket
-	now     func() time.Time
+	mu         sync.Mutex
+	rps        float64
+	burst      int
+	buckets    map[string]*tokenBucket
+	now        func() time.Time
+	maxBuckets int
+	staleAfter time.Duration
+	lastSweep  time.Time
 }
 
 func newMemoryRateLimiter(rps float64, burst int) *memoryRateLimiter {
+	refillWindow := time.Duration(float64(time.Second) * float64(burst) / math.Max(rps, 0.001))
+	staleAfter := 10 * refillWindow
+	if staleAfter < 10*time.Minute {
+		staleAfter = 10 * time.Minute
+	}
 	return &memoryRateLimiter{
-		rps:     rps,
-		burst:   burst,
-		buckets: make(map[string]*tokenBucket),
-		now:     time.Now,
+		rps:        rps,
+		burst:      burst,
+		buckets:    make(map[string]*tokenBucket),
+		now:        time.Now,
+		maxBuckets: 10_000,
+		staleAfter: staleAfter,
 	}
 }
 
@@ -104,8 +115,12 @@ func (l *memoryRateLimiter) allow(key string) (bool, int) {
 	defer l.mu.Unlock()
 
 	now := l.now()
+	l.evictStale(now)
 	bucket, ok := l.buckets[key]
 	if !ok {
+		if len(l.buckets) >= l.maxBuckets {
+			l.evictOldest()
+		}
 		l.buckets[key] = &tokenBucket{tokens: float64(l.burst - 1), last: now}
 		return true, 0
 	}
@@ -128,6 +143,32 @@ func (l *memoryRateLimiter) allow(key string) (bool, int) {
 	return false, retryAfter
 }
 
+func (l *memoryRateLimiter) evictStale(now time.Time) {
+	if !l.lastSweep.IsZero() && now.Sub(l.lastSweep) < time.Minute {
+		return
+	}
+	for key, bucket := range l.buckets {
+		if now.Sub(bucket.last) > l.staleAfter {
+			delete(l.buckets, key)
+		}
+	}
+	l.lastSweep = now
+}
+
+func (l *memoryRateLimiter) evictOldest() {
+	var oldestKey string
+	var oldestTime time.Time
+	for key, bucket := range l.buckets {
+		if oldestKey == "" || bucket.last.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = bucket.last
+		}
+	}
+	if oldestKey != "" {
+		delete(l.buckets, oldestKey)
+	}
+}
+
 func rateLimit(cfg *config.Config, scope string) gin.HandlerFunc {
 	return rateLimitAt(cfg.RateLimitRPS, cfg.RateLimitBurst, scope)
 }
@@ -137,6 +178,10 @@ func rateLimit(cfg *config.Config, scope string) gin.HandlerFunc {
 // an ordinary page load into partial failures with a "rate_limited" banner.
 func adminRateLimit(cfg *config.Config) gin.HandlerFunc {
 	return rateLimitAt(cfg.AdminRateLimitRPS, cfg.AdminRateLimitBurst, "admin")
+}
+
+func webhookRateLimit(cfg *config.Config) gin.HandlerFunc {
+	return rateLimitAt(cfg.WebhookRateLimitRPS, cfg.WebhookRateLimitBurst, "billing-webhook")
 }
 
 func rateLimitAt(rps float64, burst int, scope string) gin.HandlerFunc {

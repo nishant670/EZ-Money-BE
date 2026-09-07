@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,8 +20,10 @@ import (
 	"gorm.io/gorm"
 
 	"finance-parser-go/internal/billing"
+	"finance-parser-go/internal/config"
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/identity"
+	"finance-parser-go/internal/mailer"
 	"finance-parser-go/internal/models"
 )
 
@@ -29,7 +34,45 @@ type AuthResponse struct {
 	User      *models.User `json:"user"`
 }
 
-const sessionTTL = 30 * 24 * time.Hour
+const defaultSessionTTL = 7 * 24 * time.Hour
+
+func sessionTTLForConfig(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.AuthSessionTTLDays < 1 || cfg.AuthSessionTTLDays > 30 {
+		return defaultSessionTTL
+	}
+	return time.Duration(cfg.AuthSessionTTLDays) * 24 * time.Hour
+}
+
+func (s *Server) authLogout(c *gin.Context) {
+	sessionID, ok := c.Get("authSessionID")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_session"})
+		return
+	}
+	now := time.Now().UTC()
+	result := database.DB.Model(&models.AuthSession{}).
+		Where("id = ? AND revoked_at IS NULL", sessionID).
+		Update("revoked_at", now)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_revoke_session"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "signed_out"})
+}
+
+func (s *Server) authRevokeAllSessions(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	now := time.Now().UTC()
+	result := database.DB.Model(&models.AuthSession{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Update("revoked_at", now)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_revoke_sessions"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "all_sessions_revoked", "revoked": result.RowsAffected})
+}
+
 const maxOTPAttempts = 5
 const maxPINAttempts = 5
 const loginLockDuration = 15 * time.Minute
@@ -203,8 +246,12 @@ func consumeClaimTokenTx(tx *gorm.DB, rawToken string) (verifiedClaim, error) {
 }
 
 func issueSession(userID uint) (string, time.Time, error) {
+	return issueSessionWithTTL(userID, defaultSessionTTL)
+}
+
+func issueSessionWithTTL(userID uint, ttl time.Duration) (string, time.Time, error) {
 	token := generateSessionToken()
-	expiresAt := time.Now().UTC().Add(sessionTTL)
+	expiresAt := time.Now().UTC().Add(ttl)
 	session := models.AuthSession{
 		UserID: userID, TokenHash: hashSessionToken(token), ExpiresAt: expiresAt,
 	}
@@ -214,11 +261,11 @@ func issueSession(userID uint) (string, time.Time, error) {
 	return token, expiresAt, nil
 }
 
-func authResponse(user *models.User) (AuthResponse, error) {
+func (s *Server) authResponse(user *models.User) (AuthResponse, error) {
 	if err := reconcileSplitIdentities(database.DB, user.ID); err != nil {
 		return AuthResponse{}, err
 	}
-	token, expiresAt, err := issueSession(user.ID)
+	token, expiresAt, err := issueSessionWithTTL(user.ID, sessionTTLForConfig(s.cfg))
 	if err != nil {
 		return AuthResponse{}, err
 	}
@@ -320,7 +367,7 @@ func (s *Server) authGuest(c *gin.Context) {
 				return
 			}
 			user.HasPin = user.PinHash != ""
-			response, err := authResponse(&user)
+			response, err := s.authResponse(&user)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "failed_create_session"})
 				return
@@ -363,7 +410,7 @@ func (s *Server) authGuest(c *gin.Context) {
 					return
 				}
 				existingGuest.HasPin = existingGuest.PinHash != ""
-				response, err := authResponse(&existingGuest)
+				response, err := s.authResponse(&existingGuest)
 				if err != nil {
 					c.JSON(500, gin.H{"error": "failed_create_session"})
 					return
@@ -385,7 +432,7 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return
@@ -450,8 +497,31 @@ func (s *Server) authIdentify(c *gin.Context) {
 	c.JSON(200, gin.H{"exists": true, "is_guest": user.IsGuest, "has_pin": user.PinHash != ""})
 }
 
+// otpSignInDisabled answers the request and reports true when OTP sign-in is
+// switched off.
+//
+// The gate sits in front of both OTP endpoints rather than only in front of
+// the client's UI, for two reasons. A disabled flow that still answers is a
+// flow someone can still drive with curl. And with `send` refusing outright,
+// the debug-code path is unreachable — so OTP_DEBUG_RESPONSE left on in a
+// deployed environment is inert instead of handing out working sign-in codes,
+// which is exactly how production came to be exploitable.
+func (s *Server) otpSignInDisabled(c *gin.Context) bool {
+	if s.cfg != nil && s.cfg.AuthOTPEnabled {
+		return false
+	}
+	c.JSON(503, gin.H{
+		"error":              "otp_sign_in_disabled",
+		"available_channels": []string{"google", "guest"},
+	})
+	return true
+}
+
 // POST /v1/auth/otp/send
 func (s *Server) authOtpSend(c *gin.Context) {
+	if s.otpSignInDisabled(c) {
+		return
+	}
 	var input struct {
 		Identifier string `json:"identifier" binding:"required"`
 	}
@@ -467,6 +537,27 @@ func (s *Server) authOtpSend(c *gin.Context) {
 	identifierType, identifier, err := normalizeIdentifier(input.Identifier)
 	if err != nil {
 		c.JSON(422, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Phone codes have no carrier behind them. India SMS needs DLT template
+	// registration before a provider will accept traffic, so rather than store
+	// a code nothing can deliver, say so and let the app offer email instead.
+	if identifierType == "phone" && !s.cfg.OTPPhoneChannelEnabled {
+		c.JSON(422, gin.H{
+			"error":              "otp_channel_unavailable",
+			"channel":            "phone",
+			"available_channels": []string{"email"},
+		})
+		return
+	}
+
+	// One live code per identifier per cooldown. The auth rate limiter buckets
+	// by IP, which does nothing to stop one address being mailed repeatedly
+	// from a rotating set of them.
+	if retryAfter, blocked := otpResendCooldownRemaining(identifierType, identifier, s.cfg.OTPResendCooldownSeconds, time.Now().UTC()); blocked {
+		c.Header("Retry-After", strconv.Itoa(retryAfter))
+		c.JSON(429, gin.H{"error": "otp_resend_too_soon", "retry_after_seconds": retryAfter})
 		return
 	}
 
@@ -497,15 +588,76 @@ func (s *Server) authOtpSend(c *gin.Context) {
 		return
 	}
 
-	response := gin.H{"message": "otp_sent", "expires_at": expiresAt}
+	// Deliver before answering. The row is written first so a code can never
+	// arrive in an inbox without a hash to verify it against; if the send then
+	// fails, the row is removed so the cooldown does not lock the person out
+	// of retrying with a provider that has recovered.
+	if err := s.deliverOTP(c, identifierType, identifier, otp); err != nil {
+		database.DB.Delete(&verification)
+		log.Printf("[ERROR] otp delivery failed via %s: %v", s.emailSender().Name(), err)
+		if !s.cfg.OTPDebugResponse {
+			c.JSON(502, gin.H{"error": "otp_send_failed", "channel": identifierType})
+			return
+		}
+		// Debug mode is the local-development path: there is usually no mail
+		// provider at all, and dev_otp below is the delivery channel.
+	}
+
+	response := gin.H{"message": "otp_sent", "expires_at": expiresAt, "channel": identifierType}
 	if s.cfg.OTPDebugResponse {
 		response["dev_otp"] = otp
 	}
 	c.JSON(200, response)
 }
 
+// deliverOTP carries the code to the person. Only email is wired; phone is
+// rejected earlier, and this returns an explicit error rather than nil if that
+// guard is ever removed without a provider being added behind it.
+func (s *Server) deliverOTP(c *gin.Context, identifierType, identifier, otp string) error {
+	if identifierType != "email" {
+		return fmt.Errorf("no delivery channel for identifier type %q", identifierType)
+	}
+	timeout := time.Duration(s.cfg.EmailSendTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	defer cancel()
+	return s.emailSender().Send(ctx, mailer.OTPEmail(identifier, otp, s.cfg.OTPExpiresMinutes))
+}
+
+// otpResendCooldownRemaining reports how long the caller must wait before a
+// new code may be issued for this identifier, based on the newest unconsumed
+// verification row.
+func otpResendCooldownRemaining(identifierType, identifier string, cooldownSeconds int, now time.Time) (int, bool) {
+	if cooldownSeconds <= 0 {
+		return 0, false
+	}
+	var latest models.AuthVerification
+	err := database.DB.
+		Where("identifier_type = ? AND identifier = ? AND verified_at IS NULL", identifierType, identifier).
+		Order("created_at DESC").
+		First(&latest).Error
+	if err != nil {
+		return 0, false
+	}
+	elapsed := now.Sub(latest.CreatedAt.UTC())
+	cooldown := time.Duration(cooldownSeconds) * time.Second
+	if elapsed >= cooldown {
+		return 0, false
+	}
+	remaining := int((cooldown - elapsed).Seconds())
+	if remaining < 1 {
+		remaining = 1
+	}
+	return remaining, true
+}
+
 // POST /v1/auth/otp/verify
 func (s *Server) authOtpVerify(c *gin.Context) {
+	if s.otpSignInDisabled(c) {
+		return
+	}
 	var input struct {
 		Identifier string `json:"identifier" binding:"required"`
 		OTP        string `json:"otp" binding:"required"`
@@ -707,7 +859,7 @@ func (s *Server) authRegister(c *gin.Context) {
 		Where("user_id = ? AND revoked_at IS NULL", user.ID).
 		Update("revoked_at", time.Now().UTC()).Error
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return
@@ -873,7 +1025,7 @@ func (s *Server) authGoogle(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return
@@ -950,7 +1102,7 @@ func (s *Server) authPinReset(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return
@@ -1037,7 +1189,7 @@ func (s *Server) authLogin(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return

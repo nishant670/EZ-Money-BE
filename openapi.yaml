@@ -17,6 +17,29 @@ paths:
       summary: Revoke the current admin session
       responses:
         "200": {description: Admin session revoked}
+  /v1/auth/logout:
+    post:
+      summary: Revoke the current user session
+      responses:
+        "200": {description: User session revoked}
+        "401": {description: Session is missing, invalid, or expired}
+  /v1/auth/sessions/revoke-all:
+    post:
+      summary: Revoke every active session for the current user
+      responses:
+        "200": {description: All user sessions revoked}
+        "401": {description: Session is missing, invalid, or expired}
+  /v1/split/invites/{token}/preview:
+    get:
+      summary: Preview an active split invite without authentication
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: Minimal public invite details}
+        "404": {description: Invite is invalid, expired, or no longer active}
   /v1/admin/me:
     get:
       summary: Return the current admin identity and role

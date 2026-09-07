@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -134,10 +133,6 @@ func (s *Server) adminLogout(c *gin.Context) {
 
 func (s *Server) requireAdminSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !s.adminIPAllowed(c.ClientIP()) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin_ip_not_allowed"})
-			return
-		}
 		// Machine access for trusted scripts is opt-in: it needs ADMIN_STATIC_TOKEN
 		// to be configured AND to arrive in its own header.
 		//
@@ -190,22 +185,6 @@ func adminSessionToken(c *gin.Context) string {
 		return parts[1]
 	}
 	return ""
-}
-
-func (s *Server) adminIPAllowed(clientIP string) bool {
-	if len(s.cfg.AdminIPAllowlist) == 0 {
-		return true
-	}
-	ip := net.ParseIP(clientIP)
-	for _, allowed := range s.cfg.AdminIPAllowlist {
-		if candidate := net.ParseIP(allowed); candidate != nil && candidate.Equal(ip) {
-			return true
-		}
-		if _, network, err := net.ParseCIDR(allowed); err == nil && network.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 func currentAdmin(c *gin.Context) *models.AdminUser {
