@@ -16,6 +16,12 @@ import (
 func main() {
 	loadEnv()
 	database.Connect()
+	// Must precede AutoMigrate: it renames constraints the raw schema named
+	// for itself to the names the GORM models expect. Without it AutoMigrate
+	// tries to drop a constraint that never existed and kills the boot.
+	if err := database.PrepareForAutoMigrate(); err != nil {
+		log.Fatalf("database constraint reconciliation failed: %v", err)
+	}
 	if err := database.DB.AutoMigrate(
 		&models.User{},
 		&models.AuthSession{},

@@ -1,5 +1,71 @@
 package database
 
+// PrepareForAutoMigrate reconciles constraint names between the two mechanisms
+// that build this schema, and must run before AutoMigrate.
+//
+// Tables created by the raw SQL below declare uniqueness inline — `code
+// VARCHAR(64) NOT NULL UNIQUE` — which Postgres names for itself:
+// `plans_code_key`. The GORM models declare the same uniqueness with
+// `uniqueIndex`, which GORM names `uni_plans_code`. Neither side is wrong on
+// its own; they simply do not recognise each other's work.
+//
+// AutoMigrate reconciles the difference by issuing
+// `ALTER TABLE plans DROP CONSTRAINT uni_plans_code` for a constraint that has
+// never existed, and a failed migration is fatal at boot. That is exactly what
+// took production down when `models.Payment` — which reaches `plans` through
+// its `Plan` association — entered the AutoMigrate set for the first time.
+//
+// Renaming is deliberate: the constraint, and the unique index behind it, are
+// carried across intact. Dropping and recreating would open a window in which
+// two rows could take the same plan code.
+func PrepareForAutoMigrate() error {
+	for _, statement := range legacyConstraintRenames() {
+		if err := DB.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// renameUniqueConstraint builds an idempotent rename: it acts only when the
+// Postgres-named constraint is present and the GORM-named one is not, so it is
+// a no-op on a database built entirely by AutoMigrate and on every boot after
+// the first.
+//
+// Constraints are looked up by joining pg_class rather than casting to
+// regclass. SQL does not promise to short-circuit AND, so a `to_regclass(...)
+// IS NOT NULL` guard sitting beside a `'table'::regclass` cast does not stop
+// the cast from throwing — which is how the first version of this broke every
+// fresh database, where `plans` does not exist until AutoMigrate creates it.
+func renameUniqueConstraint(table, from, to string) string {
+	constraintExists := func(name string) string {
+		return `EXISTS (
+				SELECT 1
+				FROM pg_constraint c
+				JOIN pg_class t ON t.oid = c.conrelid
+				JOIN pg_namespace n ON n.oid = t.relnamespace
+				WHERE n.nspname = 'public'
+					AND t.relname = '` + table + `'
+					AND c.conname = '` + name + `'
+			)`
+	}
+	return `DO $$
+	BEGIN
+		IF ` + constraintExists(from) + ` AND NOT ` + constraintExists(to) + ` THEN
+			ALTER TABLE ` + table + ` RENAME CONSTRAINT ` + from + ` TO ` + to + `;
+		END IF;
+	END
+	$$`
+}
+
+func legacyConstraintRenames() []string {
+	return []string{
+		// plans.code — reached by AutoMigrate through models.Payment.Plan and
+		// models.UserSubscription.Plan.
+		renameUniqueConstraint("plans", "plans_code_key", "uni_plans_code"),
+	}
+}
+
 func EnsureRuntimeSchema() error {
 	for _, statement := range runtimeSchemaStatements() {
 		if err := DB.Exec(statement).Error; err != nil {
