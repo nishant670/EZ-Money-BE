@@ -7,7 +7,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -165,6 +164,20 @@ type splitGroupInviteDetailsResponse struct {
 	ExpiresAt   *time.Time        `json:"expires_at"`
 }
 
+// splitGroupInvitePreviewResponse deliberately exposes only the information a
+// logged-out recipient needs to decide whether to continue. Returning a
+// partially populated SplitGroup would also serialize internal zero-value
+// fields and make the public contract much broader than this landing page.
+type splitGroupInvitePreviewResponse struct {
+	Token       string     `json:"token"`
+	GroupID     uint       `json:"group_id"`
+	GroupName   string     `json:"group_name"`
+	OwnerName   string     `json:"owner_name"`
+	MemberCount int        `json:"member_count"`
+	Status      string     `json:"status"`
+	ExpiresAt   *time.Time `json:"expires_at"`
+}
+
 type splitGroupInviteAcceptResponse struct {
 	Group  models.SplitGroup       `json:"group"`
 	Friend models.SplitFriend      `json:"friend"`
@@ -201,6 +214,22 @@ func (s *Server) getSplitGroupInvite(c *gin.Context) {
 	c.JSON(http.StatusOK, splitGroupInviteDetailsResponse{
 		Token:       invite.Token,
 		Group:       group,
+		OwnerName:   displayNameForUser(owner),
+		MemberCount: len(group.Members) + 1,
+		Status:      invite.Status,
+		ExpiresAt:   invite.ExpiresAt,
+	})
+}
+
+func (s *Server) previewSplitGroupInvite(c *gin.Context) {
+	invite, group, owner, ok := loadActiveSplitGroupInvite(c)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, splitGroupInvitePreviewResponse{
+		Token:       invite.Token,
+		GroupID:     group.ID,
+		GroupName:   group.Name,
 		OwnerName:   displayNameForUser(owner),
 		MemberCount: len(group.Members) + 1,
 		Status:      invite.Status,
@@ -458,6 +487,11 @@ func (s *Server) createSplitGroupInvite(c *gin.Context) {
 	if !ok {
 		return
 	}
+	webBaseURL := s.webBaseURL()
+	if strings.TrimSpace(webBaseURL) == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "public_web_url_not_configured"})
+		return
+	}
 
 	var group models.SplitGroup
 	if err := ownedSplitGroups(database.DB.Preload("Members.Friend"), userID).
@@ -472,11 +506,12 @@ func (s *Server) createSplitGroupInvite(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_group_invite"})
 		return
 	}
+	url := splitInviteURL(webBaseURL, invite.Token)
 
 	applySplitGroupViewerPermissions(&group, userID)
 	c.JSON(http.StatusOK, splitGroupInviteResponse{
 		Token:     invite.Token,
-		URL:       splitInviteURL(invite.Token),
+		URL:       url,
 		DeepLink:  splitInviteDeepLink(invite.Token),
 		Group:     group,
 		ExpiresAt: invite.ExpiresAt,
@@ -487,6 +522,11 @@ func (s *Server) createSplitGroupDirectInvite(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	groupID, ok := parseUintParam(c, "id")
 	if !ok {
+		return
+	}
+	webBaseURL := s.webBaseURL()
+	if strings.TrimSpace(webBaseURL) == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "public_web_url_not_configured"})
 		return
 	}
 
@@ -567,7 +607,7 @@ func (s *Server) createSplitGroupDirectInvite(c *gin.Context) {
 		return
 	}
 
-	url := splitInviteURL(invite.Token)
+	url := splitInviteURL(webBaseURL, invite.Token)
 	deepLink := splitInviteDeepLink(invite.Token)
 	message := fmt.Sprintf("%s invited you to join %s on Finnri to track shared expenses: %s", displayNameForUser(owner), group.Name, url)
 	notificationSent := false
@@ -584,7 +624,7 @@ func (s *Server) createSplitGroupDirectInvite(c *gin.Context) {
 	}
 
 	applySplitGroupViewerPermissions(&group, userID)
-	response := splitGroupDirectInviteToResponse(directInvite, group, owner)
+	response := splitGroupDirectInviteToResponse(directInvite, group, owner, webBaseURL)
 	response.MatchedUser = matchedUser
 	response.NotificationSent = notificationSent
 	response.URL = url
@@ -697,7 +737,7 @@ func (s *Server) listSplitGroupDirectInvites(c *gin.Context) {
 
 	responses := make([]splitGroupDirectInviteResponse, 0, len(invites))
 	for _, invite := range invites {
-		responses = append(responses, splitGroupDirectInviteToResponse(invite, group, owner))
+		responses = append(responses, splitGroupDirectInviteToResponse(invite, group, owner, s.webBaseURL()))
 	}
 	c.JSON(http.StatusOK, responses)
 }
@@ -2781,13 +2821,13 @@ func getOrCreateSplitGroupDirectInvite(db *gorm.DB, userID, groupID, inviteID ui
 	return directInvite, nil
 }
 
-func splitGroupDirectInviteToResponse(invite models.SplitGroupDirectInvite, group models.SplitGroup, owner models.User) splitGroupDirectInviteResponse {
+func splitGroupDirectInviteToResponse(invite models.SplitGroupDirectInvite, group models.SplitGroup, owner models.User, webBaseURL string) splitGroupDirectInviteResponse {
 	token := invite.Invite.Token
 	url := ""
 	deepLink := ""
 	message := ""
 	if token != "" {
-		url = splitInviteURL(token)
+		url = splitInviteURL(webBaseURL, token)
 		deepLink = splitInviteDeepLink(token)
 		message = fmt.Sprintf("%s invited you to join %s on Finnri to track shared expenses: %s", displayNameForUser(owner), group.Name, url)
 	}
@@ -2805,12 +2845,19 @@ func splitGroupDirectInviteToResponse(invite models.SplitGroupDirectInvite, grou
 	}
 }
 
-func splitInviteURL(token string) string {
-	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("FINNRI_PUBLIC_WEB_URL")), "/")
-	if baseURL == "" {
-		baseURL = "https://finnri.app"
+func splitInviteURL(webBaseURL, token string) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(webBaseURL), "/")
+	if baseURL == "" || strings.TrimSpace(token) == "" {
+		return ""
 	}
 	return fmt.Sprintf("%s/invite/split/%s", baseURL, token)
+}
+
+func (s *Server) webBaseURL() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	return s.cfg.WebBaseURL
 }
 
 func splitInviteDeepLink(token string) string {

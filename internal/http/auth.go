@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"gorm.io/gorm"
 
 	"finance-parser-go/internal/billing"
+	"finance-parser-go/internal/config"
 	"finance-parser-go/internal/database"
 	"finance-parser-go/internal/identity"
 	"finance-parser-go/internal/mailer"
@@ -32,7 +34,45 @@ type AuthResponse struct {
 	User      *models.User `json:"user"`
 }
 
-const sessionTTL = 30 * 24 * time.Hour
+const defaultSessionTTL = 7 * 24 * time.Hour
+
+func sessionTTLForConfig(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.AuthSessionTTLDays < 1 || cfg.AuthSessionTTLDays > 30 {
+		return defaultSessionTTL
+	}
+	return time.Duration(cfg.AuthSessionTTLDays) * 24 * time.Hour
+}
+
+func (s *Server) authLogout(c *gin.Context) {
+	sessionID, ok := c.Get("authSessionID")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_session"})
+		return
+	}
+	now := time.Now().UTC()
+	result := database.DB.Model(&models.AuthSession{}).
+		Where("id = ? AND revoked_at IS NULL", sessionID).
+		Update("revoked_at", now)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_revoke_session"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "signed_out"})
+}
+
+func (s *Server) authRevokeAllSessions(c *gin.Context) {
+	userID := c.MustGet("userID").(uint)
+	now := time.Now().UTC()
+	result := database.DB.Model(&models.AuthSession{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Update("revoked_at", now)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_revoke_sessions"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "all_sessions_revoked", "revoked": result.RowsAffected})
+}
+
 const maxOTPAttempts = 5
 const maxPINAttempts = 5
 const loginLockDuration = 15 * time.Minute
@@ -206,8 +246,12 @@ func consumeClaimTokenTx(tx *gorm.DB, rawToken string) (verifiedClaim, error) {
 }
 
 func issueSession(userID uint) (string, time.Time, error) {
+	return issueSessionWithTTL(userID, defaultSessionTTL)
+}
+
+func issueSessionWithTTL(userID uint, ttl time.Duration) (string, time.Time, error) {
 	token := generateSessionToken()
-	expiresAt := time.Now().UTC().Add(sessionTTL)
+	expiresAt := time.Now().UTC().Add(ttl)
 	session := models.AuthSession{
 		UserID: userID, TokenHash: hashSessionToken(token), ExpiresAt: expiresAt,
 	}
@@ -217,11 +261,11 @@ func issueSession(userID uint) (string, time.Time, error) {
 	return token, expiresAt, nil
 }
 
-func authResponse(user *models.User) (AuthResponse, error) {
+func (s *Server) authResponse(user *models.User) (AuthResponse, error) {
 	if err := reconcileSplitIdentities(database.DB, user.ID); err != nil {
 		return AuthResponse{}, err
 	}
-	token, expiresAt, err := issueSession(user.ID)
+	token, expiresAt, err := issueSessionWithTTL(user.ID, sessionTTLForConfig(s.cfg))
 	if err != nil {
 		return AuthResponse{}, err
 	}
@@ -323,7 +367,7 @@ func (s *Server) authGuest(c *gin.Context) {
 				return
 			}
 			user.HasPin = user.PinHash != ""
-			response, err := authResponse(&user)
+			response, err := s.authResponse(&user)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "failed_create_session"})
 				return
@@ -366,7 +410,7 @@ func (s *Server) authGuest(c *gin.Context) {
 					return
 				}
 				existingGuest.HasPin = existingGuest.PinHash != ""
-				response, err := authResponse(&existingGuest)
+				response, err := s.authResponse(&existingGuest)
 				if err != nil {
 					c.JSON(500, gin.H{"error": "failed_create_session"})
 					return
@@ -388,7 +432,7 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return
@@ -815,7 +859,7 @@ func (s *Server) authRegister(c *gin.Context) {
 		Where("user_id = ? AND revoked_at IS NULL", user.ID).
 		Update("revoked_at", time.Now().UTC()).Error
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return
@@ -981,7 +1025,7 @@ func (s *Server) authGoogle(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return
@@ -1058,7 +1102,7 @@ func (s *Server) authPinReset(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return
@@ -1145,7 +1189,7 @@ func (s *Server) authLogin(c *gin.Context) {
 	}
 
 	user.HasPin = user.PinHash != ""
-	response, err := authResponse(&user)
+	response, err := s.authResponse(&user)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed_create_session"})
 		return

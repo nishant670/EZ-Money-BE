@@ -115,15 +115,18 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	}
 
 	cfg := &config.Config{
-		TZDefault:          "Asia/Kolkata",
-		AuthBearer:         "admin-test-token",
-		ReqTimeoutSec:      2,
-		RateLimitRPS:       1000,
-		RateLimitBurst:     1000,
-		MaxJSONKB:          64,
-		MaxUploadMB:        1,
-		MaxTranscriptChars: 1000,
-		GoogleClientIDs:    []string{"test-google-client"},
+		TZDefault:             "Asia/Kolkata",
+		AuthBearer:            "admin-test-token",
+		ReqTimeoutSec:         2,
+		RateLimitRPS:          1000,
+		RateLimitBurst:        1000,
+		MaxJSONKB:             64,
+		MaxUploadMB:           1,
+		MaxTranscriptChars:    1000,
+		GoogleClientIDs:       []string{"test-google-client"},
+		WebBaseURL:            "https://finnri.example",
+		WebhookRateLimitRPS:   1000,
+		WebhookRateLimitBurst: 1000,
 	}
 	server := &Server{
 		cfg:       cfg,
@@ -163,6 +166,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	billingPublic.GET("/plans", server.listBillingPlans)
 	billingPublic.GET("/checkout/:order_id", server.getBillingCheckoutOrder)
 	billingPublic.POST("/webhook", server.handleBillingWebhook)
+	router.GET("/v1/split/invites/:token/preview", server.previewSplitGroupInvite)
 
 	admin := router.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), rateLimit(cfg, "admin"), server.requireAdminSession(), server.adminAuditMiddleware())
@@ -226,6 +230,8 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.GET("/subscriptions", server.listSubscriptions)
 	authorized.POST("/subscriptions/reminders", server.requireEntitlement(billing.FeatureSubscriptionReminders), server.createSubscriptionReminders)
 	authorized.POST("/feedback", server.createFeedback)
+	authorized.POST("/auth/logout", server.authLogout)
+	authorized.POST("/auth/sessions/revoke-all", server.authRevokeAllSessions)
 	authorized.POST("/entries", server.saveEntry)
 	// The list route was missing here, which is why nothing covered listEntries
 	// and why the mode whitelist could disagree with the save validation for as

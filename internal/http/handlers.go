@@ -71,12 +71,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	if cfg.AuthBearer != "" {
 		r.Use(func(c *gin.Context) {
 			if skipsStaticBearer(c.Request.URL.Path) {
-				log.Printf("[DEBUG] Auth Skip: %s", c.Request.URL.Path)
 				c.Next()
 				return
 			}
 			if c.GetHeader("Authorization") != "Bearer "+cfg.AuthBearer {
-				log.Printf("[ERROR] Auth Fail: %s (Header: %s)", c.Request.URL.Path, c.GetHeader("Authorization"))
+				log.Printf("[ERROR] Auth Fail: %s (authorization header present: %t)", c.Request.URL.Path, c.GetHeader("Authorization") != "")
 				c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
 				return
 			}
@@ -125,14 +124,19 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	}
 
 	billingPublic := r.Group("/v1/billing")
-	billingPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "billing"))
+	billingPublic.Use(jsonRequestLimits(cfg))
 	{
-		billingPublic.GET("/plans", s.listBillingPlans)
+		billingPublic.GET("/plans", rateLimit(cfg, "billing"), s.listBillingPlans)
 		// Read by the hosted pay page, which opens in a browser tab with no
 		// Finnri session. Returns nothing secret and nothing about the buyer.
-		billingPublic.GET("/checkout/:order_id", s.getBillingCheckoutOrder)
-		billingPublic.POST("/webhook", s.handleBillingWebhook)
+		billingPublic.GET("/checkout/:order_id", rateLimit(cfg, "billing"), s.getBillingCheckoutOrder)
+		billingPublic.POST("/webhook", webhookRateLimit(cfg), s.handleBillingWebhook)
 	}
+
+	// A recipient must be able to understand an invite before creating or
+	// signing into an account. This preview deliberately exposes only the group
+	// name, inviter display name, member count and expiry.
+	r.GET("/v1/split/invites/:token/preview", jsonRequestLimits(cfg), rateLimit(cfg, "split-invite-preview"), s.previewSplitGroupInvite)
 
 	admin := r.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
@@ -199,6 +203,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/quick-prompts/:id", s.deleteQuickPrompt)
 		authorized.PUT("/user", s.updateProfile)
 		authorized.DELETE("/user", s.deleteUser)
+		authorized.POST("/auth/logout", s.authLogout)
+		authorized.POST("/auth/sessions/revoke-all", s.authRevokeAllSessions)
 		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
 		authorized.POST("/feedback", s.createFeedback)
 

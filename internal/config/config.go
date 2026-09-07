@@ -12,6 +12,7 @@ type Config struct {
 	Port                            string
 	AllowOrigins                    string
 	AuthBearer                      string
+	AuthSessionTTLDays              int
 	TZDefault                       string
 	OpenAIKey                       string
 	OpenAIBaseURL                   string
@@ -62,14 +63,14 @@ type Config struct {
 	AdminStaticToken                string
 	AdminRateLimitRPS               float64
 	AdminRateLimitBurst             int
-	AdminIPAllowlist                []string
+	WebhookRateLimitRPS             float64
+	WebhookRateLimitBurst           int
 	AdminAuditSalt                  string
 	USDINRRate                      float64
 	RazorpayKeyID                   string
 	RazorpayKeySecret               string
 	RazorpayWebhookSecret           string
 	RazorpayBaseURL                 string
-	CheckoutSuccessURL              string
 	WebBaseURL                      string
 }
 
@@ -87,6 +88,14 @@ func atoi(key string, def int) int {
 		}
 	}
 	return def
+}
+
+func boundedInt(key string, def, min, max int) int {
+	value := atoi(key, def)
+	if value < min || value > max {
+		return def
+	}
+	return value
 }
 
 func atoi64(key string, def int64) int64 {
@@ -151,6 +160,7 @@ func Load() *Config {
 		Port:                            getenv("PORT", "8080"),
 		AllowOrigins:                    getenv("ALLOW_ORIGINS", ""),
 		AuthBearer:                      getenv("AUTH_BEARER", ""),
+		AuthSessionTTLDays:              boundedInt("AUTH_SESSION_TTL_DAYS", 7, 1, 30),
 		TZDefault:                       getenv("TZ_DEFAULT", "Asia/Kolkata"),
 		OpenAIKey:                       getenv("OPENAI_API_KEY", ""),
 		OpenAIBaseURL:                   getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
@@ -209,7 +219,8 @@ func Load() *Config {
 		AdminStaticToken:                getenv("ADMIN_STATIC_TOKEN", ""),
 		AdminRateLimitRPS:               atof("ADMIN_RATE_LIMIT_RPS", 30),
 		AdminRateLimitBurst:             atoi("ADMIN_RATE_LIMIT_BURST", 60),
-		AdminIPAllowlist:                csv("ADMIN_IP_ALLOWLIST"),
+		WebhookRateLimitRPS:             atof("WEBHOOK_RATE_LIMIT_RPS", 50),
+		WebhookRateLimitBurst:           atoi("WEBHOOK_RATE_LIMIT_BURST", 100),
 		AdminAuditSalt:                  getenv("ADMIN_AUDIT_SALT", ""),
 		USDINRRate:                      atof("USD_INR_RATE", 88),
 		// Checkout stays dark until all three are present. Holding the API
@@ -219,7 +230,7 @@ func Load() *Config {
 		RazorpayKeySecret:     getenv("RAZORPAY_KEY_SECRET", ""),
 		RazorpayWebhookSecret: getenv("RAZORPAY_WEBHOOK_SECRET", ""),
 		RazorpayBaseURL:       getenv("RAZORPAY_BASE_URL", ""),
-		CheckoutSuccessURL:    getenv("CHECKOUT_SUCCESS_URL", ""),
+		WebBaseURL:            strings.TrimRight(strings.TrimSpace(getenv("WEB_BASE_URL", "")), "/"),
 	}
 }
 

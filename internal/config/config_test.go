@@ -31,8 +31,36 @@ func TestLoadDoesNotDefaultCORSWildcard(t *testing.T) {
 	if cfg.AIProviderFailureThreshold != 5 || cfg.AIProviderCircuitBreakerSeconds != 120 {
 		t.Fatalf("unexpected provider circuit breaker defaults: %#v", cfg)
 	}
+	if cfg.AuthSessionTTLDays != 7 {
+		t.Fatalf("expected default auth session TTL 7 days, got %d", cfg.AuthSessionTTLDays)
+	}
 	if !cfg.MaintenanceJobsEnabled || cfg.MaintenanceIntervalHours != 24 || cfg.AnonymousGuestRetentionDays != 90 {
 		t.Fatalf("unexpected maintenance defaults: %#v", cfg)
+	}
+}
+
+func TestLoadBoundsAuthSessionTTL(t *testing.T) {
+	t.Setenv("AUTH_SESSION_TTL_DAYS", "14")
+	if got := Load().AuthSessionTTLDays; got != 14 {
+		t.Fatalf("expected configured auth session TTL 14 days, got %d", got)
+	}
+
+	for _, invalid := range []string{"0", "31", "invalid"} {
+		t.Setenv("AUTH_SESSION_TTL_DAYS", invalid)
+		if got := Load().AuthSessionTTLDays; got != 7 {
+			t.Fatalf("expected invalid TTL %q to fall back to 7 days, got %d", invalid, got)
+		}
+	}
+}
+
+func TestLoadReadsAndNormalizesPublicWebOrigin(t *testing.T) {
+	t.Setenv("WEB_BASE_URL", "  https://finnri.example/  ")
+	cfg := Load()
+	if cfg.WebBaseURL != "https://finnri.example" {
+		t.Fatalf("expected normalized WEB_BASE_URL, got %q", cfg.WebBaseURL)
+	}
+	if cfg.WebhookRateLimitRPS != 50 || cfg.WebhookRateLimitBurst != 100 {
+		t.Fatalf("unexpected webhook limiter defaults: %v/%d", cfg.WebhookRateLimitRPS, cfg.WebhookRateLimitBurst)
 	}
 }
 
@@ -70,12 +98,15 @@ func TestEnvExampleContainsRequiredRedactedVariables(t *testing.T) {
 		"REQUEST_TIMEOUT_SECONDS",
 		"RATE_LIMIT_RPS",
 		"RATE_LIMIT_BURST",
+		"WEBHOOK_RATE_LIMIT_RPS",
+		"WEBHOOK_RATE_LIMIT_BURST",
 		"MAX_JSON_KB",
 		"MAX_UPLOAD_MB",
 		"MAX_TRANSCRIPT_CHARS",
 		"OTP_DEBUG_RESPONSE",
 		"OTP_DEV_CODE",
 		"OTP_EXPIRES_MINUTES",
+		"AUTH_SESSION_TTL_DAYS",
 		"CLAIM_TOKEN_EXPIRES_MINUTES",
 		"DB_HOST",
 		"DB_PORT",
@@ -84,6 +115,7 @@ func TestEnvExampleContainsRequiredRedactedVariables(t *testing.T) {
 		"DB_NAME",
 		"DB_SSLMODE",
 		"DATABASE_URL",
+		"WEB_BASE_URL",
 	}
 
 	for _, key := range required {

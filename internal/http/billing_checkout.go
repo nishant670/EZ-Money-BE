@@ -260,8 +260,8 @@ func (s *Server) getBillingCheckoutOrder(c *gin.Context) {
 
 func (s *Server) checkoutResponse(payment models.Payment, plan billingPlanResponse) checkoutOrderResponse {
 	successURL := ""
-	if s.cfg != nil {
-		successURL = s.cfg.CheckoutSuccessURL
+	if s.cfg != nil && strings.TrimSpace(s.cfg.WebBaseURL) != "" {
+		successURL = strings.TrimRight(s.cfg.WebBaseURL, "/") + "/dashboard/billing"
 	}
 	return checkoutOrderResponse{
 		Provider:    payment.Provider,
