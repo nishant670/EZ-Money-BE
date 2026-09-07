@@ -69,3 +69,35 @@ func TestRuntimeSchemaIncludesDataIntegrityConstraints(t *testing.T) {
 		t.Fatal("runtime schema must drop a legacy entries.account_id NOT NULL constraint")
 	}
 }
+
+// The boot that took production down did so because AutoMigrate reached
+// `plans` — through models.Payment.Plan — and tried to drop a constraint the
+// raw schema had never created under that name.
+func TestLegacyConstraintRenamesReconcilePlansCode(t *testing.T) {
+	joined := strings.Join(legacyConstraintRenames(), "\n")
+	for _, required := range []string{
+		"RENAME CONSTRAINT plans_code_key TO uni_plans_code",
+		"c.conname = 'plans_code_key'",
+		"c.conname = 'uni_plans_code'",
+		"AND NOT EXISTS",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("legacy constraint renames missing %q", required)
+		}
+	}
+}
+
+// A `'plans'::regclass` cast throws on a database where the table does not yet
+// exist, and SQL does not promise to short-circuit the AND that was supposed to
+// guard it — which broke every fresh database until the lookup went through
+// pg_class instead. Renames must never reintroduce the cast.
+func TestLegacyConstraintRenamesSurviveAMissingTable(t *testing.T) {
+	for _, statement := range legacyConstraintRenames() {
+		if strings.Contains(statement, "::regclass") {
+			t.Fatalf("constraint rename casts to regclass, which throws when the table is absent:\n%s", statement)
+		}
+		if !strings.Contains(statement, "JOIN pg_class") {
+			t.Fatalf("constraint rename should look the table up through pg_class:\n%s", statement)
+		}
+	}
+}
